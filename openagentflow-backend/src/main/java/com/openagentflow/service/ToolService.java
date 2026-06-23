@@ -922,6 +922,23 @@ public class ToolService {
     }
 
     /**
+     * 查询工作空间展示名称。
+     *
+     * @param workspaceId 工作空间 ID
+     * @return 工作空间名称
+     */
+    private String findWorkspaceName(String workspaceId) {
+        if (!StringUtils.hasText(workspaceId)) {
+            return "";
+        }
+        List<String> names = jdbcTemplate.queryForList(
+                "SELECT workspace_name FROM oaf_workspace WHERE id = ? LIMIT 1",
+                String.class,
+                workspaceId);
+        return names.isEmpty() ? "" : names.get(0);
+    }
+
+    /**
      * 解析 JSON Schema。
      *
      * @param json Schema JSON

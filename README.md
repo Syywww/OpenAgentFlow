@@ -106,7 +106,6 @@ dm/
 - [配置说明](docs/配置说明.md)
 - [演示流程](docs/演示流程.md)
 - [路线图](docs/路线图.md)
-- [CSDN 推广文章](docs/CSDN推广文章.md)
 - [MySQL SQL 说明](openagentflow-sql/mysql/README.md)
 
 ## 配置约定

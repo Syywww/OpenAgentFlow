@@ -64,6 +64,9 @@ public class WorkflowService {
     /** Agent 权限服务，用于复用 Agent 的查看和管理权限。 */
     private final AgentAccessService agentAccessService;
 
+    /** 工作空间治理服务。 */
+    private final WorkspaceGovernanceService workspaceGovernanceService;
+
     /** JDBC 工具，用于轻量统计。 */
     private final JdbcTemplate jdbcTemplate;
 
@@ -77,6 +80,7 @@ public class WorkflowService {
                            AgentWorkflowBindingMapper agentWorkflowBindingMapper,
                            AgentMapper agentMapper,
                            AgentAccessService agentAccessService,
+                           WorkspaceGovernanceService workspaceGovernanceService,
                            JdbcTemplate jdbcTemplate,
                            ObjectMapper objectMapper) {
         this.workflowDefinitionMapper = workflowDefinitionMapper;
@@ -86,6 +90,7 @@ public class WorkflowService {
         this.agentWorkflowBindingMapper = agentWorkflowBindingMapper;
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
+        this.workspaceGovernanceService = workspaceGovernanceService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
     }
@@ -139,6 +144,7 @@ public class WorkflowService {
         fillWorkflow(entity, request, true);
         entity.setOwnerUserId(userId);
         entity.setCreatedBy(userId);
+        entity.setWorkspaceId(workspaceGovernanceService.attachResource(request.getWorkspaceId(), "workflow", entity.getId(), userId));
         entity.setVersion(0L);
         workflowDefinitionMapper.insert(entity);
         saveGraph(entity.getId(), request);
@@ -306,11 +312,13 @@ public class WorkflowService {
         if (entity == null || entity.getDeletedAt() != null) {
             return false;
         }
-        if ("public".equalsIgnoreCase(entity.getVisibility()) || isSystemManager()) {
-            return true;
-        }
-        String userId = currentUserId();
-        return StringUtils.hasText(userId) && (userId.equals(entity.getOwnerUserId()) || userId.equals(entity.getCreatedBy()));
+        return workspaceGovernanceService.canViewResource(
+                "workflow",
+                entity.getId(),
+                entity.getWorkspaceId(),
+                entity.getOwnerUserId(),
+                entity.getCreatedBy(),
+                entity.getVisibility());
     }
 
     /**
@@ -323,11 +331,7 @@ public class WorkflowService {
         if (entity == null || entity.getDeletedAt() != null) {
             return false;
         }
-        if (isSystemManager()) {
-            return true;
-        }
-        String userId = currentUserId();
-        return StringUtils.hasText(userId) && (userId.equals(entity.getOwnerUserId()) || userId.equals(entity.getCreatedBy()));
+        return workspaceGovernanceService.canManageResource(entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
     }
 
     /**
@@ -398,6 +402,9 @@ public class WorkflowService {
         entity.setWorkflowName(request.getWorkflowName().trim());
         entity.setDescription(request.getDescription());
         entity.setWorkflowType(StringUtils.hasText(request.getWorkflowType()) ? request.getWorkflowType() : "agent_workflow");
+        if (!create && StringUtils.hasText(request.getWorkspaceId())) {
+            entity.setWorkspaceId(workspaceGovernanceService.attachResource(request.getWorkspaceId(), "workflow", entity.getId(), entity.getOwnerUserId()));
+        }
         entity.setGraphJson(toJson(request.getGraphJson() == null ? buildGraph(request) : request.getGraphJson()));
         entity.setVariableSchema(toJson(request.getVariableSchema() == null ? Map.of() : request.getVariableSchema()));
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus() : "draft");
@@ -540,6 +547,8 @@ public class WorkflowService {
         summary.setWorkflowName(entity.getWorkflowName());
         summary.setDescription(entity.getDescription());
         summary.setWorkflowType(entity.getWorkflowType());
+        summary.setWorkspaceId(entity.getWorkspaceId());
+        summary.setWorkspaceName(findWorkspaceName(entity.getWorkspaceId()));
         summary.setStatus(entity.getStatus());
         summary.setStatusLabel(statusLabel(entity.getStatus()));
         summary.setPublishedVersion(entity.getPublishedVersion());
@@ -561,6 +570,8 @@ public class WorkflowService {
         target.setWorkflowName(source.getWorkflowName());
         target.setDescription(source.getDescription());
         target.setWorkflowType(source.getWorkflowType());
+        target.setWorkspaceId(source.getWorkspaceId());
+        target.setWorkspaceName(source.getWorkspaceName());
         target.setStatus(source.getStatus());
         target.setStatusLabel(source.getStatusLabel());
         target.setPublishedVersion(source.getPublishedVersion());
@@ -695,6 +706,23 @@ public class WorkflowService {
                 .replaceAll("[^a-z0-9\\u4e00-\\u9fa5]+", "-")
                 .replaceAll("^-|-$", "");
         return StringUtils.hasText(cleaned) ? cleaned : "workflow";
+    }
+
+    /**
+     * 查询工作空间展示名称。
+     *
+     * @param workspaceId 工作空间 ID
+     * @return 工作空间名称
+     */
+    private String findWorkspaceName(String workspaceId) {
+        if (!StringUtils.hasText(workspaceId)) {
+            return "";
+        }
+        List<String> names = jdbcTemplate.queryForList(
+                "SELECT workspace_name FROM oaf_workspace WHERE id = ? LIMIT 1",
+                String.class,
+                workspaceId);
+        return names.isEmpty() ? "" : names.get(0);
     }
 
     /**
