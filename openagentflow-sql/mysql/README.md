@@ -35,6 +35,7 @@ Redis: cache, sessions, queue state
 - `V009__rag_embedding_model_and_permissions.sql`: seed Doubao multimodal embedding endpoint `ep-20260615092553-lqvch` and knowledge-base permissions.
 - `V010__usage_cost_center.sql`: usage and cost-center permissions, indexes, quota seed data.
 - `V011__organization_workspace_governance.sql`: organization, workspace, workspace members, resource ownership, and workspace IDs for core resources.
+- `V012__async_task_center.sql`: unified async task center tables, logs, permissions, cancel and retry visibility.
 
 Recommended execution order:
 
@@ -50,6 +51,7 @@ V008__agent_crud_permissions.sql
 V009__rag_embedding_model_and_permissions.sql
 V010__usage_cost_center.sql
 V011__organization_workspace_governance.sql
+V012__async_task_center.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -79,6 +81,12 @@ Coverage matches the PostgreSQL version at the feature level:
 - `V011__organization_workspace_governance.sql` creates organization and workspace governance tables with Chinese comments for every table and column.
 - Existing Agent, knowledge base, tool, workflow, and MCP server rows are assigned to the default workspace during migration.
 - The backend can use workspace membership to decide whether a user can view or manage team resources, while preserving owner, ACL, and administrator permissions.
+
+## Latest Async Task Update
+
+- `V012__async_task_center.sql` creates `async_task` and `async_task_log`, with Chinese comments for every table and column.
+- Knowledge document upload now writes parsing, chunking, Embedding, MySQL save, Milvus sync, failure, cancel, and retry logs into the unified task center.
+- The task center is designed as the shared operational entry for later evaluation batch runs, MCP discovery, import jobs, vector rebuilds, and other long-running work.
 
 ## Milvus Mapping
 

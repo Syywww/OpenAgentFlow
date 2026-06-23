@@ -46,6 +46,7 @@ export interface KnowledgeDocumentSummary {
   processStageLabel?: string;
   progressPercent?: number;
   lastMessage?: string;
+  asyncTaskId?: string;
   embeddingFallbackUsed?: boolean;
   embeddingApi?: string;
   embeddingModelCode?: string;
@@ -93,6 +94,8 @@ export interface KnowledgeUploadResult {
   embeddingCount: number;
   milvusSynced: boolean;
   message: string;
+  asyncAccepted?: boolean;
+  asyncTaskId?: string;
 }
 
 export interface KnowledgeRetrievalResult {

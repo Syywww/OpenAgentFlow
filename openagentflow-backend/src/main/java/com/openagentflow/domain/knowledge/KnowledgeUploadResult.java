@@ -23,6 +23,9 @@ public class KnowledgeUploadResult {
     /** 是否已进入后台处理。 */
     private Boolean asyncAccepted;
 
+    /** 异步任务ID，用于跳转任务中心查看进度。 */
+    private String asyncTaskId;
+
     public KnowledgeDocumentSummary getDocument() {
         return document;
     }
@@ -69,5 +72,13 @@ public class KnowledgeUploadResult {
 
     public void setAsyncAccepted(Boolean asyncAccepted) {
         this.asyncAccepted = asyncAccepted;
+    }
+
+    public String getAsyncTaskId() {
+        return asyncTaskId;
+    }
+
+    public void setAsyncTaskId(String asyncTaskId) {
+        this.asyncTaskId = asyncTaskId;
     }
 }

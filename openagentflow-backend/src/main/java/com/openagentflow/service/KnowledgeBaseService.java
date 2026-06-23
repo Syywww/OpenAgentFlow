@@ -703,6 +703,7 @@ public class KnowledgeBaseService {
      * @return 文档摘要
      */
     private KnowledgeDocumentSummary toDocumentSummary(KnowledgeDocumentEntity entity) {
+        Map<String, Object> metadata = parseMap(entity.getMetadata());
         KnowledgeDocumentSummary item = new KnowledgeDocumentSummary();
         item.setId(entity.getId());
         item.setKbId(entity.getKbId());
@@ -713,6 +714,11 @@ public class KnowledgeBaseService {
         item.setFileHash(entity.getFileHash());
         item.setParseStatus(entity.getParseStatus());
         item.setParseError(entity.getParseError());
+        item.setAsyncTaskId(asString(metadata.get("asyncTaskId")));
+        item.setProcessStage(asString(metadata.get("processStage")));
+        item.setProcessStageLabel(asString(metadata.get("processStageLabel")));
+        item.setProgressPercent(intValue(metadata.get("progressPercent"), "parsed".equals(entity.getParseStatus()) ? 100 : 0));
+        item.setLastMessage(asString(metadata.get("lastMessage")));
         item.setChunkCount(count("knowledge_chunk", "document_id", entity.getId()));
         item.setEmbeddingCount(countByJoin(entity.getId()));
         item.setUploadedAt(entity.getUploadedAt());
@@ -1116,6 +1122,16 @@ public class KnowledgeBaseService {
             return number.doubleValue();
         }
         return fallback;
+    }
+
+    /**
+     * 安全读取字符串值。
+     *
+     * @param value 原始值
+     * @return 字符串值
+     */
+    private String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     /**

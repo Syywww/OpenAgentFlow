@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, RefreshCw, Search, Upload } from 'lucide-vue-next';
+import { ArrowLeft, ClipboardList, RefreshCw, Search, Upload } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
@@ -211,6 +211,14 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
           <span>模型：{{ selectedDocument.embeddingModelCode || '-' }}</span>
           <span>Milvus：{{ selectedDocument.milvusSynced ? '已同步' : processing ? '同步中' : '未同步' }}</span>
         </div>
+        <button
+          v-if="selectedDocument.asyncTaskId"
+          class="secondary-button"
+          type="button"
+          @click="router.push('/tasks')"
+        >
+          <ClipboardList :size="16" /> 查看任务中心日志
+        </button>
         <ul class="process-log">
           <li v-for="line in selectedDocument.processLogs || []" :key="line">{{ line }}</li>
         </ul>

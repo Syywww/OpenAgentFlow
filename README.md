@@ -144,6 +144,7 @@ V008__agent_crud_permissions.sql
 V009__rag_embedding_model_and_permissions.sql
 V010__usage_cost_center.sql
 V011__organization_workspace_governance.sql
+V012__async_task_center.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -164,6 +165,7 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | P9 Agent 历史会话 | 已完成 | 会话列表、消息持久化、继续对话、调试台历史面板 |
 | P10 成本与用量中心 | 已完成 | 用量统计、成本明细、模型价格、配额拦截、日报、导出、Trace 跳转 |
 | P11 组织/空间/资源治理 | 已完成 | 组织、工作空间、成员、资源归属、空间权限和前端管理页 |
+| P12 异步任务中心 | 已完成 | 统一任务队列、进度、日志、取消、重试，知识库文档处理已接入 |
 
 ## 演示建议
 
@@ -179,6 +181,7 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 10. 创建评测集、导入样本、运行评测并跳转低分样本 Trace。
 11. 打开用量中心，查看模型成本趋势、调用明细、维度拆分和配额规则。
 12. 打开组织空间，创建团队空间、添加成员，并确认 Agent、知识库、工具、工作流归属到空间。
+13. 打开任务中心，查看知识库文档解析、切片、Embedding、Milvus 写入的实时进度和日志。
 
 ## 开源发布清单
 
@@ -236,6 +239,16 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 - 已新增组织/工作空间接口：`/organizations`、`/workspaces`、`/workspaces/{id}`、`/workspaces/{id}/members`。
 - 已将 Agent、知识库、工具、工作流接入空间归属和空间成员权限判断，保留原有所有者、ACL 和全局管理员权限。
 - 已新增前端“组织空间”页面，支持组织列表、工作空间列表、空间创建/编辑、成员添加/移除和空间资源统计。
+- 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过。
+- 前端已执行 `npm run build`，结果通过。
+
+## P12 验证记录
+
+- 已新增 SQL 迁移 `V012__async_task_center.sql`，创建 `async_task` 和 `async_task_log`，每张表和每个字段均包含中文注释。
+- 已新增异步任务中心后端接口：`/tasks/overview`、`/tasks`、`/tasks/{id}`、`/tasks/{id}/cancel`、`/tasks/{id}/retry`。
+- 已新增平台异步任务线程池 `oafAsyncTaskExecutor`，避免耗时任务占用 Web 请求线程。
+- 已将知识库文档上传处理接入任务中心，解析、切片、Embedding、MySQL 保存、Milvus 写入、失败原因都会写入统一任务进度和日志。
+- 已新增前端“任务中心”页面，支持任务统计、筛选、列表、详情、日志、取消和重试；知识库详情页可跳转查看任务中心日志。
 - 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过。
 - 前端已执行 `npm run build`，结果通过。
 

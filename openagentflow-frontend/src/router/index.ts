@@ -17,6 +17,7 @@ import UsageCenterView from '../views/UsageCenterView.vue';
 import EvalDatasetView from '../views/eval/EvalDatasetView.vue';
 import EvalResultView from '../views/eval/EvalResultView.vue';
 import WorkspaceGovernanceView from '../views/WorkspaceGovernanceView.vue';
+import TaskCenterView from '../views/TaskCenterView.vue';
 import TemplateGalleryView from '../views/TemplateGalleryView.vue';
 import SettingsView from '../views/SettingsView.vue';
 import { getAccessToken } from '../api/http';
@@ -41,6 +42,7 @@ const router = createRouter({
     { path: '/logs/:id', component: RunDetailView },
     { path: '/usage', component: UsageCenterView },
     { path: '/workspaces', component: WorkspaceGovernanceView },
+    { path: '/tasks', component: TaskCenterView },
     { path: '/eval', component: EvalDatasetView },
     { path: '/eval/result', component: EvalResultView },
     { path: '/eval/result/:id', component: EvalResultView },

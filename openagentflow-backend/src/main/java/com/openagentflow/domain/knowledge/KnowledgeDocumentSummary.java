@@ -47,6 +47,9 @@ public class KnowledgeDocumentSummary {
     /** 最近一条处理提示。 */
     private String lastMessage;
 
+    /** 异步任务ID。 */
+    private String asyncTaskId;
+
     /** 是否使用本地兜底向量。 */
     private Boolean embeddingFallbackUsed;
 
@@ -179,6 +182,14 @@ public class KnowledgeDocumentSummary {
 
     public void setLastMessage(String lastMessage) {
         this.lastMessage = lastMessage;
+    }
+
+    public String getAsyncTaskId() {
+        return asyncTaskId;
+    }
+
+    public void setAsyncTaskId(String asyncTaskId) {
+        this.asyncTaskId = asyncTaskId;
     }
 
     public Boolean getEmbeddingFallbackUsed() {
