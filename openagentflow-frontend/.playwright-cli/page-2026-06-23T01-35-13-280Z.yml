@@ -1,0 +1,57 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - img [ref=e7]
+      - generic [ref=e10]:
+        - generic [ref=e11]: OpenAgentFlow-Java
+        - generic [ref=e12]: AI Agent Workflow Platform
+    - generic [ref=e13]:
+      - heading "登录控制台" [level=1] [ref=e14]
+      - paragraph [ref=e15]: 统一管理 Agent、RAG 知识库、MCP 工具、工作流编排与执行 Trace。
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - text: 用户名
+        - textbox "用户名" [ref=e18]: admin
+      - generic [ref=e19]:
+        - text: 密码
+        - textbox "密码" [ref=e20]: "123456"
+      - generic [ref=e21]:
+        - text: 验证码
+        - generic [ref=e22]:
+          - textbox "验证码" [ref=e23]:
+            - /placeholder: 请输入验证码
+          - button [disabled] [ref=e24]:
+            - img [ref=e25]
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - checkbox "记住我" [checked] [ref=e32]
+          - text: 记住我
+        - generic [ref=e33]: 忘记密码
+      - button "登录" [disabled] [ref=e34]:
+        - text: 登录
+        - img [ref=e35]
+    - generic [ref=e37]:
+      - button "企业微信" [ref=e38] [cursor=pointer]
+      - button "钉钉" [ref=e39] [cursor=pointer]
+      - button "飞书" [ref=e40] [cursor=pointer]
+  - generic [ref=e41]:
+    - generic [ref=e42]:
+      - generic [ref=e43]:
+        - img [ref=e44]
+        - text: Agent Runtime
+      - generic [ref=e47]:
+        - img [ref=e48]
+        - text: RAG
+      - generic [ref=e50]:
+        - img [ref=e51]
+        - text: Tool Calling
+      - generic [ref=e54]:
+        - img [ref=e55]
+        - text: Workflow
+      - generic [ref=e59]:
+        - img [ref=e60]
+        - text: Trace & Eval
+      - img [ref=e63]
+    - generic [ref=e65]:
+      - heading "可配置、可追踪、可评测、可扩展" [level=2] [ref=e66]
+      - paragraph [ref=e67]: 面向 Java + Vue 技术栈的企业级 AI 应用开发平台。

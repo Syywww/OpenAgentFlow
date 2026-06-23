@@ -1,0 +1,31 @@
+# Java / Maven
+openagentflow-backend/target/
+openagentflow-backend/logs/
+openagentflow-backend/data/
+openagentflow-backend/.idea/
+openagentflow-backend/*.iml
+*.class
+
+# Node / Vite
+openagentflow-frontend/node_modules/
+openagentflow-frontend/dist/
+openagentflow-frontend/*.tsbuildinfo
+
+# Local configuration and runtime logs
+.env
+.env.*
+!.env.example
+*.log
+*.err.log
+backend-p*.log
+frontend-p*.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Docker local volumes
+docker-data/

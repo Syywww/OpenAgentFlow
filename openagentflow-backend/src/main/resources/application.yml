@@ -1,0 +1,70 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: openagentflow-backend
+  datasource:
+    # MySQL 已按要求使用本地 openagentflow 数据库。
+    url: ${OAF_MYSQL_URL:jdbc:mysql://localhost:3306/openagentflow?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+    username: ${OAF_MYSQL_USERNAME:root}
+    password: ${OAF_MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      # Redis 使用本地默认连接，后续如有密码只需要补充 password。
+      host: ${OAF_REDIS_HOST:localhost}
+      port: ${OAF_REDIS_PORT:6379}
+      database: ${OAF_REDIS_DATABASE:0}
+      timeout: 3s
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+mybatis-plus:
+  configuration:
+    # 数据库字段使用下划线，Java 对象使用驼峰，开启后可以自动完成映射。
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      # 当前 SQL 主键由 MySQL 的 UUID() 默认值生成，插入时后端可以不主动生成 ID。
+      id-type: input
+
+openagentflow:
+  milvus:
+    # 开发环境未启动 Milvus 时可以设置为 false，后端会保留 MySQL 向量兜底并正常启动。
+    enabled: ${OAF_MILVUS_ENABLED:true}
+    # Milvus 使用本地默认端口，和 SQL 中 vector_store_connection 的种子配置保持一致。
+    host: ${OAF_MILVUS_HOST:localhost}
+    port: ${OAF_MILVUS_PORT:19530}
+    database-name: ${OAF_MILVUS_DATABASE:default}
+    username: ${OAF_MILVUS_USERNAME:}
+    password: ${OAF_MILVUS_PASSWORD:}
+    default-knowledge-collection: ${OAF_MILVUS_KNOWLEDGE_COLLECTION:oaf_knowledge_chunks}
+    default-memory-collection: ${OAF_MILVUS_MEMORY_COLLECTION:oaf_agent_memory}
+  security:
+    # 登录与基础权限已接入 JWT，默认启用接口鉴权。
+    auth-enabled: ${OAF_AUTH_ENABLED:true}
+    # JWT 签名密钥，生产环境请通过环境变量覆盖。
+    jwt-secret: ${OAF_JWT_SECRET:openagentflow-local-dev-secret-change-me}
+    # JWT 有效期，默认 24 小时。
+    jwt-expire-minutes: ${OAF_JWT_EXPIRE_MINUTES:1440}
+  rag:
+    # 默认召回数量，与前端调试面板和知识库检索配置保持一致。
+    default-top-k: 5
+    default-score-threshold: 0.65

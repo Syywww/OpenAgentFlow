@@ -1,0 +1,231 @@
+package com.openagentflow.domain.tool;
+
+import jakarta.validation.constraints.NotBlank;
+
+/**
+ * 工具定义保存请求。
+ */
+public class ToolDefinitionRequest {
+
+    /** 工具编码，作为模型调用函数名。 */
+    private String toolCode;
+
+    /** 工具名称。 */
+    @NotBlank(message = "工具名称不能为空")
+    private String toolName;
+
+    /** 工具类型，支持 REST_API、WEBHOOK、DB_QUERY。 */
+    @NotBlank(message = "工具类型不能为空")
+    private String toolType;
+
+    /** 所属工作空间 ID。 */
+    private String workspaceId;
+
+    /** 工具描述。 */
+    private String description;
+
+    /** 请求方法。 */
+    private String requestMethod;
+
+    /** 请求 URL 或数据库查询模板。 */
+    private String endpointUrl;
+
+    /** 认证类型。 */
+    private String authType;
+
+    /** 认证配置 JSON。 */
+    private String authConfig;
+
+    /** 请求头 JSON。 */
+    private String headers;
+
+    /** 请求参数 JSON Schema。 */
+    private String requestSchema;
+
+    /** 响应 JSON Schema。 */
+    private String responseSchema;
+
+    /** 超时毫秒。 */
+    private Integer timeoutMs;
+
+    /** 重试次数。 */
+    private Integer retryCount;
+
+    /** 风险等级。 */
+    private String riskLevel;
+
+    /** 是否需要人工确认。 */
+    private Boolean requireConfirm;
+
+    /** 是否启用。 */
+    private Boolean enabled;
+
+    /** 工具状态。 */
+    private String status;
+
+    /** MCP Server ID，仅 MCP 工具保存时使用。 */
+    private String mcpServerId;
+
+    /** MCP 原始工具名称，仅 MCP 工具保存时使用。 */
+    private String mcpToolName;
+
+    public String getToolCode() {
+        return toolCode;
+    }
+
+    public void setToolCode(String toolCode) {
+        this.toolCode = toolCode;
+    }
+
+    public String getToolName() {
+        return toolName;
+    }
+
+    public void setToolName(String toolName) {
+        this.toolName = toolName;
+    }
+
+    public String getToolType() {
+        return toolType;
+    }
+
+    public void setToolType(String toolType) {
+        this.toolType = toolType;
+    }
+
+    public String getWorkspaceId() {
+        return workspaceId;
+    }
+
+    public void setWorkspaceId(String workspaceId) {
+        this.workspaceId = workspaceId;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
+    }
+
+    public String getRequestMethod() {
+        return requestMethod;
+    }
+
+    public void setRequestMethod(String requestMethod) {
+        this.requestMethod = requestMethod;
+    }
+
+    public String getEndpointUrl() {
+        return endpointUrl;
+    }
+
+    public void setEndpointUrl(String endpointUrl) {
+        this.endpointUrl = endpointUrl;
+    }
+
+    public String getAuthType() {
+        return authType;
+    }
+
+    public void setAuthType(String authType) {
+        this.authType = authType;
+    }
+
+    public String getAuthConfig() {
+        return authConfig;
+    }
+
+    public void setAuthConfig(String authConfig) {
+        this.authConfig = authConfig;
+    }
+
+    public String getHeaders() {
+        return headers;
+    }
+
+    public void setHeaders(String headers) {
+        this.headers = headers;
+    }
+
+    public String getRequestSchema() {
+        return requestSchema;
+    }
+
+    public void setRequestSchema(String requestSchema) {
+        this.requestSchema = requestSchema;
+    }
+
+    public String getResponseSchema() {
+        return responseSchema;
+    }
+
+    public void setResponseSchema(String responseSchema) {
+        this.responseSchema = responseSchema;
+    }
+
+    public Integer getTimeoutMs() {
+        return timeoutMs;
+    }
+
+    public void setTimeoutMs(Integer timeoutMs) {
+        this.timeoutMs = timeoutMs;
+    }
+
+    public Integer getRetryCount() {
+        return retryCount;
+    }
+
+    public void setRetryCount(Integer retryCount) {
+        this.retryCount = retryCount;
+    }
+
+    public String getRiskLevel() {
+        return riskLevel;
+    }
+
+    public void setRiskLevel(String riskLevel) {
+        this.riskLevel = riskLevel;
+    }
+
+    public Boolean getRequireConfirm() {
+        return requireConfirm;
+    }
+
+    public void setRequireConfirm(Boolean requireConfirm) {
+        this.requireConfirm = requireConfirm;
+    }
+
+    public Boolean getEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(Boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getMcpServerId() {
+        return mcpServerId;
+    }
+
+    public void setMcpServerId(String mcpServerId) {
+        this.mcpServerId = mcpServerId;
+    }
+
+    public String getMcpToolName() {
+        return mcpToolName;
+    }
+
+    public void setMcpToolName(String mcpToolName) {
+        this.mcpToolName = mcpToolName;
+    }
+}

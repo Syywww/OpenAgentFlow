@@ -1,0 +1,138 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: openagentflow-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${OAF_MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${OAF_MYSQL_DATABASE:-openagentflow}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "${OAF_MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./openagentflow-sql/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: openagentflow-redis
+    restart: unless-stopped
+    ports:
+      - "${OAF_REDIS_PORT_PUBLIC:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: openagentflow-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    container_name: openagentflow-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: minio server /minio_data
+    volumes:
+      - minio-data:/minio_data
+
+  milvus:
+    image: milvusdb/milvus:v2.4.6
+    container_name: openagentflow-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "${OAF_MILVUS_PORT_PUBLIC:-19530}:19530"
+      - "${OAF_MILVUS_METRICS_PORT:-9091}:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  backend:
+    build:
+      context: ./openagentflow-backend
+    container_name: openagentflow-backend
+    restart: unless-stopped
+    environment:
+      OAF_MYSQL_URL: ${OAF_MYSQL_URL:-jdbc:mysql://mysql:3306/openagentflow?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+      OAF_MYSQL_USERNAME: ${OAF_MYSQL_USERNAME:-root}
+      OAF_MYSQL_PASSWORD: ${OAF_MYSQL_PASSWORD:-123456}
+      OAF_REDIS_HOST: redis
+      OAF_REDIS_PORT: 6379
+      OAF_REDIS_DATABASE: ${OAF_REDIS_DATABASE:-0}
+      OAF_MILVUS_HOST: milvus
+      OAF_MILVUS_PORT: 19530
+      OAF_MILVUS_DATABASE: ${OAF_MILVUS_DATABASE:-default}
+      OAF_JWT_SECRET: ${OAF_JWT_SECRET:-please-change-this-secret-before-production}
+      OAF_JWT_EXPIRE_MINUTES: ${OAF_JWT_EXPIRE_MINUTES:-1440}
+      TZ: Asia/Shanghai
+    ports:
+      - "${OAF_BACKEND_PORT:-8080}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/actuator/health | grep -q 'UP'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+
+  frontend:
+    build:
+      context: ./openagentflow-frontend
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: openagentflow-frontend
+    restart: unless-stopped
+    ports:
+      - "${OAF_FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  redis-data:
+  etcd-data:
+  minio-data:
+  milvus-data:

@@ -1,0 +1,919 @@
+package com.openagentflow.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openagentflow.domain.chat.ChatCompletionRequest;
+import com.openagentflow.domain.chat.ChatCompletionResponse;
+import com.openagentflow.domain.chat.ChatMessage;
+import com.openagentflow.domain.chat.ChatRunContext;
+import com.openagentflow.domain.chat.LlmCallResult;
+import com.openagentflow.domain.chat.ToolCallRequest;
+import com.openagentflow.domain.tool.ToolExecutionResult;
+import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.entity.AgentEntity;
+import com.openagentflow.entity.AgentSessionEntity;
+import com.openagentflow.entity.ModelConfigEntity;
+import com.openagentflow.entity.ModelProviderEntity;
+import com.openagentflow.entity.RuntimeLlmCallEntity;
+import com.openagentflow.entity.RuntimeRunEntity;
+import com.openagentflow.entity.RuntimeTraceStepEntity;
+import com.openagentflow.exception.BusinessException;
+import com.openagentflow.mapper.AgentMapper;
+import com.openagentflow.mapper.ModelConfigMapper;
+import com.openagentflow.mapper.RuntimeLlmCallMapper;
+import com.openagentflow.mapper.RuntimeRunMapper;
+import com.openagentflow.mapper.RuntimeTraceStepMapper;
+import com.openagentflow.security.AuthUserDetails;
+import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+
+/**
+ * 聊天调试服务。
+ *
+ * <p>负责把前端输入转换为模型消息、调用 OpenAI-compatible 客户端，并记录运行日志和 Trace。</p>
+ */
+@Service
+public class ChatService {
+
+    /** Agent Mapper。 */
+    private final AgentMapper agentMapper;
+
+    /** Agent 资源级访问控制服务。 */
+    private final AgentAccessService agentAccessService;
+
+    /** 模型配置 Mapper。 */
+    private final ModelConfigMapper modelConfigMapper;
+
+    /** 运行记录 Mapper。 */
+    private final RuntimeRunMapper runtimeRunMapper;
+
+    /** 运行链路步骤 Mapper。 */
+    private final RuntimeTraceStepMapper runtimeTraceStepMapper;
+
+    /** LLM 调用日志 Mapper。 */
+    private final RuntimeLlmCallMapper runtimeLlmCallMapper;
+
+    /** 模型服务商服务。 */
+    private final ModelProviderService modelProviderService;
+
+    /** OpenAI-compatible 调用客户端。 */
+    private final OpenAiCompatibleClient openAiCompatibleClient;
+
+    /** 知识库 RAG 服务。 */
+    private final KnowledgeBaseService knowledgeBaseService;
+
+    /** 工具调用服务。 */
+    private final ToolService toolService;
+
+    /** Agent 历史会话服务。 */
+    private final AgentSessionService agentSessionService;
+
+    /** 成本与用量服务。 */
+    private final UsageCostService usageCostService;
+
+    /** JSON 序列化工具。 */
+    private final ObjectMapper objectMapper;
+
+    public ChatService(AgentMapper agentMapper,
+                       AgentAccessService agentAccessService,
+                       ModelConfigMapper modelConfigMapper,
+                       RuntimeRunMapper runtimeRunMapper,
+                       RuntimeTraceStepMapper runtimeTraceStepMapper,
+                       RuntimeLlmCallMapper runtimeLlmCallMapper,
+                       ModelProviderService modelProviderService,
+                       OpenAiCompatibleClient openAiCompatibleClient,
+                       KnowledgeBaseService knowledgeBaseService,
+                       ToolService toolService,
+                       AgentSessionService agentSessionService,
+                       UsageCostService usageCostService,
+                       ObjectMapper objectMapper) {
+        this.agentMapper = agentMapper;
+        this.agentAccessService = agentAccessService;
+        this.modelConfigMapper = modelConfigMapper;
+        this.runtimeRunMapper = runtimeRunMapper;
+        this.runtimeTraceStepMapper = runtimeTraceStepMapper;
+        this.runtimeLlmCallMapper = runtimeLlmCallMapper;
+        this.modelProviderService = modelProviderService;
+        this.openAiCompatibleClient = openAiCompatibleClient;
+        this.knowledgeBaseService = knowledgeBaseService;
+        this.toolService = toolService;
+        this.agentSessionService = agentSessionService;
+        this.usageCostService = usageCostService;
+        this.objectMapper = objectMapper;
+    }
+
+    /**
+     * 执行普通非流式聊天补全。
+     *
+     * @param request 聊天补全请求
+     * @return 聊天补全响应
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ChatCompletionResponse complete(ChatCompletionRequest request) {
+        ChatRunContext context = buildRunContext(request);
+        attachSession(request, context);
+        RuntimeRunEntity run = createRun(request, context);
+        enrichContextWithRag(context, request, run.getId());
+        if (context.getTools() != null && !context.getTools().isEmpty()) {
+            return completeWithToolCalling(request, context, run);
+        }
+        RuntimeTraceStepEntity step = createLlmStep(run, context);
+        try {
+            usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
+            LlmCallResult result = openAiCompatibleClient.complete(context, request.getTemperature(), effectiveMaxTokens(request, context));
+            finishSuccess(run, step, context, result, false);
+            return toResponse(run, context, result, "SUCCESS", null);
+        } catch (Exception exception) {
+            finishFailure(run, step, context, exception, false);
+            throw exception;
+        }
+    }
+
+    /**
+     * 执行 SSE 流式聊天补全。
+     *
+     * @param request 聊天补全请求
+     * @return SSE 发射器
+     */
+    public SseEmitter completeStream(ChatCompletionRequest request) {
+        SseEmitter emitter = new SseEmitter(180_000L);
+        // SecurityContext 不会自动传入异步线程，因此先在请求线程完成权限判断、上下文构建和运行记录创建。
+        ChatRunContext context = buildRunContext(request);
+        attachSession(request, context);
+        RuntimeRunEntity run = createRun(request, context);
+        enrichContextWithRag(context, request, run.getId());
+        if (context.getTools() != null && !context.getTools().isEmpty()) {
+            completeStreamWithToolCalling(emitter, request, context, run);
+            return emitter;
+        }
+        RuntimeTraceStepEntity step = createLlmStep(run, context);
+        CompletableFuture.runAsync(() -> {
+            try {
+                sendSse(emitter, "meta", Map.of(
+                        "runId", run.getId(),
+                        "sessionId", safeText(context.getSessionId()),
+                        "providerName", context.getProvider().getProviderName(),
+                        "modelName", context.getModel().getModelName(),
+                        "sources", context.getSources() == null ? List.of() : context.getSources()
+                ));
+                usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
+                LlmCallResult result = openAiCompatibleClient.completeStream(
+                        context,
+                        request.getTemperature(),
+                        effectiveMaxTokens(request, context),
+                        delta -> sendSse(emitter, "delta", Map.of("content", delta))
+                );
+                finishSuccess(run, step, context, result, true);
+                sendSse(emitter, "done", Map.of(
+                        "runId", run.getId(),
+                        "sessionId", safeText(context.getSessionId()),
+                        "status", "SUCCESS",
+                        "latencyMs", nullToZero(result.getLatencyMs()),
+                        "promptTokens", nullToZero(result.getPromptTokens()),
+                        "completionTokens", nullToZero(result.getCompletionTokens()),
+                        "totalTokens", nullToZero(result.getTotalTokens()),
+                        "sources", context.getSources() == null ? List.of() : context.getSources()
+                ));
+                emitter.complete();
+            } catch (Exception exception) {
+                finishFailure(run, step, context, exception, true);
+                sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
+                emitter.complete();
+            }
+        });
+        return emitter;
+    }
+
+    /**
+     * 构建聊天运行上下文。
+     *
+     * @param request 聊天请求
+     * @return 聊天运行上下文
+     */
+    private ChatRunContext buildRunContext(ChatCompletionRequest request) {
+        AgentEntity agent = resolveAgent(request.getAgentId());
+        ModelConfigEntity model = resolveModel(request.getModelId(), agent);
+        ModelProviderEntity provider = modelProviderService.requireProviderByModel(model);
+        String apiKey = modelProviderService.findApiKeyValue(provider.getId());
+
+        ChatRunContext context = new ChatRunContext();
+        context.setAgent(agent);
+        context.setModel(model);
+        context.setProvider(provider);
+        context.setApiKey(apiKey);
+        context.setMessages(buildMessages(agent, request));
+        context.setSources(List.of());
+        context.setTools(toolService.listModelToolsForAgent(agent));
+        return context;
+    }
+
+    /**
+     * 为本次聊天绑定历史会话。
+     *
+     * @param request 聊天请求
+     * @param context 聊天上下文
+     */
+    private void attachSession(ChatCompletionRequest request, ChatRunContext context) {
+        AgentSessionEntity session = agentSessionService.ensureSession(context.getAgent(), request.getSessionId(), request.getInput());
+        if (session != null) {
+            context.setSessionId(session.getId());
+            request.setSessionId(session.getId());
+        }
+    }
+
+    /**
+     * 执行带工具调用的非流式聊天。
+     *
+     * @param request 聊天请求
+     * @param context 聊天上下文
+     * @param run 运行记录
+     * @return 聊天响应
+     */
+    private ChatCompletionResponse completeWithToolCalling(ChatCompletionRequest request,
+                                                           ChatRunContext context,
+                                                           RuntimeRunEntity run) {
+        RuntimeTraceStepEntity decisionStep = createLlmStep(run, context);
+        try {
+            usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
+            LlmCallResult decision = openAiCompatibleClient.completeWithTools(context, request.getTemperature(), effectiveMaxTokens(request, context));
+            if (decision.getToolCalls() == null || decision.getToolCalls().isEmpty()) {
+                finishSuccess(run, decisionStep, context, decision, false);
+                return toResponse(run, context, decision, "SUCCESS", null);
+            }
+            finishIntermediateLlmStep(run, decisionStep, context, decision, false);
+            List<Map<String, Object>> toolResults = executeToolCalls(context, run, decisionStep.getId(), decision);
+            RuntimeTraceStepEntity finalStep = createLlmStep(run, context);
+            usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
+            LlmCallResult finalResult = openAiCompatibleClient.complete(context, request.getTemperature(), effectiveMaxTokens(request, context));
+            finishSuccess(run, finalStep, context, finalResult, false);
+            ChatCompletionResponse response = toResponse(run, context, finalResult, "SUCCESS", null);
+            response.setToolResults(toolResults);
+            return response;
+        } catch (Exception exception) {
+            finishFailure(run, decisionStep, context, exception, false);
+            throw exception;
+        }
+    }
+
+    /**
+     * 执行带工具调用的 SSE 聊天。
+     *
+     * @param emitter SSE 发射器
+     * @param request 聊天请求
+     * @param context 聊天上下文
+     * @param run 运行记录
+     */
+    private void completeStreamWithToolCalling(SseEmitter emitter,
+                                               ChatCompletionRequest request,
+                                               ChatRunContext context,
+                                               RuntimeRunEntity run) {
+        CompletableFuture.runAsync(() -> {
+            RuntimeTraceStepEntity decisionStep = createLlmStep(run, context);
+            try {
+                sendSse(emitter, "meta", Map.of(
+                        "runId", run.getId(),
+                        "sessionId", safeText(context.getSessionId()),
+                        "providerName", context.getProvider().getProviderName(),
+                        "modelName", context.getModel().getModelName(),
+                        "sources", context.getSources() == null ? List.of() : context.getSources(),
+                        "tools", context.getTools() == null ? List.of() : context.getTools()
+                ));
+                usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
+                LlmCallResult decision = openAiCompatibleClient.completeWithTools(context, request.getTemperature(), effectiveMaxTokens(request, context));
+                if (decision.getToolCalls() == null || decision.getToolCalls().isEmpty()) {
+                    // 模型未选择工具时直接返回本次非流式决策内容，避免重复调用模型。
+                    finishSuccess(run, decisionStep, context, decision, false);
+                    sendSse(emitter, "delta", Map.of("content", safeText(decision.getContent())));
+                    sendDone(emitter, run, context, decision, List.of());
+                    emitter.complete();
+                    return;
+                }
+                finishIntermediateLlmStep(run, decisionStep, context, decision, false);
+                List<Map<String, Object>> toolResults = executeToolCalls(context, run, decisionStep.getId(), decision);
+                sendSse(emitter, "tool", Map.of("toolResults", toolResults));
+                RuntimeTraceStepEntity finalStep = createLlmStep(run, context);
+                usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
+                LlmCallResult finalResult = openAiCompatibleClient.completeStream(
+                        context,
+                        request.getTemperature(),
+                        effectiveMaxTokens(request, context),
+                        delta -> sendSse(emitter, "delta", Map.of("content", delta))
+                );
+                finishSuccess(run, finalStep, context, finalResult, true);
+                sendDone(emitter, run, context, finalResult, toolResults);
+                emitter.complete();
+            } catch (Exception exception) {
+                finishFailure(run, decisionStep, context, exception, false);
+                sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
+                emitter.complete();
+            }
+        });
+    }
+
+    /**
+     * 执行模型请求的工具调用，并把工具结果追加回模型上下文。
+     *
+     * @param context 聊天上下文
+     * @param run 运行记录
+     * @param parentStepId 父步骤 ID
+     * @param decision 模型工具决策结果
+     * @return 工具结果摘要
+     */
+    private List<Map<String, Object>> executeToolCalls(ChatRunContext context,
+                                                       RuntimeRunEntity run,
+                                                       String parentStepId,
+                                                       LlmCallResult decision) {
+        List<ChatMessage> messages = new ArrayList<>(context.getMessages());
+        ChatMessage assistantToolMessage = new ChatMessage("assistant", safeText(decision.getContent()));
+        assistantToolMessage.setToolCalls(decision.getToolCalls());
+        messages.add(assistantToolMessage);
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (ToolCallRequest call : decision.getToolCalls()) {
+            ToolExecutionResult result = toolService.executeToolCallForAgent(context.getAgent(), run, parentStepId, call);
+            Map<String, Object> resultPayload = new LinkedHashMap<>();
+            resultPayload.put("toolCallId", call.getId());
+            resultPayload.put("toolName", call.getName());
+            resultPayload.put("success", Boolean.TRUE.equals(result.getSuccess()));
+            resultPayload.put("statusCode", result.getStatusCode());
+            resultPayload.put("latencyMs", result.getLatencyMs());
+            resultPayload.put("confirmationRequired", Boolean.TRUE.equals(result.getConfirmationRequired()));
+            resultPayload.put("confirmationId", result.getConfirmationId());
+            resultPayload.put("responseBody", safeText(result.getResponseBody()));
+            resultPayload.put("errorMessage", safeText(result.getErrorMessage()));
+            results.add(resultPayload);
+
+            ChatMessage toolMessage = new ChatMessage("tool", toJson(resultPayload));
+            toolMessage.setToolCallId(call.getId());
+            toolMessage.setName(call.getName());
+            messages.add(toolMessage);
+        }
+
+        messages.add(new ChatMessage("system", "以上是工具执行结果。请结合用户问题、知识库资料和工具结果生成最终回答；如果工具未执行或失败，请明确说明原因。"));
+        context.setMessages(messages);
+        return results;
+    }
+
+    /**
+     * 执行 RAG 检索并把引用上下文注入模型消息。
+     *
+     * @param context 聊天上下文
+     * @param request 聊天请求
+     * @param runId 运行 ID
+     */
+    private void enrichContextWithRag(ChatRunContext context, ChatCompletionRequest request, String runId) {
+        if (context.getAgent() == null || !StringUtils.hasText(request.getInput())) {
+            return;
+        }
+        RuntimeTraceStepEntity ragStep = createRagStep(runId, request);
+        List<KnowledgeSource> sources;
+        try {
+            sources = knowledgeBaseService.retrieveForAgent(context.getAgent(), request.getInput(), runId);
+            finishRagStep(ragStep, sources, null);
+        } catch (Exception exception) {
+            finishRagStep(ragStep, List.of(), exception);
+            throw exception;
+        }
+        context.setSources(sources);
+        if (sources.isEmpty()) {
+            return;
+        }
+        List<ChatMessage> messages = new ArrayList<>(context.getMessages());
+        messages.add(1, new ChatMessage("system", buildRagPrompt(sources)));
+        context.setMessages(messages);
+    }
+
+    /**
+     * 创建 RAG 检索 Trace 步骤。
+     *
+     * @param runId 运行 ID
+     * @param request 聊天请求
+     * @return Trace 步骤
+     */
+    private RuntimeTraceStepEntity createRagStep(String runId, ChatCompletionRequest request) {
+        RuntimeTraceStepEntity step = new RuntimeTraceStepEntity();
+        step.setId(newId());
+        step.setRunId(runId);
+        step.setStepKey("rag_retrieve");
+        step.setStepName("RAG 知识检索");
+        step.setStepType("RAG");
+        step.setStatus("RUNNING");
+        step.setInputPayload(toJson(Map.of("query", request.getInput())));
+        step.setTokenUsage("{}");
+        step.setCostAmount(BigDecimal.ZERO);
+        step.setStartedAt(LocalDateTime.now());
+        runtimeTraceStepMapper.insert(step);
+        return step;
+    }
+
+    /**
+     * 完成 RAG 检索 Trace 步骤。
+     *
+     * @param step Trace 步骤
+     * @param sources 引用来源
+     * @param exception 异常对象
+     */
+    private void finishRagStep(RuntimeTraceStepEntity step, List<KnowledgeSource> sources, Exception exception) {
+        step.setStatus(exception == null ? "SUCCESS" : "FAILED");
+        step.setOutputPayload(toJson(Map.of("sources", sources == null ? List.of() : sources)));
+        step.setLatencyMs((int) java.time.Duration.between(step.getStartedAt(), LocalDateTime.now()).toMillis());
+        step.setErrorMessage(exception == null ? null : exception.getMessage());
+        step.setFinishedAt(LocalDateTime.now());
+        runtimeTraceStepMapper.updateById(step);
+    }
+
+    /**
+     * 构建 RAG 引用提示词。
+     *
+     * @param sources 引用来源列表
+     * @return 注入模型的上下文提示
+     */
+    private String buildRagPrompt(List<KnowledgeSource> sources) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("以下是从企业知识库检索到的参考资料。请优先依据资料回答；如果资料不足，请明确说明不确定。回答中可以用 [来源1]、[来源2] 标注依据。\n");
+        for (int index = 0; index < sources.size(); index++) {
+            KnowledgeSource source = sources.get(index);
+            builder.append("\n[来源").append(index + 1).append("] ")
+                    .append(source.getDocumentName()).append(" / 分片 ").append(source.getChunkNo())
+                    .append("，相似度 ").append(String.format(java.util.Locale.ROOT, "%.4f", source.getScore()))
+                    .append("\n")
+                    .append(source.getQuoteText());
+        }
+        return builder.toString();
+    }
+
+    /**
+     * 解析当前 Agent。
+     *
+     * @param agentId Agent ID
+     * @return Agent 实体，可为空
+     */
+    private AgentEntity resolveAgent(String agentId) {
+        if (StringUtils.hasText(agentId)) {
+            AgentEntity agent = agentMapper.selectById(agentId);
+            if (agent == null || agent.getDeletedAt() != null) {
+                throw new BusinessException("AGENT_NOT_FOUND", "Agent 不存在");
+            }
+            agentAccessService.assertCanView(agent);
+            return agent;
+        }
+        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
+                        .isNull(AgentEntity::getDeletedAt)
+                        .orderByDesc(AgentEntity::getStatus)
+                        .orderByDesc(AgentEntity::getCreatedAt))
+                .stream()
+                .filter(agentAccessService::canView)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * 解析当前模型。
+     *
+     * @param modelId 请求指定模型 ID
+     * @param agent 当前 Agent
+     * @return 模型实体
+     */
+    private ModelConfigEntity resolveModel(String modelId, AgentEntity agent) {
+        if (StringUtils.hasText(modelId)) {
+            return modelProviderService.requireModel(modelId);
+        }
+        if (agent != null && StringUtils.hasText(agent.getModelId())) {
+            return modelProviderService.requireModel(agent.getModelId());
+        }
+        return modelConfigMapper.selectList(new LambdaQueryWrapper<ModelConfigEntity>()
+                        .eq(ModelConfigEntity::getModelType, "chat")
+                        .eq(ModelConfigEntity::getStatus, "enabled")
+                        .orderByDesc(ModelConfigEntity::getIsDefault)
+                        .orderByDesc(ModelConfigEntity::getCreatedAt))
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new BusinessException("MODEL_NOT_FOUND", "请先配置可用的 Chat 模型"));
+    }
+
+    /**
+     * 构建发送给模型的消息列表。
+     *
+     * @param agent 当前 Agent
+     * @param request 聊天请求
+     * @return 消息列表
+     */
+    private List<ChatMessage> buildMessages(AgentEntity agent, ChatCompletionRequest request) {
+        List<ChatMessage> messages = new ArrayList<>();
+        String systemPrompt = agent != null && StringUtils.hasText(agent.getSystemPrompt())
+                ? agent.getSystemPrompt()
+                : "你是 OpenAgentFlow-Java 的 AI 调试助手，请用清晰、准确的中文回答用户问题。";
+        messages.add(new ChatMessage("system", systemPrompt));
+
+        // 只透传标准对话角色，避免前端异常数据污染模型请求。
+        if (request.getHistory() != null) {
+            request.getHistory().stream()
+                    .filter(message -> StringUtils.hasText(message.getRole()) && StringUtils.hasText(message.getContent()))
+                    .filter(message -> List.of("system", "user", "assistant").contains(message.getRole()))
+                    .forEach(messages::add);
+        }
+        messages.add(new ChatMessage("user", request.getInput()));
+        return messages;
+    }
+
+    /**
+     * 创建运行记录。
+     *
+     * @param request 聊天请求
+     * @param context 聊天上下文
+     * @return 运行记录实体
+     */
+    private RuntimeRunEntity createRun(ChatCompletionRequest request, ChatRunContext context) {
+        RuntimeRunEntity run = new RuntimeRunEntity();
+        run.setId(newId());
+        run.setRunNo("run_" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(LocalDateTime.now()));
+        run.setRunType("AGENT_CHAT");
+        run.setAgentId(context.getAgent() == null ? null : context.getAgent().getId());
+        run.setSessionId(context.getSessionId());
+        run.setUserId(currentUserId());
+        run.setInputText(request.getInput());
+        run.setInputPayload(toJson(Map.of(
+                "input", request.getInput(),
+                "modelId", context.getModel().getId(),
+                "sessionId", safeText(context.getSessionId())
+        )));
+        run.setStatus("RUNNING");
+        run.setTotalTokens(0);
+        run.setPromptTokens(0);
+        run.setCompletionTokens(0);
+        run.setTotalCost(BigDecimal.ZERO);
+        run.setMetadata(toJson(Map.of("providerId", context.getProvider().getId(), "modelId", context.getModel().getId())));
+        run.setStartedAt(LocalDateTime.now());
+        runtimeRunMapper.insert(run);
+        agentSessionService.appendUserMessage(context.getSessionId(), request.getInput(), run.getId());
+        return run;
+    }
+
+    /**
+     * 创建 LLM Trace 步骤。
+     *
+     * @param run 运行记录
+     * @param context 聊天上下文
+     * @return Trace 步骤实体
+     */
+    private RuntimeTraceStepEntity createLlmStep(RuntimeRunEntity run, ChatRunContext context) {
+        RuntimeTraceStepEntity step = new RuntimeTraceStepEntity();
+        step.setId(newId());
+        step.setRunId(run.getId());
+        step.setStepKey("llm_generate");
+        step.setStepName("LLM 生成");
+        step.setStepType("LLM");
+        step.setStatus("RUNNING");
+        step.setInputPayload(toJson(Map.of("messages", context.getMessages())));
+        step.setPromptText(toJson(context.getMessages()));
+        step.setModelId(context.getModel().getId());
+        step.setTokenUsage("{}");
+        step.setCostAmount(BigDecimal.ZERO);
+        step.setStartedAt(LocalDateTime.now());
+        runtimeTraceStepMapper.insert(step);
+        return step;
+    }
+
+    /**
+     * 保存成功运行结果。
+     *
+     * @param run 运行记录
+     * @param step Trace 步骤
+     * @param context 聊天上下文
+     * @param result LLM 调用结果
+     * @param stream 是否流式
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void finishSuccess(RuntimeRunEntity run,
+                              RuntimeTraceStepEntity step,
+                              ChatRunContext context,
+                              LlmCallResult result,
+                              boolean stream) {
+        LocalDateTime finishedAt = LocalDateTime.now();
+        BigDecimal cost = usageCostService.calculateCost(context.getModel(), nullToZero(result.getPromptTokens()), nullToZero(result.getCompletionTokens()));
+        run.setOutputText(result.getContent());
+        run.setOutputPayload(toJson(Map.of(
+                "content", safeText(result.getContent()),
+                "sources", context.getSources() == null ? List.of() : context.getSources()
+        )));
+        run.setStatus("SUCCESS");
+        // 一次运行可能包含“工具决策 LLM + 最终回复 LLM”，这里按累计值写入运行总账。
+        run.setPromptTokens(nullToZero(run.getPromptTokens()) + nullToZero(result.getPromptTokens()));
+        run.setCompletionTokens(nullToZero(run.getCompletionTokens()) + nullToZero(result.getCompletionTokens()));
+        run.setTotalTokens(nullToZero(run.getTotalTokens()) + nullToZero(result.getTotalTokens()));
+        run.setTotalCost(safeCost(run.getTotalCost()).add(cost));
+        run.setLatencyMs(nullToZero(result.getLatencyMs()));
+        run.setFinishedAt(finishedAt);
+        runtimeRunMapper.updateById(run);
+
+        step.setStatus("SUCCESS");
+        step.setOutputPayload(toJson(Map.of(
+                "content", safeText(result.getContent()),
+                "sources", context.getSources() == null ? List.of() : context.getSources()
+        )));
+        step.setTokenUsage(toJson(Map.of(
+                "promptTokens", nullToZero(result.getPromptTokens()),
+                "completionTokens", nullToZero(result.getCompletionTokens()),
+                "totalTokens", nullToZero(result.getTotalTokens())
+        )));
+        step.setCostAmount(cost);
+        step.setLatencyMs(nullToZero(result.getLatencyMs()));
+        step.setFinishedAt(finishedAt);
+        runtimeTraceStepMapper.updateById(step);
+
+        saveLlmCall(run, step, context, result, stream, true, null, cost);
+        agentSessionService.appendAssistantMessage(context.getSessionId(), safeText(result.getContent()), nullToZero(result.getTotalTokens()), Map.of(
+                "runId", run.getId(),
+                "status", "SUCCESS",
+                "stream", stream,
+                "sourceCount", context.getSources() == null ? 0 : context.getSources().size()
+        ));
+    }
+
+    /**
+     * 保存中间 LLM 步骤，通常用于工具调用前的模型决策。
+     *
+     * @param run 运行记录
+     * @param step Trace 步骤
+     * @param context 聊天上下文
+     * @param result LLM 调用结果
+     * @param stream 是否流式
+     */
+    private void finishIntermediateLlmStep(RuntimeRunEntity run,
+                                           RuntimeTraceStepEntity step,
+                                           ChatRunContext context,
+                                           LlmCallResult result,
+                                           boolean stream) {
+        LocalDateTime finishedAt = LocalDateTime.now();
+        BigDecimal cost = usageCostService.calculateCost(context.getModel(), nullToZero(result.getPromptTokens()), nullToZero(result.getCompletionTokens()));
+        // 中间决策也消耗模型额度，先累加到运行总账，但运行状态仍保持 RUNNING。
+        run.setPromptTokens(nullToZero(run.getPromptTokens()) + nullToZero(result.getPromptTokens()));
+        run.setCompletionTokens(nullToZero(run.getCompletionTokens()) + nullToZero(result.getCompletionTokens()));
+        run.setTotalTokens(nullToZero(run.getTotalTokens()) + nullToZero(result.getTotalTokens()));
+        run.setTotalCost(safeCost(run.getTotalCost()).add(cost));
+        runtimeRunMapper.updateById(run);
+        step.setStatus("SUCCESS");
+        step.setOutputPayload(toJson(Map.of(
+                "content", safeText(result.getContent()),
+                "toolCalls", result.getToolCalls() == null ? List.of() : result.getToolCalls()
+        )));
+        step.setTokenUsage(toJson(Map.of(
+                "promptTokens", nullToZero(result.getPromptTokens()),
+                "completionTokens", nullToZero(result.getCompletionTokens()),
+                "totalTokens", nullToZero(result.getTotalTokens())
+        )));
+        step.setCostAmount(cost);
+        step.setLatencyMs(nullToZero(result.getLatencyMs()));
+        step.setFinishedAt(finishedAt);
+        runtimeTraceStepMapper.updateById(step);
+        saveLlmCall(run, step, context, result, stream, true, null, cost);
+    }
+
+    /**
+     * 保存失败运行结果。
+     *
+     * @param run 运行记录
+     * @param step Trace 步骤
+     * @param context 聊天上下文
+     * @param exception 异常对象
+     * @param stream 是否流式
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void finishFailure(RuntimeRunEntity run,
+                              RuntimeTraceStepEntity step,
+                              ChatRunContext context,
+                              Exception exception,
+                              boolean stream) {
+        if (run == null || step == null || context == null) {
+            return;
+        }
+        LocalDateTime finishedAt = LocalDateTime.now();
+        run.setStatus("FAILED");
+        run.setErrorMessage(exception.getMessage());
+        run.setFinishedAt(finishedAt);
+        runtimeRunMapper.updateById(run);
+
+        step.setStatus("FAILED");
+        step.setErrorMessage(exception.getMessage());
+        step.setFinishedAt(finishedAt);
+        runtimeTraceStepMapper.updateById(step);
+
+        LlmCallResult result = new LlmCallResult();
+        result.setContent("");
+        saveLlmCall(run, step, context, result, stream, false, exception.getMessage(), BigDecimal.ZERO);
+        agentSessionService.appendAssistantMessage(context.getSessionId(), "本次调用失败：" + safeText(exception.getMessage()), 0, Map.of(
+                "runId", run.getId(),
+                "status", "FAILED",
+                "stream", stream
+        ));
+    }
+
+    /**
+     * 保存 LLM 调用日志。
+     *
+     * @param run 运行记录
+     * @param step Trace 步骤
+     * @param context 聊天上下文
+     * @param result LLM 调用结果
+     * @param stream 是否流式
+     * @param success 是否成功
+     * @param errorMessage 错误信息
+     */
+    private void saveLlmCall(RuntimeRunEntity run,
+                             RuntimeTraceStepEntity step,
+                             ChatRunContext context,
+                             LlmCallResult result,
+                             boolean stream,
+                             boolean success,
+                             String errorMessage,
+                             BigDecimal cost) {
+        RuntimeLlmCallEntity call = new RuntimeLlmCallEntity();
+        call.setId(newId());
+        call.setRunId(run.getId());
+        call.setStepId(step.getId());
+        call.setProviderId(context.getProvider().getId());
+        call.setModelId(context.getModel().getId());
+        call.setRequestMessages(toJson(context.getMessages()));
+        call.setResponseMessage(toJson(Map.of("content", safeText(result.getContent()))));
+        call.setStream(stream);
+        call.setPromptTokens(nullToZero(result.getPromptTokens()));
+        call.setCompletionTokens(nullToZero(result.getCompletionTokens()));
+        call.setTotalTokens(nullToZero(result.getTotalTokens()));
+        call.setCostAmount(cost == null ? BigDecimal.ZERO : cost);
+        call.setLatencyMs(nullToZero(result.getLatencyMs()));
+        call.setSuccess(success);
+        call.setErrorMessage(errorMessage);
+        runtimeLlmCallMapper.insert(call);
+        usageCostService.recordActualUsage(run, context.getProvider(), context.getModel(), call.getTotalTokens(), call.getCostAmount(), success, call.getLatencyMs());
+    }
+
+    /**
+     * 转换聊天响应。
+     *
+     * @param run 运行记录
+     * @param context 聊天上下文
+     * @param result LLM 调用结果
+     * @param status 运行状态
+     * @param errorMessage 错误信息
+     * @return 聊天响应
+     */
+    private ChatCompletionResponse toResponse(RuntimeRunEntity run,
+                                              ChatRunContext context,
+                                              LlmCallResult result,
+                                              String status,
+                                              String errorMessage) {
+        ChatCompletionResponse response = new ChatCompletionResponse();
+        response.setRunId(run.getId());
+        response.setSessionId(context.getSessionId());
+        response.setContent(result.getContent());
+        response.setProviderName(context.getProvider().getProviderName());
+        response.setModelName(context.getModel().getModelName());
+        response.setStatus(status);
+        response.setPromptTokens(nullToZero(result.getPromptTokens()));
+        response.setCompletionTokens(nullToZero(result.getCompletionTokens()));
+        response.setTotalTokens(nullToZero(result.getTotalTokens()));
+        response.setLatencyMs(nullToZero(result.getLatencyMs()));
+        response.setErrorMessage(errorMessage);
+        response.setSources(context.getSources() == null ? List.of() : context.getSources());
+        return response;
+    }
+
+    /**
+     * 发送 SSE 事件。
+     *
+     * @param emitter SSE 发射器
+     * @param name 事件名称
+     * @param data 事件数据
+     */
+    private void sendSse(SseEmitter emitter, String name, Object data) {
+        try {
+            emitter.send(SseEmitter.event()
+                    .name(name)
+                    .data(data, MediaType.APPLICATION_JSON));
+        } catch (Exception ignored) {
+            // 前端断开连接时不再抛出异常，避免后台线程产生噪音日志。
+        }
+    }
+
+    /**
+     * 发送 SSE 完成事件。
+     *
+     * @param emitter SSE 发射器
+     * @param run 运行记录
+     * @param context 聊天上下文
+     * @param result LLM 结果
+     * @param toolResults 工具结果
+     */
+    private void sendDone(SseEmitter emitter,
+                          RuntimeRunEntity run,
+                          ChatRunContext context,
+                          LlmCallResult result,
+                          List<Map<String, Object>> toolResults) {
+        sendSse(emitter, "done", Map.of(
+                "runId", run.getId(),
+                "sessionId", safeText(context.getSessionId()),
+                "status", "SUCCESS",
+                "latencyMs", nullToZero(result.getLatencyMs()),
+                "promptTokens", nullToZero(result.getPromptTokens()),
+                "completionTokens", nullToZero(result.getCompletionTokens()),
+                "totalTokens", nullToZero(result.getTotalTokens()),
+                "sources", context.getSources() == null ? List.of() : context.getSources(),
+                "toolResults", toolResults == null ? List.of() : toolResults
+        ));
+    }
+
+    /**
+     * 计算最大输出 Token。
+     *
+     * @param request 聊天请求
+     * @param context 聊天上下文
+     * @return 最大输出 Token
+     */
+    private Integer effectiveMaxTokens(ChatCompletionRequest request, ChatRunContext context) {
+        if (request.getMaxTokens() != null && request.getMaxTokens() > 0) {
+            return request.getMaxTokens();
+        }
+        return context.getModel().getMaxOutputTokens();
+    }
+
+    /**
+     * 获取当前登录用户 ID。
+     *
+     * @return 用户 ID
+     */
+    private String currentUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getPrincipal() instanceof AuthUserDetails userDetails) {
+            return userDetails.getUser().getId();
+        }
+        return null;
+    }
+
+    /**
+     * 生成 UUID 主键。
+     *
+     * @return UUID 字符串
+     */
+    private String newId() {
+        return UUID.randomUUID().toString();
+    }
+
+    /**
+     * 安全转换整数空值。
+     *
+     * @param value 整数值
+     * @return 非空整数
+     */
+    private Integer nullToZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    /**
+     * 安全转换成本空值。
+     *
+     * @param value 成本金额
+     * @return 非空成本
+     */
+    private BigDecimal safeCost(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    /**
+     * 安全转换文本空值。
+     *
+     * @param text 文本值
+     * @return 非空文本
+     */
+    private String safeText(String text) {
+        return text == null ? "" : text;
+    }
+
+    /**
+     * 转换 JSON 字符串。
+     *
+     * @param value 任意对象
+     * @return JSON 字符串
+     */
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception exception) {
+            return "{}";
+        }
+    }
+}

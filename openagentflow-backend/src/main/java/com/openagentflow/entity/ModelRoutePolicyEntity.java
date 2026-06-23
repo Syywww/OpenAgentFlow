@@ -1,0 +1,134 @@
+package com.openagentflow.entity;
+
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import java.time.LocalDateTime;
+
+/**
+ * 模型路由策略表。
+ * <p>对应数据库表：model_route_policy。</p>
+ */
+@TableName("model_route_policy")
+public class ModelRoutePolicyEntity {
+
+    /** 主键ID。 */
+    @TableId(value = "id")
+    private String id;
+
+    /** 策略编码。 */
+    @TableField("policy_code")
+    private String policyCode;
+
+    /** 策略名称。 */
+    @TableField("policy_name")
+    private String policyName;
+
+    /** SCENE类型。 */
+    @TableField("scene_type")
+    private String sceneType;
+
+    /** 字段说明：MATCHRULE。 */
+    @TableField("match_rule")
+    private String matchRule;
+
+    /** FALLBACK是否启用。 */
+    @TableField("fallback_enabled")
+    private Boolean fallbackEnabled;
+
+    /** 状态。 */
+    @TableField("status")
+    private String status;
+
+    /** 创建人ID。 */
+    @TableField("created_by")
+    private String createdBy;
+
+    /** 创建时间。 */
+    @TableField("created_at")
+    private LocalDateTime createdAt;
+
+    /** 更新时间。 */
+    @TableField("updated_at")
+    private LocalDateTime updatedAt;
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getPolicyCode() {
+        return policyCode;
+    }
+
+    public void setPolicyCode(String policyCode) {
+        this.policyCode = policyCode;
+    }
+
+    public String getPolicyName() {
+        return policyName;
+    }
+
+    public void setPolicyName(String policyName) {
+        this.policyName = policyName;
+    }
+
+    public String getSceneType() {
+        return sceneType;
+    }
+
+    public void setSceneType(String sceneType) {
+        this.sceneType = sceneType;
+    }
+
+    public String getMatchRule() {
+        return matchRule;
+    }
+
+    public void setMatchRule(String matchRule) {
+        this.matchRule = matchRule;
+    }
+
+    public Boolean getFallbackEnabled() {
+        return fallbackEnabled;
+    }
+
+    public void setFallbackEnabled(Boolean fallbackEnabled) {
+        this.fallbackEnabled = fallbackEnabled;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(String createdBy) {
+        this.createdBy = createdBy;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
+    }
+
+    public LocalDateTime getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(LocalDateTime updatedAt) {
+        this.updatedAt = updatedAt;
+    }
+}

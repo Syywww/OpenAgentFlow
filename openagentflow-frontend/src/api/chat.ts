@@ -1,0 +1,144 @@
+import { API_BASE_URL, getAccessToken, request } from './http';
+import type { KnowledgeSource } from './knowledge';
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatCompletionRequest {
+  agentId?: string;
+  modelId?: string;
+  sessionId?: string;
+  input: string;
+  history: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface ChatCompletionResponse {
+  runId: string;
+  sessionId?: string;
+  content: string;
+  providerName: string;
+  modelName: string;
+  status: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+  errorMessage?: string;
+  sources?: KnowledgeSource[];
+  toolResults?: Record<string, unknown>[];
+}
+
+export interface StreamHandlers {
+  onMeta?: (data: Record<string, unknown>) => void;
+  onDelta?: (content: string) => void;
+  onTool?: (data: Record<string, unknown>) => void;
+  onDone?: (data: Record<string, unknown>) => void;
+  onError?: (message: string) => void;
+}
+
+export interface StreamResult {
+  doneReceived: boolean;
+  errorReceived: boolean;
+}
+
+export async function completeChat(payload: ChatCompletionRequest) {
+  return request<ChatCompletionResponse>('/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function streamChat(payload: ChatCompletionRequest, handlers: StreamHandlers): Promise<StreamResult> {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  const token = getAccessToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/chat/completions/stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error('流式对话请求失败');
+  }
+
+  return readSseStream(response.body, handlers);
+}
+
+export async function readSseStream(body: ReadableStream<Uint8Array>, handlers: StreamHandlers): Promise<StreamResult> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let doneReceived = false;
+  let errorReceived = false;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() ?? '';
+      for (const eventText of events) {
+        const eventName = dispatchSseEvent(eventText, handlers);
+        doneReceived ||= eventName === 'done';
+        errorReceived ||= eventName === 'error';
+      }
+    }
+  } catch (error) {
+    // 已收到 done 说明业务调用成功，忽略 SSE 连接收尾阶段的读流异常。
+    if (!doneReceived) {
+      throw error;
+    }
+  }
+
+  if (buffer.trim()) {
+    const eventName = dispatchSseEvent(buffer, handlers);
+    doneReceived ||= eventName === 'done';
+    errorReceived ||= eventName === 'error';
+  }
+
+  return { doneReceived, errorReceived };
+}
+
+function dispatchSseEvent(eventText: string, handlers: StreamHandlers): string | undefined {
+  const lines = eventText.split(/\r?\n/);
+  const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message';
+  const dataText = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .join('\n');
+  if (!dataText) {
+    return undefined;
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(dataText);
+  } catch {
+    data = { content: dataText };
+  }
+
+  if (eventName === 'meta') {
+    handlers.onMeta?.(data);
+  } else if (eventName === 'delta') {
+    handlers.onDelta?.(String(data.content ?? ''));
+  } else if (eventName === 'tool') {
+    handlers.onTool?.(data);
+  } else if (eventName === 'done') {
+    handlers.onDone?.(data);
+  } else if (eventName === 'error') {
+    handlers.onError?.(String(data.message ?? '模型调用失败'));
+  }
+  return eventName;
+}
