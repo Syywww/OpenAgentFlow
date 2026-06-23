@@ -635,8 +635,54 @@ a {
   background: #fbfdff;
 }
 
+.data-table tbody tr.selected td {
+  background: rgba(49, 103, 246, 0.08);
+}
+
 .data-table.rich td:first-child {
   width: 34%;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.inline-form input,
+.inline-form select {
+  width: 100%;
+}
+
+.checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.checkbox-line input {
+  width: 16px;
+  height: 16px;
+}
+
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trace-meta span,
+.trace-meta b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .entity-cell {

@@ -33,6 +33,8 @@ Redis: cache, sessions, queue state
 - `V007__seed_doubao_model_provider.sql`: seed Doubao Ark OpenAI-compatible provider and endpoint model without storing any API key.
 - `V008__agent_crud_permissions.sql`: seed Agent CRUD, publish, copy, delete, run permissions and owner ACL for the built-in Agent.
 - `V009__rag_embedding_model_and_permissions.sql`: seed Doubao multimodal embedding endpoint `ep-20260615092553-lqvch` and knowledge-base permissions.
+- `V010__usage_cost_center.sql`: usage and cost-center permissions, indexes, quota seed data.
+- `V011__organization_workspace_governance.sql`: organization, workspace, workspace members, resource ownership, and workspace IDs for core resources.
 
 Recommended execution order:
 
@@ -46,6 +48,8 @@ V006__refresh_admin_password.sql
 V007__seed_doubao_model_provider.sql
 V008__agent_crud_permissions.sql
 V009__rag_embedding_model_and_permissions.sql
+V010__usage_cost_center.sql
+V011__organization_workspace_governance.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -69,6 +73,12 @@ Coverage matches the PostgreSQL version at the feature level:
 - Knowledge vectors are written to Milvus first. The backend also stores `embedding_json` in MySQL so low-volume retrieval and development fallback can continue when a vector service or embedding endpoint is unavailable.
 - Milvus knowledge collections are separated by vector dimension, for example `oaf_knowledge_chunks_d2048`, so real 2048-dimensional vectors do not conflict with earlier local fallback vectors.
 - The backend now supports knowledge-base CRUD, upload, parsing, chunking, embedding, Milvus write, retrieval test, source citations, and Agent binding.
+
+## Latest Governance Update
+
+- `V011__organization_workspace_governance.sql` creates organization and workspace governance tables with Chinese comments for every table and column.
+- Existing Agent, knowledge base, tool, workflow, and MCP server rows are assigned to the default workspace during migration.
+- The backend can use workspace membership to decide whether a user can view or manage team resources, while preserving owner, ACL, and administrator permissions.
 
 ## Milvus Mapping
 

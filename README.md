@@ -18,6 +18,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
 - **运行观测 Trace**：统一记录 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误和引用来源。
 - **成本与用量中心**：按服务商、模型、Agent、用户、工作流、评测统计 Token、成本、耗时，支持明细导出、价格配置和配额拦截。
+- **组织空间治理**：组织、工作空间、空间成员、资源归属和空间级访问控制，支持 Agent、知识库、工具、工作流按空间隔离。
 - **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、规则评分、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话。
 - **开源工程化**：Docker Compose、`.env.example`、CI、脚本、License、Issue/PR 模板和开源文档。
@@ -142,6 +143,7 @@ V007__seed_doubao_model_provider.sql
 V008__agent_crud_permissions.sql
 V009__rag_embedding_model_and_permissions.sql
 V010__usage_cost_center.sql
+V011__organization_workspace_governance.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -161,6 +163,7 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | P8 GitHub 开源发布准备 | 已完成 | Docker、CI、脚本、License、开源文档 |
 | P9 Agent 历史会话 | 已完成 | 会话列表、消息持久化、继续对话、调试台历史面板 |
 | P10 成本与用量中心 | 已完成 | 用量统计、成本明细、模型价格、配额拦截、日报、导出、Trace 跳转 |
+| P11 组织/空间/资源治理 | 已完成 | 组织、工作空间、成员、资源归属、空间权限和前端管理页 |
 
 ## 演示建议
 
@@ -175,6 +178,7 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 9. 接入 MCP Server，发现并测试 MCP 工具。
 10. 创建评测集、导入样本、运行评测并跳转低分样本 Trace。
 11. 打开用量中心，查看模型成本趋势、调用明细、维度拆分和配额规则。
+12. 打开组织空间，创建团队空间、添加成员，并确认 Agent、知识库、工具、工作流归属到空间。
 
 ## 开源发布清单
 
@@ -222,6 +226,16 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 - 已新增“重算历史成本”能力：先在系统设置中填写模型输入/输出每千 Token 单价，再在用量中心点击“重算历史成本”，即可把已有 Token 的历史调用成本回填到调用明细、Trace、运行总成本、成本日报和配额已用值。
 - 如果用量中心显示有 Token 但成本为 0，表示对应模型的 `input_price_per_1k` 和 `output_price_per_1k` 仍为 0；这不是模型调用失败，而是尚未配置计费单价。
 - 已新增 SQL 迁移 `V010__usage_cost_center.sql`，包含用量中心权限、统计索引和示例全局日配额。
+- 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过。
+- 前端已执行 `npm run build`，结果通过。
+
+## P11 验证记录
+
+- 已新增 SQL 迁移 `V011__organization_workspace_governance.sql`，创建 `oaf_organization`、`oaf_organization_member`、`oaf_workspace`、`oaf_workspace_member`、`oaf_workspace_resource` 表，并为 Agent、知识库、工具、工作流、MCP Server 增加 `workspace_id` 字段。
+- 已初始化默认组织和默认工作空间，已有 Agent、知识库、工具、工作流、MCP Server 会自动归属到默认工作空间。
+- 已新增组织/工作空间接口：`/organizations`、`/workspaces`、`/workspaces/{id}`、`/workspaces/{id}/members`。
+- 已将 Agent、知识库、工具、工作流接入空间归属和空间成员权限判断，保留原有所有者、ACL 和全局管理员权限。
+- 已新增前端“组织空间”页面，支持组织列表、工作空间列表、空间创建/编辑、成员添加/移除和空间资源统计。
 - 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过。
 - 前端已执行 `npm run build`，结果通过。
 
