@@ -108,7 +108,7 @@ public class UsageController {
      */
     @GetMapping("/calls")
     public ApiResponse<PageResult<UsageDtos.CallDetail>> listCalls(@RequestParam(defaultValue = "1") Integer pageNo,
-                                                                   @RequestParam(defaultValue = "20") Integer pageSize,
+                                                                   @RequestParam(defaultValue = "10") Integer pageSize,
                                                                    @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
                                                                    @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
                                                                    @RequestParam(required = false) String providerId,

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, ClipboardList, RefreshCw, Search, Upload } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {
@@ -15,6 +16,7 @@ import {
   type KnowledgeSource,
 } from '../../api/knowledge';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const route = useRoute();
 const router = useRouter();
@@ -30,12 +32,16 @@ const query = ref('请根据知识库总结核心内容');
 const sources = ref<KnowledgeSource[]>([]);
 const retrievalLatency = ref(0);
 
+const documents = computed(() => detail.value?.documents ?? []);
 const selectedDocument = computed(() => detail.value?.documents.find((doc) => doc.id === selectedDocumentId.value));
 const visibleChunks = computed(() => {
   if (!detail.value) return [];
   if (!selectedDocumentId.value) return detail.value.chunks;
   return detail.value.chunks.filter((chunk) => chunk.documentId === selectedDocumentId.value);
 });
+const { currentPage: documentPage, pagedItems: pagedDocuments } = usePagination(documents);
+const { currentPage: sourcePage, pagedItems: pagedSources } = usePagination(sources);
+const { currentPage: chunkPage, pagedItems: pagedChunks } = usePagination(visibleChunks);
 const processing = computed(() => selectedDocument.value?.parseStatus === 'processing');
 
 onMounted(() => {
@@ -174,7 +180,7 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
   <section v-if="detail" class="knowledge-detail">
     <aside class="document-list">
       <button
-        v-for="doc in detail.documents"
+        v-for="doc in pagedDocuments"
         :key="doc.id"
         class="document-item"
         :class="{ active: selectedDocumentId === doc.id }"
@@ -184,6 +190,7 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
         <b>{{ doc.docName }}</b>
         <span>{{ formatSize(doc.fileSize) }} · {{ statusLabel(doc.parseStatus) }} · {{ doc.progressPercent || 0 }}%</span>
       </button>
+      <PaginationBar v-model:page="documentPage" :total="documents.length" />
       <div v-if="detail.documents.length === 0" class="empty-state">暂无文档，上传后会自动解析和向量化</div>
     </aside>
 
@@ -237,15 +244,16 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
         <button class="primary-button" type="button" @click="handleRetrievalTest"><Search :size="16" /> 检索测试</button>
       </div>
 
-      <article v-for="source in sources" :key="source.chunkId" class="chunk-item">
+      <article v-for="source in pagedSources" :key="source.chunkId" class="chunk-item">
         <div>
           <b>{{ source.documentName }} / 分片 {{ source.chunkNo }}</b>
           <StatusBadge :label="`相似度 ${source.score.toFixed(4)}`" />
         </div>
         <p>{{ source.quoteText }}</p>
       </article>
+      <PaginationBar v-model:page="sourcePage" :total="sources.length" />
 
-      <article v-for="chunk in visibleChunks" :key="chunk.id" class="chunk-item">
+      <article v-for="chunk in pagedChunks" :key="chunk.id" class="chunk-item">
         <div>
           <b>{{ chunk.title || `分片 ${chunk.chunkNo}` }}</b>
           <StatusBadge :label="chunk.syncStatus === 'synced' ? '已写入 Milvus' : chunk.syncStatus || '待同步'" />
@@ -253,6 +261,7 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
         <p>{{ chunk.content }}</p>
         <span>{{ chunk.tokenCount }} tokens</span>
       </article>
+      <PaginationBar v-model:page="chunkPage" :total="visibleChunks.length" />
       <div v-if="visibleChunks.length === 0 && sources.length === 0" class="empty-state">
         {{ selectedDocument ? '当前文档暂无切片' : '暂无可预览分片' }}
       </div>

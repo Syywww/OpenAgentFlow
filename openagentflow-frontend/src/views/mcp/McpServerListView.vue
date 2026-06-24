@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Edit3, Plug, RefreshCw, Search, ServerCog, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {
@@ -19,6 +20,7 @@ import {
   type McpServerSummary,
 } from '../../api/mcp';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const router = useRouter();
 const { toast } = useOverlay();
@@ -51,6 +53,7 @@ const runningCount = computed(() => servers.value.filter((server) => server.stat
 const stoppedCount = computed(() => servers.value.filter((server) => server.status === 'stopped').length);
 const errorCount = computed(() => servers.value.filter((server) => server.status === 'error').length);
 const toolCount = computed(() => servers.value.reduce((sum, server) => sum + (server.toolsCount || 0), 0));
+const { currentPage: serverPage, pagedItems: pagedServers } = usePagination(servers);
 
 onMounted(() => {
   void loadServers();
@@ -263,7 +266,7 @@ function normalizedJson(text: string, fallback: string) {
         <tr><th>Server 名称</th><th>传输类型</th><th>地址 / 命令</th><th>认证方式</th><th>能力</th><th>状态</th><th>最近心跳</th><th>操作</th></tr>
       </thead>
       <tbody>
-        <tr v-for="server in servers" :key="server.id">
+        <tr v-for="server in pagedServers" :key="server.id">
           <td><b>{{ server.serverName }}</b><br /><span class="mono">{{ server.serverCode }}</span></td>
           <td>{{ server.transportType }}</td>
           <td class="mono">{{ endpointOf(server) }}</td>
@@ -283,6 +286,7 @@ function normalizedJson(text: string, fallback: string) {
         </tr>
       </tbody>
     </table>
+    <PaginationBar v-model:page="serverPage" :total="servers.length" />
   </section>
 
   <section v-if="operationLog" class="section-block">

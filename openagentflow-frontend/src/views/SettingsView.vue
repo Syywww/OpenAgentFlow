@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
-import { Bell, FileClock, Pencil, Save, TestTube2, Trash2, UserPlus } from 'lucide-vue-next';
+import { computed, onMounted, reactive, ref } from 'vue';
+import { Bell, FileClock, Pencil, Plus, Save, TestTube2, Trash2, UserPlus, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import PaginationBar from '../components/PaginationBar.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import {
   createModelProvider,
@@ -13,15 +14,23 @@ import {
   type ModelProviderSummary,
 } from '../api/models';
 import { useOverlay } from '../composables/useOverlay';
+import { usePagination } from '../composables/usePagination';
 
 const { showDrawer, showModal } = useOverlay();
 const users = ['admin', '张三', '李四', '王五', '赵六'];
+const userRows = ref(users);
 
 const providers = ref<ModelProviderSummary[]>([]);
+const modelRows = computed(() => providers.value.flatMap((provider) => provider.models.map((model) => ({ provider, model }))));
+const { currentPage: userPage, pagedItems: pagedUsers } = usePagination(userRows);
+const { currentPage: providerPage, pagedItems: pagedProviders } = usePagination(providers);
+const { currentPage: modelPage, pagedItems: pagedModelRows } = usePagination(modelRows);
 const editingProviderId = ref('');
 const loading = ref(false);
 const errorMessage = ref('');
 const testMessage = ref('');
+const activePanel = ref<'users' | 'providers' | 'models'>('users');
+const providerModalOpen = ref(false);
 
 const providerForm = reactive({
   providerCode: 'doubao',
@@ -77,6 +86,16 @@ function resetForm() {
   providerForm.isDefault = true;
 }
 
+function openCreateProviderModal() {
+  resetForm();
+  providerModalOpen.value = true;
+}
+
+function closeProviderModal() {
+  providerModalOpen.value = false;
+  resetForm();
+}
+
 function editProvider(provider: ModelProviderSummary) {
   const firstChatModel = provider.models.find((model) => model.modelType === 'chat') ?? provider.models[0];
   editingProviderId.value = provider.id;
@@ -99,6 +118,7 @@ function editProvider(provider: ModelProviderSummary) {
   providerForm.supportFunctionCalling = firstChatModel?.supportFunctionCalling ?? false;
   providerForm.supportVision = firstChatModel?.supportVision ?? false;
   providerForm.isDefault = firstChatModel?.isDefault ?? false;
+  providerModalOpen.value = true;
 }
 
 function buildPayload(): ModelProviderRequest {
@@ -142,7 +162,7 @@ async function saveProvider() {
     } else {
       await createModelProvider(buildPayload());
     }
-    resetForm();
+    closeProviderModal();
     await loadProviders();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '模型服务商保存失败';
@@ -194,8 +214,29 @@ onMounted(() => {
     </template>
   </PageHeader>
 
-  <section class="settings-layout">
-    <div class="section-block">
+  <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>
+  <p v-if="testMessage" class="form-success">{{ testMessage }}</p>
+
+  <section class="governance-card-tabs">
+    <button class="governance-tab-card" :class="{ active: activePanel === 'users' }" type="button" @click="activePanel = 'users'">
+      <span>用户与角色权限</span>
+      <b>{{ users.length }}</b>
+      <small>用户、角色和在线状态</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'providers' }" type="button" @click="activePanel = 'providers'">
+      <span>模型供应商配置</span>
+      <b>{{ providers.length }}</b>
+      <small>OpenAI-compatible / Ollama / Qwen 等</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'models' }" type="button" @click="activePanel = 'models'">
+      <span>模型列表</span>
+      <b>{{ modelRows.length }}</b>
+      <small>单价、流式和启用状态</small>
+    </button>
+  </section>
+
+  <section class="section-block settings-panel">
+    <template v-if="activePanel === 'users'">
       <div class="section-title">
         <h2>用户与角色权限</h2>
         <button class="primary-button" type="button"><UserPlus :size="16" /> 邀请用户</button>
@@ -203,7 +244,7 @@ onMounted(() => {
       <table class="data-table">
         <thead><tr><th>用户</th><th>角色</th><th>所属部门</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="(user, index) in users" :key="user">
+          <tr v-for="(user, index) in pagedUsers" :key="user">
             <td><b>{{ user }}</b><span class="muted block">{{ user }}@openagentflow.ai</span></td>
             <td><StatusBadge :label="index === 0 ? '超级管理员' : index === 1 ? '系统管理员' : '开发者'" /></td>
             <td>研发中心</td>
@@ -212,13 +253,66 @@ onMounted(() => {
           </tr>
         </tbody>
       </table>
-    </div>
+      <PaginationBar v-model:page="userPage" :total="users.length" />
+    </template>
 
-    <div class="section-block">
-      <div class="section-title"><h2>模型供应商配置</h2><span>OpenAI-compatible / Ollama / Qwen / DeepSeek / Doubao</span></div>
-      <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>
-      <p v-if="testMessage" class="form-success">{{ testMessage }}</p>
+    <template v-else-if="activePanel === 'providers'">
+      <div class="section-title">
+        <h2>模型供应商配置</h2>
+        <div class="title-actions">
+          <span>OpenAI-compatible / Ollama / Qwen / DeepSeek / Doubao</span>
+          <button class="primary-button slim" type="button" @click="openCreateProviderModal">
+            <Plus :size="14" /> 新增服务商
+          </button>
+        </div>
+      </div>
 
+      <div class="provider-grid">
+        <article v-for="provider in pagedProviders" :key="provider.id" class="provider-card">
+          <div><h3>{{ provider.providerName }}</h3><span>{{ provider.providerType }}</span></div>
+          <StatusBadge :label="provider.healthStatus" :tone="provider.healthStatus === 'healthy' ? 'success' : provider.healthStatus === 'unhealthy' ? 'danger' : 'warning'" />
+          <p>{{ provider.models.length }} 个模型 · {{ provider.baseUrl }}</p>
+          <p class="mono">{{ provider.keyMask || '未配置 API Key' }}</p>
+          <div class="row-actions">
+            <button class="secondary-button slim" type="button" @click="editProvider(provider)"><Pencil :size="14" /> 编辑</button>
+            <button class="secondary-button slim" type="button" :disabled="loading" @click="runProviderTest(provider)"><TestTube2 :size="14" /> 测试</button>
+            <button class="secondary-button slim danger-text" type="button" :disabled="loading" @click="removeProvider(provider)"><Trash2 :size="14" /> 删除</button>
+          </div>
+        </article>
+      </div>
+      <PaginationBar v-model:page="providerPage" :total="providers.length" />
+    </template>
+
+    <template v-else>
+      <div class="section-title"><h2>模型列表</h2><span>{{ modelRows.length }} 个模型</span></div>
+      <table class="data-table">
+        <thead><tr><th>供应商</th><th>模型</th><th>类型</th><th>单价 / 1K Token</th><th>流式</th><th>状态</th></tr></thead>
+        <tbody>
+          <template v-for="row in pagedModelRows" :key="row.model.id">
+            <tr>
+              <td><b>{{ row.provider.providerName }}</b></td>
+              <td>{{ row.model.modelName }}<span class="muted block mono">{{ row.model.modelCode }}</span></td>
+              <td>{{ row.model.modelType }}</td>
+              <td>输入 ¥{{ Number(row.model.inputPricePer1k || 0).toFixed(6) }}<span class="muted block">输出 ¥{{ Number(row.model.outputPricePer1k || 0).toFixed(6) }}</span></td>
+              <td>{{ row.model.supportStream ? '支持' : '不支持' }}</td>
+              <td><StatusBadge :label="row.model.status" /></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <PaginationBar v-model:page="modelPage" :total="modelRows.length" />
+    </template>
+  </section>
+
+  <div v-if="providerModalOpen" class="overlay-backdrop" @click.self="closeProviderModal">
+    <section class="modal-panel provider-modal">
+      <header class="overlay-header">
+        <div>
+          <h2>{{ editingProviderId ? '编辑模型供应商' : '新增模型供应商' }}</h2>
+          <p class="muted">配置服务商、接入地址、API Key、模型和计费单价。</p>
+        </div>
+        <button class="icon-button" type="button" title="关闭" @click="closeProviderModal"><X :size="18" /></button>
+      </header>
       <div class="settings-form">
         <label>服务商编码<input v-model="providerForm.providerCode" /></label>
         <label>服务商名称<input v-model="providerForm.providerName" /></label>
@@ -246,39 +340,9 @@ onMounted(() => {
         <label class="check-line"><input v-model="providerForm.isDefault" type="checkbox" /> 设为默认聊天模型</label>
       </div>
       <div class="toolbar compact">
-        <button class="primary-button" type="button" :disabled="loading" @click="saveProvider"><Save :size="16" /> {{ editingProviderId ? '保存修改' : '新增服务商' }}</button>
-        <button class="secondary-button" type="button" @click="resetForm">重置</button>
+        <button class="secondary-button" type="button" @click="closeProviderModal">取消</button>
+        <button class="primary-button" type="button" :disabled="loading" @click="saveProvider"><Save :size="16" /> 保存服务商</button>
       </div>
-
-      <div class="provider-grid">
-        <article v-for="provider in providers" :key="provider.id" class="provider-card">
-          <div><h3>{{ provider.providerName }}</h3><span>{{ provider.providerType }}</span></div>
-          <StatusBadge :label="provider.healthStatus" :tone="provider.healthStatus === 'healthy' ? 'success' : provider.healthStatus === 'unhealthy' ? 'danger' : 'warning'" />
-          <p>{{ provider.models.length }} 个模型 · {{ provider.baseUrl }}</p>
-          <p class="mono">{{ provider.keyMask || '未配置 API Key' }}</p>
-          <div class="row-actions">
-            <button class="secondary-button slim" type="button" @click="editProvider(provider)"><Pencil :size="14" /> 编辑</button>
-            <button class="secondary-button slim" type="button" :disabled="loading" @click="runProviderTest(provider)"><TestTube2 :size="14" /> 测试</button>
-            <button class="secondary-button slim danger-text" type="button" :disabled="loading" @click="removeProvider(provider)"><Trash2 :size="14" /> 删除</button>
-          </div>
-        </article>
-      </div>
-
-      <table class="data-table">
-        <thead><tr><th>供应商</th><th>模型</th><th>类型</th><th>单价 / 1K Token</th><th>流式</th><th>状态</th></tr></thead>
-        <tbody>
-          <template v-for="provider in providers" :key="provider.id">
-            <tr v-for="model in provider.models" :key="model.id">
-              <td><b>{{ provider.providerName }}</b></td>
-              <td>{{ model.modelName }}<span class="muted block mono">{{ model.modelCode }}</span></td>
-              <td>{{ model.modelType }}</td>
-              <td>输入 ¥{{ Number(model.inputPricePer1k || 0).toFixed(6) }}<span class="muted block">输出 ¥{{ Number(model.outputPricePer1k || 0).toFixed(6) }}</span></td>
-              <td>{{ model.supportStream ? '支持' : '不支持' }}</td>
-              <td><StatusBadge :label="model.status" /></td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-    </div>
-  </section>
+    </section>
+  </div>
 </template>

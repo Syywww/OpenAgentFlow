@@ -1,11 +1,15 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { Plus } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import PaginationBar from '../components/PaginationBar.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { useOverlay } from '../composables/useOverlay';
+import { usePagination } from '../composables/usePagination';
 
 const { showModal } = useOverlay();
-const templates = ['知识库问答', 'SQL 查询', '日报助手', '合同审查', '客服助手', '创建空白 Agent'];
+const templates = ref(['知识库问答', 'SQL 查询', '日报助手', '合同审查', '客服助手', '创建空白 Agent']);
+const { currentPage: templatePage, pagedItems: pagedTemplates, pageSize: templatePageSize } = usePagination(templates);
 </script>
 
 <template>
@@ -25,12 +29,13 @@ const templates = ['知识库问答', 'SQL 查询', '日报助手', '合同审�
   </section>
 
   <section class="template-gallery">
-    <article v-for="(item, index) in templates" :key="item" class="template-card">
-      <div class="template-mark">{{ index + 1 }}</div>
+    <article v-for="(item, index) in pagedTemplates" :key="item" class="template-card">
+      <div class="template-mark">{{ (templatePage - 1) * templatePageSize + index + 1 }}</div>
       <h2>{{ item }}</h2>
       <p>快速创建 {{ item }} 类型智能体，内置 Prompt、工具与推荐配置。</p>
       <div class="badge-row"><StatusBadge :label="index % 2 ? '自动化' : '知识管理'" /><StatusBadge label="推荐" /></div>
       <button class="primary-button full" type="button" @click="showModal('new-agent')">使用模板</button>
     </article>
   </section>
+  <PaginationBar v-model:page="templatePage" :total="templates.length" />
 </template>

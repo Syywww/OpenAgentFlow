@@ -3,10 +3,12 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Edit3, Plus, RefreshCw, ShieldAlert, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { deleteTool, fetchTools, type ToolDefinitionSummary } from '../../api/tools';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const router = useRouter();
 const { showModal, toast } = useOverlay();
@@ -30,6 +32,7 @@ const filteredTools = computed(() => tools.value.filter((tool) => {
 const enabledCount = computed(() => tools.value.filter((tool) => tool.enabled).length);
 const highRiskCount = computed(() => tools.value.filter((tool) => tool.riskLevel === 'high').length);
 const invocationCount = computed(() => tools.value.reduce((sum, tool) => sum + (tool.invocationCount || 0), 0));
+const { currentPage: toolPage, pagedItems: pagedTools, resetPage: resetToolPage } = usePagination(filteredTools);
 
 onMounted(() => {
   void loadTools();
@@ -63,25 +66,25 @@ async function handleDelete(tool: ToolDefinitionSummary) {
   </PageHeader>
 
   <section class="filter-row">
-    <select v-model="typeFilter">
+    <select v-model="typeFilter" @change="resetToolPage">
       <option value="all">全部类型</option>
       <option value="REST_API">REST API</option>
       <option value="WEBHOOK">Webhook</option>
       <option value="DB_QUERY">数据库查询</option>
       <option value="MCP">MCP 工具</option>
     </select>
-    <select v-model="riskFilter">
+    <select v-model="riskFilter" @change="resetToolPage">
       <option value="all">全部风险</option>
       <option value="low">低风险</option>
       <option value="medium">中风险</option>
       <option value="high">高风险</option>
     </select>
-    <select v-model="statusFilter">
+    <select v-model="statusFilter" @change="resetToolPage">
       <option value="all">全部状态</option>
       <option value="enabled">启用中</option>
       <option value="disabled">已停用</option>
     </select>
-    <input v-model="keyword" placeholder="搜索工具名称或 Code" />
+    <input v-model="keyword" placeholder="搜索工具名称或 Code" @input="resetToolPage" />
   </section>
 
   <section class="metric-grid">
@@ -100,7 +103,7 @@ async function handleDelete(tool: ToolDefinitionSummary) {
         <tr><th>工具名称</th><th>类型</th><th>Code</th><th>风险等级</th><th>状态</th><th>调用次数</th><th>成功率</th><th>操作</th></tr>
       </thead>
       <tbody>
-        <tr v-for="tool in filteredTools" :key="tool.id">
+        <tr v-for="tool in pagedTools" :key="tool.id">
           <td><b>{{ tool.toolName }}</b></td>
           <td>{{ tool.toolType }}</td>
           <td class="mono">{{ tool.toolCode }}</td>
@@ -118,5 +121,6 @@ async function handleDelete(tool: ToolDefinitionSummary) {
         </tr>
       </tbody>
     </table>
+    <PaginationBar v-if="!loading && filteredTools.length > 0" v-model:page="toolPage" :total="filteredTools.length" />
   </section>
 </template>

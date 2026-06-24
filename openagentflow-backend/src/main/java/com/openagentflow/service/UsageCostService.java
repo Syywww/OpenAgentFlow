@@ -215,7 +215,8 @@ public class UsageCostService {
                                                             String agentId,
                                                             String keyword) {
         int current = pageNo == null || pageNo < 1 ? 1 : pageNo;
-        int size = pageSize == null || pageSize < 1 ? 20 : Math.min(pageSize, 100);
+        // 未指定每页大小时统一按产品规范返回 10 条，前端和开放接口保持一致。
+        int size = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
         int offset = (current - 1) * size;
         DateRange range = normalizeRange(startDate, endDate);
         List<Object> params = new ArrayList<>();

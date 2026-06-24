@@ -2,6 +2,7 @@ package com.openagentflow.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.api.ApiResponse;
+import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.security.JwtAuthenticationFilter;
 import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
@@ -25,6 +26,7 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -33,6 +35,13 @@ import java.util.List;
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
+
+    /** OpenAgentFlow 自定义配置。 */
+    private final OpenAgentFlowProperties properties;
+
+    public SecurityConfig(OpenAgentFlowProperties properties) {
+        this.properties = properties;
+    }
 
     /**
      * 配置 Spring Security 过滤链。
@@ -87,6 +96,15 @@ public class SecurityConfig {
                             ));
                         })
                 )
+                .headers(headers -> headers
+                        // 生产部署默认禁止被 iframe 嵌入，降低点击劫持风险。
+                        .frameOptions(frame -> frame.sameOrigin())
+                        // 禁止浏览器进行 MIME 嗅探，避免脚本内容被错误执行。
+                        .contentTypeOptions(contentType -> {
+                        })
+                        // API 响应不暴露跨域策略之外的来源，前端静态资源安全头由 Nginx 处理。
+                        .referrerPolicy(referrer -> referrer.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                )
                 // JWT 过滤器放在用户名密码过滤器之前，确保业务接口先尝试解析 token。
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 // 明确禁用默认 logout 端点，退出登录由 AuthController 处理 Redis token 删除。
@@ -129,13 +147,29 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        // 开发阶段允许本地前端访问，后续部署时可以收窄到正式域名。
-        configuration.setAllowedOriginPatterns(List.of("http://localhost:*", "http://127.0.0.1:*"));
+        // 允许来源由配置控制，生产环境必须通过 OAF_CORS_ALLOWED_ORIGINS 收敛到正式域名。
+        configuration.setAllowedOriginPatterns(allowedOrigins());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    /**
+     * 读取 CORS 允许来源。
+     *
+     * @return 允许来源列表
+     */
+    private List<String> allowedOrigins() {
+        String origins = properties.getSecurity().getAllowedOrigins();
+        if (origins == null || origins.isBlank()) {
+            return List.of("http://localhost:*", "http://127.0.0.1:*");
+        }
+        return Arrays.stream(origins.split(","))
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
+                .toList();
     }
 }

@@ -18,6 +18,7 @@ spring:
       host: ${OAF_REDIS_HOST:localhost}
       port: ${OAF_REDIS_PORT:6379}
       database: ${OAF_REDIS_DATABASE:0}
+      password: ${OAF_REDIS_PASSWORD:}
       timeout: 3s
   jackson:
     time-zone: Asia/Shanghai

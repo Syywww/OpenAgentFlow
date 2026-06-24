@@ -113,6 +113,91 @@ export interface AgentKnowledgeBindingSummary {
   createdAt?: string;
 }
 
+export interface KnowledgeGovernanceOverview {
+  knowledgeBaseCount: number;
+  documentCount: number;
+  parsedDocumentCount: number;
+  failedDocumentCount: number;
+  processingDocumentCount: number;
+  chunkCount: number;
+  embeddingCount: number;
+  milvusFallbackCount: number;
+  openIssueCount: number;
+  highRiskIssueCount: number;
+  staleDocumentCount: number;
+  unboundKnowledgeBaseCount: number;
+}
+
+export interface KnowledgeQualityRow {
+  kbId: string;
+  kbName: string;
+  documentCount: number;
+  chunkCount: number;
+  embeddingCount: number;
+  failedDocumentCount: number;
+  fallbackEmbeddingCount: number;
+  agentBindingCount: number;
+  lastUploadedAt?: string;
+  qualityScore: number;
+  riskLevel: string;
+}
+
+export interface KnowledgeGovernancePolicySummary {
+  id: string;
+  policyCode: string;
+  policyName: string;
+  kbId?: string;
+  staleDays: number;
+  minChunkTokens: number;
+  maxChunkTokens: number;
+  maxFailedDocuments: number;
+  requireAgentBinding: boolean;
+  requireMilvusSync: boolean;
+  autoIssueEnabled: boolean;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface KnowledgeGovernancePolicyRequest {
+  policyCode?: string;
+  policyName: string;
+  kbId?: string;
+  staleDays?: number;
+  minChunkTokens?: number;
+  maxChunkTokens?: number;
+  maxFailedDocuments?: number;
+  requireAgentBinding?: boolean;
+  requireMilvusSync?: boolean;
+  autoIssueEnabled?: boolean;
+  status?: string;
+}
+
+export interface KnowledgeGovernanceIssueSummary {
+  id: string;
+  kbId: string;
+  kbName: string;
+  documentId?: string;
+  documentName?: string;
+  chunkId?: string;
+  issueType: string;
+  severity: string;
+  issueTitle: string;
+  issueDetail?: string;
+  evidence?: Record<string, unknown>;
+  status: string;
+  handlerUserId?: string;
+  handledAt?: string;
+  handleNote?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface KnowledgeGovernanceScanResult {
+  createdIssueCount: number;
+  openIssueCount: number;
+}
+
 export async function fetchKnowledgeBases() {
   return request<KnowledgeBaseSummary[]>('/knowledge-bases');
 }
@@ -179,4 +264,61 @@ export async function saveAgentKnowledgeBindings(agentId: string, knowledgeBaseI
     method: 'PUT',
     body: JSON.stringify({ knowledgeBaseIds, topK, scoreThreshold }),
   });
+}
+
+export async function fetchKnowledgeGovernanceOverview() {
+  return request<KnowledgeGovernanceOverview>('/knowledge-governance/overview');
+}
+
+export async function fetchKnowledgeQualityRows() {
+  return request<KnowledgeQualityRow[]>('/knowledge-governance/quality');
+}
+
+export async function scanKnowledgeGovernanceIssues() {
+  return request<KnowledgeGovernanceScanResult>('/knowledge-governance/scan', { method: 'POST' });
+}
+
+export async function fetchKnowledgeGovernanceIssues(params: {
+  status?: string;
+  severity?: string;
+  issueType?: string;
+  kbId?: string;
+  limit?: number;
+} = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') {
+      query.set(key, String(value));
+    }
+  });
+  return request<KnowledgeGovernanceIssueSummary[]>(`/knowledge-governance/issues${query.toString() ? `?${query}` : ''}`);
+}
+
+export async function handleKnowledgeGovernanceIssue(id: string, status: string, handleNote?: string) {
+  return request<KnowledgeGovernanceIssueSummary>(`/knowledge-governance/issues/${id}/handle`, {
+    method: 'POST',
+    body: JSON.stringify({ status, handleNote }),
+  });
+}
+
+export async function fetchKnowledgeGovernancePolicies() {
+  return request<KnowledgeGovernancePolicySummary[]>('/knowledge-governance/policies');
+}
+
+export async function createKnowledgeGovernancePolicy(payload: KnowledgeGovernancePolicyRequest) {
+  return request<KnowledgeGovernancePolicySummary>('/knowledge-governance/policies', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateKnowledgeGovernancePolicy(id: string, payload: KnowledgeGovernancePolicyRequest) {
+  return request<KnowledgeGovernancePolicySummary>(`/knowledge-governance/policies/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteKnowledgeGovernancePolicy(id: string) {
+  return request<void>(`/knowledge-governance/policies/${id}`, { method: 'DELETE' });
 }

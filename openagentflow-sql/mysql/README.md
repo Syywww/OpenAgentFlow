@@ -36,6 +36,10 @@ Redis: cache, sessions, queue state
 - `V010__usage_cost_center.sql`: usage and cost-center permissions, indexes, quota seed data.
 - `V011__organization_workspace_governance.sql`: organization, workspace, workspace members, resource ownership, and workspace IDs for core resources.
 - `V012__async_task_center.sql`: unified async task center tables, logs, permissions, cancel and retry visibility.
+- `V013__audit_risk_governance_center.sql`: risk governance event table, indexes, permissions, and unified audit/risk-center support.
+- `V014__model_gateway_governance.sql`: model gateway governance fields, route-policy indexes, default Agent chat route policy, and gateway decision logging.
+- `V015__knowledge_governance_enhancement.sql`: knowledge-base governance policies, quality issues, permissions, and default governance policy.
+- `V016__ops_monitor_alert_center.sql`: platform operation monitoring, health checks, alert rules, alert events, notification channels, and monitoring permissions.
 
 Recommended execution order:
 
@@ -52,6 +56,10 @@ V009__rag_embedding_model_and_permissions.sql
 V010__usage_cost_center.sql
 V011__organization_workspace_governance.sql
 V012__async_task_center.sql
+V013__audit_risk_governance_center.sql
+V014__model_gateway_governance.sql
+V015__knowledge_governance_enhancement.sql
+V016__ops_monitor_alert_center.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -87,6 +95,33 @@ Coverage matches the PostgreSQL version at the feature level:
 - `V012__async_task_center.sql` creates `async_task` and `async_task_log`, with Chinese comments for every table and column.
 - Knowledge document upload now writes parsing, chunking, Embedding, MySQL save, Milvus sync, failure, cancel, and retry logs into the unified task center.
 - The task center is designed as the shared operational entry for later evaluation batch runs, MCP discovery, import jobs, vector rebuilds, and other long-running work.
+
+## Latest Governance Risk Update
+
+- `V013__audit_risk_governance_center.sql` creates `risk_governance_event`, with Chinese comments for every table and column.
+- Existing `audit_operation_log`, `tool_invocation_log`, `tool_confirm_request`, `runtime_guardrail_event`, `tool_definition`, and `mcp_capability` become the source tables for the governance center.
+- The backend can automatically collect operation audit logs and aggregate high-risk tools, MCP capabilities, pending confirmations, failed tool calls, and guardrail events into one risk list.
+
+## Latest Model Gateway Update
+
+- `V014__model_gateway_governance.sql` extends `runtime_llm_call` with `route_policy_id`, `gateway_scene_type`, `route_decision`, and `fallback_used`, all with Chinese column comments.
+- The default `AGENT_CHAT` route policy is seeded as `default-agent-chat`; existing enabled chat models are inserted as route candidates.
+- The backend can route unpinned Agent chat and workflow LLM calls through the gateway, record route decisions, and fall back to the next healthy candidate when a model call fails.
+- The frontend now includes a Model Gateway page for route-policy CRUD, candidate ordering, model health, recent gateway calls, failure rate, latency, and fallback visibility.
+
+## Latest Knowledge Governance Update
+
+- `V015__knowledge_governance_enhancement.sql` creates `knowledge_governance_policy` and `knowledge_governance_issue`, with Chinese comments for every table and column.
+- The default policy checks stale documents, abnormal chunk token ranges, failed parsing, missing embeddings, Milvus sync fallback, empty knowledge bases, and unbound knowledge bases.
+- The backend exposes `/knowledge-governance/overview`, `/knowledge-governance/quality`, `/knowledge-governance/scan`, `/knowledge-governance/issues`, and `/knowledge-governance/policies`.
+- The frontend now includes a Knowledge Governance page for quality overview, issue scanning, issue handling, policy CRUD, and per-knowledge-base quality scores.
+
+## Latest Ops Monitor Update
+
+- `V016__ops_monitor_alert_center.sql` creates `ops_alert_rule`, `ops_alert_event`, `ops_health_check`, and `ops_notify_channel`, with Chinese comments for every table and column.
+- The migration seeds station and Webhook notification channels, seven health checks, five default alert rules, and `ops:monitor:view` / `ops:monitor:manage` permissions.
+- The backend exposes `/ops-monitor/overview`, `/ops-monitor/health`, `/ops-monitor/inspect`, `/ops-monitor/rules`, `/ops-monitor/events`, `/ops-monitor/checks`, and `/ops-monitor/channels`.
+- The frontend now includes an Ops Monitor page for overview cards, health matrix, alert event handling, alert-rule CRUD, health checks, and notification channels.
 
 ## Milvus Mapping
 

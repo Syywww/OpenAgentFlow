@@ -9,9 +9,14 @@ RUN mvn -q -DskipTests package
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 ENV TZ=Asia/Shanghai
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/./urandom"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
+    && groupadd -r openagentflow \
+    && useradd -r -g openagentflow -d /app -s /usr/sbin/nologin openagentflow \
+    && chown -R openagentflow:openagentflow /app \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /workspace/target/openagentflow-backend-0.1.0-SNAPSHOT.jar /app/openagentflow-backend.jar
+COPY --from=build --chown=openagentflow:openagentflow /workspace/target/openagentflow-backend-0.1.0-SNAPSHOT.jar /app/openagentflow-backend.jar
+USER openagentflow
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "/app/openagentflow-backend.jar"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/openagentflow-backend.jar"]

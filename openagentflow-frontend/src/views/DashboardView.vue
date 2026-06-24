@@ -1,14 +1,19 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Bot, Braces, FileUp, GitBranch, Plug, TestTube2 } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import PaginationBar from '../components/PaginationBar.vue';
 import StatCard from '../components/StatCard.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { dashboardMetrics, runLogs } from '../data/mock';
 import { useOverlay } from '../composables/useOverlay';
+import { usePagination } from '../composables/usePagination';
 
 const router = useRouter();
 const { showModal } = useOverlay();
+const recentRunRows = ref(runLogs);
+const { currentPage: recentRunPage, pagedItems: pagedRecentRuns } = usePagination(recentRunRows);
 
 const quickActions = [
   { title: '创建智能体', desc: '配置 Prompt、模型参数和能力边界', icon: Bot, action: () => showModal('new-agent') },
@@ -56,7 +61,7 @@ const quickActions = [
           <tr><th>运行 ID</th><th>类型</th><th>名称</th><th>状态</th><th>耗时</th><th>Tokens</th></tr>
         </thead>
         <tbody>
-          <tr v-for="run in runLogs.slice(0, 5)" :key="run.id" @click="router.push(`/logs/${run.id}`)">
+          <tr v-for="run in pagedRecentRuns" :key="run.id" @click="router.push(`/logs/${run.id}`)">
             <td class="mono">{{ run.id }}</td>
             <td>{{ run.type }}</td>
             <td>{{ run.name }}</td>
@@ -66,6 +71,7 @@ const quickActions = [
           </tr>
         </tbody>
       </table>
+      <PaginationBar v-model:page="recentRunPage" :total="recentRunRows.length" />
     </div>
 
     <div class="section-block">

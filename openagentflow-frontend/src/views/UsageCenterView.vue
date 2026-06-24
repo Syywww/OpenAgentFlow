@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { Download, Pencil, RefreshCw, Save, Search, Trash2 } from 'lucide-vue-next';
+import { Download, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import PaginationBar from '../components/PaginationBar.vue';
 import StatCard from '../components/StatCard.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import { usePagination } from '../composables/usePagination';
 import { fetchAgents, type AgentSummary } from '../api/agents';
 import { fetchModelProviders, type ModelConfigSummary, type ModelProviderSummary } from '../api/models';
 import {
@@ -35,6 +37,10 @@ const providers = ref<ModelProviderSummary[]>([]);
 const dimension = ref('model');
 const dimensionRows = ref<BreakdownItem[]>([]);
 const totalCalls = ref(0);
+const callPage = ref(1);
+const activePanel = ref<'trend' | 'breakdown' | 'calls' | 'quotas'>('trend');
+const quotaModalOpen = ref(false);
+const { currentPage: quotaPage, pagedItems: pagedQuotas } = usePagination(quotas);
 
 const filters = reactive({
   startDate: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
@@ -79,7 +85,7 @@ async function loadData() {
     const params = buildParams();
     const [consoleResult, callsResult, quotaResult, agentResult, providerResult, breakdownResult] = await Promise.all([
       fetchUsageConsole(params),
-      fetchUsageCalls({ ...params, pageNo: 1, pageSize: 30 }),
+      fetchUsageCalls({ ...params, pageNo: callPage.value, pageSize: 10 }),
       fetchUsageQuotas(),
       fetchAgents(),
       fetchModelProviders(),
@@ -97,6 +103,16 @@ async function loadData() {
   } finally {
     loading.value = false;
   }
+}
+
+async function searchUsage() {
+  callPage.value = 1;
+  await loadData();
+}
+
+async function changeCallPage(page: number) {
+  callPage.value = page;
+  await loadData();
 }
 
 async function reloadBreakdown() {
@@ -125,6 +141,16 @@ function resetQuotaForm() {
   quotaForm.costLimit = undefined;
 }
 
+function openCreateQuotaModal() {
+  resetQuotaForm();
+  quotaModalOpen.value = true;
+}
+
+function closeQuotaModal() {
+  quotaModalOpen.value = false;
+  resetQuotaForm();
+}
+
 function editQuota(quota: QuotaSummary) {
   quotaForm.id = quota.id;
   quotaForm.subjectType = quota.subjectType;
@@ -134,6 +160,7 @@ function editQuota(quota: QuotaSummary) {
   quotaForm.quotaPeriod = quota.quotaPeriod || 'daily';
   quotaForm.tokenLimit = quota.tokenLimit;
   quotaForm.costLimit = quota.costLimit;
+  quotaModalOpen.value = true;
 }
 
 function buildQuotaPayload(): QuotaRequest {
@@ -157,7 +184,7 @@ async function saveQuota() {
     } else {
       await createUsageQuota(buildQuotaPayload());
     }
-    resetQuotaForm();
+    closeQuotaModal();
     quotas.value = await fetchUsageQuotas();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '配额保存失败';
@@ -269,8 +296,8 @@ function riskTone(quota: QuotaSummary) {
       <option value="all">Agent 全部</option>
       <option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.agentName }}</option>
     </select>
-    <input v-model="filters.keyword" placeholder="搜索 Run ID、输入或输出内容" @keydown.enter="loadData" />
-    <button class="primary-button" type="button" :disabled="loading" @click="loadData"><Search :size="16" /> 查询</button>
+    <input v-model="filters.keyword" placeholder="搜索 Run ID、输入或输出内容" @keydown.enter="searchUsage" />
+    <button class="primary-button" type="button" :disabled="loading" @click="searchUsage"><Search :size="16" /> 查询</button>
   </section>
 
   <section class="metric-grid">
@@ -280,8 +307,31 @@ function riskTone(quota: QuotaSummary) {
     <StatCard label="配额风险" :value="String(consoleData?.overview.quotaRiskCount ?? 0)" :detail="`${consoleData?.overview.quotaRuleCount ?? 0} 条配额规则`" icon="Gauge" tone="warning" />
   </section>
 
-  <section class="dashboard-columns">
-    <div class="section-block">
+  <section class="governance-card-tabs">
+    <button class="governance-tab-card" :class="{ active: activePanel === 'trend' }" type="button" @click="activePanel = 'trend'">
+      <span>成本趋势</span>
+      <b>{{ (consoleData?.daily || []).length }}</b>
+      <small>{{ filters.startDate }} ~ {{ filters.endDate }}</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'breakdown' }" type="button" @click="activePanel = 'breakdown'">
+      <span>维度拆分</span>
+      <b>{{ dimensionRows.length }}</b>
+      <small>模型、服务商、Agent、用户等维度</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'calls' }" type="button" @click="activePanel = 'calls'">
+      <span>调用成本明细</span>
+      <b>{{ totalCalls }}</b>
+      <small>可跳转 Trace 查看调用链路</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'quotas' }" type="button" @click="activePanel = 'quotas'">
+      <span>配额规则</span>
+      <b>{{ quotas.length }}</b>
+      <small>调用前预估拦截和用量累计</small>
+    </button>
+  </section>
+
+  <section class="section-block usage-panel">
+    <template v-if="activePanel === 'trend'">
       <div class="section-title">
         <h2>成本趋势</h2>
         <span>{{ filters.startDate }} ~ {{ filters.endDate }}</span>
@@ -293,9 +343,9 @@ function riskTone(quota: QuotaSummary) {
         </div>
         <div v-if="!loading && (consoleData?.daily || []).length === 0" class="empty-state">暂无成本趋势数据</div>
       </div>
-    </div>
+    </template>
 
-    <div class="section-block">
+    <template v-else-if="activePanel === 'breakdown'">
       <div class="section-title">
         <h2>维度拆分</h2>
         <select v-model="dimension" @change="reloadBreakdown">
@@ -314,42 +364,49 @@ function riskTone(quota: QuotaSummary) {
         </div>
         <div v-if="dimensionRows.length === 0" class="empty-state">暂无维度统计数据</div>
       </div>
-    </div>
-  </section>
+    </template>
 
-  <section class="section-block">
-    <div class="section-title">
-      <h2>调用成本明细</h2>
-      <span>{{ totalCalls }} 条</span>
-    </div>
-    <div v-if="loading" class="empty-state">正在加载用量明细...</div>
-    <table v-else class="data-table">
-      <thead>
-        <tr><th>运行</th><th>模型</th><th>Agent / 工作流</th><th>Token</th><th>成本</th><th>耗时</th><th>状态</th><th>时间</th></tr>
-      </thead>
-      <tbody>
-        <tr v-for="call in calls" :key="call.id" @click="router.push(`/logs/${call.runId}`)">
-          <td class="mono">{{ call.runNo || call.runId }}</td>
-          <td><b>{{ call.modelName || '-' }}</b><span class="muted block">{{ call.providerName || '-' }}</span></td>
-          <td>{{ call.agentName || call.workflowName || '-' }}</td>
-          <td>{{ call.promptTokens }} + {{ call.completionTokens }} = {{ call.totalTokens }}</td>
-          <td>{{ formatMoney(call.costAmount) }}</td>
-          <td>{{ formatMs(call.latencyMs) }}</td>
-          <td><StatusBadge :label="call.success ? '成功' : '失败'" :tone="call.success ? 'success' : 'danger'" /></td>
-          <td>{{ call.createdAt || '-' }}</td>
-        </tr>
-        <tr v-if="calls.length === 0"><td colspan="8" class="empty-state">暂无调用明细</td></tr>
-      </tbody>
-    </table>
-  </section>
+    <template v-else-if="activePanel === 'calls'">
+      <div class="section-title">
+        <h2>调用成本明细</h2>
+        <span>{{ totalCalls }} 条</span>
+      </div>
+      <div v-if="loading" class="empty-state">正在加载用量明细...</div>
+      <table v-else class="data-table">
+        <thead>
+          <tr><th>运行</th><th>模型</th><th>Agent / 工作流</th><th>Token</th><th>成本</th><th>耗时</th><th>状态</th><th>时间</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="call in calls" :key="call.id" @click="router.push(`/logs/${call.runId}`)">
+            <td class="mono">{{ call.runNo || call.runId }}</td>
+            <td><b>{{ call.modelName || '-' }}</b><span class="muted block">{{ call.providerName || '-' }}</span></td>
+            <td>{{ call.agentName || call.workflowName || '-' }}</td>
+            <td>{{ call.promptTokens }} + {{ call.completionTokens }} = {{ call.totalTokens }}</td>
+            <td>{{ formatMoney(call.costAmount) }}</td>
+            <td>{{ formatMs(call.latencyMs) }}</td>
+            <td><StatusBadge :label="call.success ? '成功' : '失败'" :tone="call.success ? 'success' : 'danger'" /></td>
+            <td>{{ call.createdAt || '-' }}</td>
+          </tr>
+          <tr v-if="calls.length === 0"><td colspan="8" class="empty-state">暂无调用明细</td></tr>
+        </tbody>
+      </table>
+      <PaginationBar v-if="totalCalls > 0" :page="callPage" :total="totalCalls" @update:page="changeCallPage" />
+    </template>
 
-  <section class="dashboard-columns">
-    <div class="section-block">
-      <div class="section-title"><h2>配额规则</h2><span>调用前预估拦截，调用后累计真实用量</span></div>
+    <template v-else>
+      <div class="section-title">
+        <h2>配额规则</h2>
+        <div class="title-actions">
+          <span>调用前预估拦截，调用后累计真实用量</span>
+          <button class="primary-button slim" type="button" @click="openCreateQuotaModal">
+            <Plus :size="14" /> 新增配额
+          </button>
+        </div>
+      </div>
       <table class="data-table">
         <thead><tr><th>规则</th><th>范围</th><th>Token</th><th>成本</th><th>风险</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="quota in quotas" :key="quota.id">
+          <tr v-for="quota in pagedQuotas" :key="quota.id">
             <td><b>{{ quotaLabel(quota) }}</b><span class="muted block">重置 {{ quota.resetAt || '-' }}</span></td>
             <td>{{ providerName(quota.providerId) }}<span class="muted block">{{ modelName(quota.modelId) }}</span></td>
             <td>{{ formatNumber(quota.tokenUsed) }} / {{ quota.tokenLimit ? formatNumber(quota.tokenLimit) : '不限' }}</td>
@@ -363,10 +420,19 @@ function riskTone(quota: QuotaSummary) {
           <tr v-if="quotas.length === 0"><td colspan="6" class="empty-state">暂无配额规则</td></tr>
         </tbody>
       </table>
-    </div>
+      <PaginationBar v-model:page="quotaPage" :total="quotas.length" />
+    </template>
+  </section>
 
-    <div class="section-block">
-      <div class="section-title"><h2>{{ quotaForm.id ? '编辑配额' : '新增配额' }}</h2><span>超过配额会阻断模型调用</span></div>
+  <div v-if="quotaModalOpen" class="overlay-backdrop" @click.self="closeQuotaModal">
+    <section class="modal-panel usage-quota-modal">
+      <header class="overlay-header">
+        <div>
+          <h2>{{ quotaForm.id ? '编辑配额' : '新增配额' }}</h2>
+          <p class="muted">超过配额会阻断模型调用，可按全局、用户、角色、Agent、服务商或模型限制。</p>
+        </div>
+        <button class="icon-button" type="button" title="关闭" @click="closeQuotaModal"><X :size="18" /></button>
+      </header>
       <div class="settings-form">
         <label>主体类型
           <select v-model="quotaForm.subjectType">
@@ -401,9 +467,9 @@ function riskTone(quota: QuotaSummary) {
         <label>成本上限<input v-model.number="quotaForm.costLimit" type="number" min="0" step="0.0001" /></label>
       </div>
       <div class="toolbar compact">
+        <button class="secondary-button" type="button" @click="closeQuotaModal">取消</button>
         <button class="primary-button" type="button" :disabled="loading" @click="saveQuota"><Save :size="16" /> 保存配额</button>
-        <button class="secondary-button" type="button" @click="resetQuotaForm">重置</button>
       </div>
-    </div>
-  </section>
+    </section>
+  </div>
 </template>

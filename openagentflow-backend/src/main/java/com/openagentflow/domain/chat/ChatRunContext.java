@@ -4,6 +4,7 @@ import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.entity.ModelProviderEntity;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.model.ModelRouteDecision;
 
 import java.util.List;
 
@@ -35,6 +36,9 @@ public class ChatRunContext {
 
     /** 当前 Agent 可用的工具定义。 */
     private List<ToolDefinitionForModel> tools;
+
+    /** 模型网关路由决策。 */
+    private ModelRouteDecision routeDecision;
 
     public AgentEntity getAgent() {
         return agent;
@@ -98,5 +102,13 @@ public class ChatRunContext {
 
     public void setTools(List<ToolDefinitionForModel> tools) {
         this.tools = tools;
+    }
+
+    public ModelRouteDecision getRouteDecision() {
+        return routeDecision;
+    }
+
+    public void setRouteDecision(ModelRouteDecision routeDecision) {
+        this.routeDecision = routeDecision;
     }
 }

@@ -3,10 +3,12 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Plus, RefreshCw } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { createKnowledgeBase, fetchKnowledgeBases, type KnowledgeBaseSummary } from '../../api/knowledge';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const router = useRouter();
 const { toast } = useOverlay();
@@ -24,6 +26,11 @@ const filteredKnowledgeBases = computed(() => knowledgeBases.value.filter((kb) =
 const documentTotal = computed(() => knowledgeBases.value.reduce((sum, kb) => sum + (kb.documentCount || 0), 0));
 const chunkTotal = computed(() => knowledgeBases.value.reduce((sum, kb) => sum + (kb.chunkCount || 0), 0));
 const embeddingTotal = computed(() => knowledgeBases.value.reduce((sum, kb) => sum + (kb.embeddingCount || 0), 0));
+const {
+  currentPage: knowledgePage,
+  pagedItems: pagedKnowledgeBases,
+  resetPage: resetKnowledgePage,
+} = usePagination(filteredKnowledgeBases);
 
 onMounted(() => {
   void loadKnowledgeBases();
@@ -76,12 +83,12 @@ async function handleCreate() {
   </section>
 
   <section class="filter-row">
-    <select v-model="statusFilter">
+    <select v-model="statusFilter" @change="resetKnowledgePage">
       <option value="">全部状态</option>
       <option value="active">启用</option>
       <option value="disabled">停用</option>
     </select>
-    <input v-model="keyword" placeholder="搜索知识库名称、编码或描述" />
+    <input v-model="keyword" placeholder="搜索知识库名称、编码或描述" @input="resetKnowledgePage" />
   </section>
 
   <section class="section-block">
@@ -98,7 +105,7 @@ async function handleCreate() {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="kb in filteredKnowledgeBases" :key="kb.id" @click="router.push(`/knowledge/${kb.id}`)">
+        <tr v-for="kb in pagedKnowledgeBases" :key="kb.id" @click="router.push(`/knowledge/${kb.id}`)">
           <td><b>{{ kb.kbName }}</b><br /><span class="mono">{{ kb.kbCode }}</span></td>
           <td>{{ kb.description || '-' }}</td>
           <td>{{ kb.documentCount }}</td>
@@ -109,6 +116,7 @@ async function handleCreate() {
         </tr>
       </tbody>
     </table>
+    <PaginationBar v-model:page="knowledgePage" :total="filteredKnowledgeBases.length" />
     <div v-if="!loading && filteredKnowledgeBases.length === 0" class="empty-state">暂无知识库</div>
   </section>
 </template>

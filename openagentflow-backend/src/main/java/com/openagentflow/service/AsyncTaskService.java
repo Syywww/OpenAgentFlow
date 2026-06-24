@@ -114,7 +114,8 @@ public class AsyncTaskService {
      */
     public PageResult<AsyncTaskDtos.Summary> listTasks(AsyncTaskDtos.Query query) {
         int pageNo = query.getPageNo() == null ? 1 : Math.max(1, query.getPageNo());
-        int pageSize = query.getPageSize() == null ? 20 : Math.max(1, Math.min(100, query.getPageSize()));
+        // 未指定每页大小时统一按产品规范返回 10 条，避免异步任务列表一次加载过多。
+        int pageSize = query.getPageSize() == null ? 10 : Math.max(1, Math.min(100, query.getPageSize()));
         LambdaQueryWrapper<AsyncTaskEntity> wrapper = new LambdaQueryWrapper<>();
         if (StringUtils.hasText(query.getStatus()) && !"all".equalsIgnoreCase(query.getStatus())) {
             wrapper.eq(AsyncTaskEntity::getStatus, query.getStatus());

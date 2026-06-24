@@ -8,6 +8,7 @@ import com.openagentflow.domain.chat.ChatRunContext;
 import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.model.ModelRouteDecision;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.domain.workflow.WorkflowDtos;
 import com.openagentflow.entity.AgentEntity;
@@ -47,6 +48,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -112,6 +115,9 @@ public class WorkflowExecutionService {
     /** 成本与用量服务。 */
     private final UsageCostService usageCostService;
 
+    /** 模型网关服务。 */
+    private final ModelGatewayService modelGatewayService;
+
     /** JSON 工具。 */
     private final ObjectMapper objectMapper;
 
@@ -132,6 +138,7 @@ public class WorkflowExecutionService {
                                     KnowledgeBaseService knowledgeBaseService,
                                     ToolService toolService,
                                     UsageCostService usageCostService,
+                                    ModelGatewayService modelGatewayService,
                                     ObjectMapper objectMapper) {
         this.workflowService = workflowService;
         this.workflowVersionMapper = workflowVersionMapper;
@@ -150,6 +157,7 @@ public class WorkflowExecutionService {
         this.knowledgeBaseService = knowledgeBaseService;
         this.toolService = toolService;
         this.usageCostService = usageCostService;
+        this.modelGatewayService = modelGatewayService;
         this.objectMapper = objectMapper;
     }
 
@@ -285,13 +293,15 @@ public class WorkflowExecutionService {
                                            RuntimeTraceStepEntity traceStep,
                                            Map<String, Object> context,
                                            Map<String, Object> config) {
-        ModelConfigEntity model = resolveModel(config, agent);
-        ModelProviderEntity provider = modelProviderService.requireProviderByModel(model);
+        ModelRouteDecision routeDecision = modelGatewayService.resolveAgentChatRoute(stringValue(config.get("modelId"), ""), agent);
+        ModelConfigEntity model = routeDecision.getModel();
+        ModelProviderEntity provider = routeDecision.getProvider();
         ChatRunContext chatContext = new ChatRunContext();
         chatContext.setAgent(agent);
         chatContext.setModel(model);
         chatContext.setProvider(provider);
-        chatContext.setApiKey(modelProviderService.findApiKeyValue(provider.getId()));
+        chatContext.setApiKey(routeDecision.getApiKey());
+        chatContext.setRouteDecision(routeDecision);
         chatContext.setSources(sourcesFromContext(context));
         chatContext.setMessages(buildMessages(agent, config, context));
         traceStep.setModelId(model.getId());
@@ -299,9 +309,11 @@ public class WorkflowExecutionService {
 
         Double temperature = numberValue(config.get("temperature"), 0.3D);
         Integer maxTokens = numberValue(config.get("maxTokens"), model.getMaxOutputTokens() == null ? 2048D : model.getMaxOutputTokens().doubleValue()).intValue();
-        usageCostService.assertWithinQuota(runtimeRun.getUserId(), runtimeRun.getAgentId(), provider, model, chatContext.getMessages(), maxTokens);
-        LlmCallResult result = openAiCompatibleClient.complete(chatContext, temperature, maxTokens);
-        BigDecimal cost = usageCostService.calculateCost(model, nullToZero(result.getPromptTokens()), nullToZero(result.getCompletionTokens()));
+        LlmCallResult result = invokeWithGatewayFallback(chatContext,
+                current -> openAiCompatibleClient.complete(current, temperature, maxTokens),
+                current -> usageCostService.assertWithinQuota(runtimeRun.getUserId(), runtimeRun.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), maxTokens));
+        traceStep.setModelId(chatContext.getModel().getId());
+        BigDecimal cost = usageCostService.calculateCost(chatContext.getModel(), nullToZero(result.getPromptTokens()), nullToZero(result.getCompletionTokens()));
         traceStep.setCostAmount(cost);
         saveLlmCall(runtimeRun, traceStep, chatContext, result, true, null, cost);
         context.put("answer", safeText(result.getContent()));
@@ -603,6 +615,35 @@ public class WorkflowExecutionService {
     /**
      * 保存 LLM 调用日志。
      */
+    /**
+     * 通过模型网关执行工作流 LLM 调用，并在允许时自动切换候选模型。
+     *
+     * @param context 聊天运行上下文
+     * @param invoker 实际模型调用函数
+     * @param precheck 调用前预检查
+     * @return LLM 调用结果
+     */
+    private LlmCallResult invokeWithGatewayFallback(ChatRunContext context,
+                                                    Function<ChatRunContext, LlmCallResult> invoker,
+                                                    Consumer<ChatRunContext> precheck) {
+        try {
+            precheck.accept(context);
+            return invoker.apply(context);
+        } catch (Exception firstException) {
+            ModelRouteDecision fallback = modelGatewayService.nextFallbackDecision(context.getRouteDecision(), firstException.getMessage());
+            if (fallback == null) {
+                throw firstException;
+            }
+            // 回退后用新的模型上下文继续执行，后续日志会记录实际模型。
+            context.setRouteDecision(fallback);
+            context.setModel(fallback.getModel());
+            context.setProvider(fallback.getProvider());
+            context.setApiKey(fallback.getApiKey());
+            precheck.accept(context);
+            return invoker.apply(context);
+        }
+    }
+
     private void saveLlmCall(RuntimeRunEntity run,
                              RuntimeTraceStepEntity step,
                              ChatRunContext context,
@@ -616,6 +657,12 @@ public class WorkflowExecutionService {
         call.setStepId(step.getId());
         call.setProviderId(context.getProvider().getId());
         call.setModelId(context.getModel().getId());
+        if (context.getRouteDecision() != null) {
+            call.setRoutePolicyId(context.getRouteDecision().getRoutePolicyId());
+            call.setGatewaySceneType(context.getRouteDecision().getSceneType());
+            call.setRouteDecision(modelGatewayService.toDecisionJson(context.getRouteDecision()));
+            call.setFallbackUsed(Boolean.TRUE.equals(context.getRouteDecision().getFallbackUsed()));
+        }
         call.setRequestMessages(toJson(context.getMessages()));
         call.setResponseMessage(toJson(Map.of("content", safeText(result.getContent()))));
         call.setStream(false);

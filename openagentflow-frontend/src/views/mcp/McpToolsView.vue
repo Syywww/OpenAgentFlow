@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, Edit3, PlayCircle, RefreshCw } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {
@@ -14,6 +15,7 @@ import {
 } from '../../api/mcp';
 import { fetchTools, testTool, type ToolDefinitionSummary, type ToolExecutionResult } from '../../api/tools';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const route = useRoute();
 const router = useRouter();
@@ -31,6 +33,9 @@ const selectedServer = computed(() => servers.value.find((server) => server.id =
 const serverTools = computed(() => tools.value.filter((tool) => tool.toolType === 'MCP' && tool.mcpServerId === selectedServerId.value));
 const enabledToolCount = computed(() => serverTools.value.filter((tool) => tool.enabled).length);
 const highRiskCount = computed(() => serverTools.value.filter((tool) => tool.riskLevel === 'high').length);
+const { currentPage: serverPage, pagedItems: pagedServers } = usePagination(servers);
+const { currentPage: toolPage, pagedItems: pagedServerTools } = usePagination(serverTools);
+const { currentPage: capabilityPage, pagedItems: pagedCapabilities } = usePagination(capabilities);
 
 onMounted(async () => {
   await loadData();
@@ -105,7 +110,7 @@ function formatEndpoint(server?: McpServerSummary) {
   <section class="mcp-tools-layout">
     <aside class="document-list">
       <button
-        v-for="server in servers"
+        v-for="server in pagedServers"
         :key="server.id"
         class="document-item"
         :class="{ active: selectedServerId === server.id }"
@@ -116,6 +121,7 @@ function formatEndpoint(server?: McpServerSummary) {
         <span class="mono">{{ server.serverCode }}</span>
         <StatusBadge :label="server.status" :tone="server.status === 'running' ? 'success' : server.status === 'error' ? 'danger' : 'warning'" />
       </button>
+      <PaginationBar v-model:page="serverPage" :total="servers.length" />
     </aside>
 
     <div class="section-block">
@@ -137,7 +143,7 @@ function formatEndpoint(server?: McpServerSummary) {
           <tr><th>工具名称</th><th>MCP 名称</th><th>Code</th><th>风险</th><th>状态</th><th>调用</th><th>操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="tool in serverTools" :key="tool.id">
+          <tr v-for="tool in pagedServerTools" :key="tool.id">
             <td><b>{{ tool.toolName }}</b></td>
             <td class="mono">{{ tool.mcpToolName }}</td>
             <td class="mono">{{ tool.toolCode }}</td>
@@ -153,6 +159,7 @@ function formatEndpoint(server?: McpServerSummary) {
           </tr>
         </tbody>
       </table>
+      <PaginationBar v-if="serverTools.length > 0" v-model:page="toolPage" :total="serverTools.length" />
 
       <div class="section-title"><h2>发现能力</h2><span>{{ capabilities.length }} 个</span></div>
       <table class="data-table">
@@ -160,7 +167,7 @@ function formatEndpoint(server?: McpServerSummary) {
           <tr><th>类型</th><th>名称</th><th>描述</th><th>风险</th><th>状态</th></tr>
         </thead>
         <tbody>
-          <tr v-for="capability in capabilities" :key="capability.id">
+          <tr v-for="capability in pagedCapabilities" :key="capability.id">
             <td>{{ capability.capabilityType }}</td>
             <td class="mono">{{ capability.capabilityName }}</td>
             <td>{{ capability.description || '-' }}</td>
@@ -169,6 +176,7 @@ function formatEndpoint(server?: McpServerSummary) {
           </tr>
         </tbody>
       </table>
+      <PaginationBar v-model:page="capabilityPage" :total="capabilities.length" />
 
       <div v-if="testResult" class="process-panel">
         <div class="section-title"><h2>测试结果</h2><StatusBadge :label="testResult.success ? '成功' : '失败'" /></div>

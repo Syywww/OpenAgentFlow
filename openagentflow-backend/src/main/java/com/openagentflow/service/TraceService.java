@@ -106,7 +106,8 @@ public class TraceService {
      */
     public PageResult<RunSummary> listRuns(Integer pageNo, Integer pageSize, String status, String agentId, String keyword) {
         int current = pageNo == null || pageNo < 1 ? 1 : pageNo;
-        int size = pageSize == null || pageSize < 1 ? 20 : Math.min(pageSize, 100);
+        // 未指定每页大小时统一按产品规范返回 10 条，避免不同入口分页数量不一致。
+        int size = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
         LambdaQueryWrapper<RuntimeRunEntity> wrapper = new LambdaQueryWrapper<RuntimeRunEntity>()
                 .orderByDesc(RuntimeRunEntity::getStartedAt);
         if (StringUtils.hasText(status) && !"all".equalsIgnoreCase(status)) {

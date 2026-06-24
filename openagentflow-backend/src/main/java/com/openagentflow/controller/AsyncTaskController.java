@@ -60,8 +60,8 @@ public class AsyncTaskController {
                                                                     @RequestParam(required = false) String taskType,
                                                                     @RequestParam(required = false) String workspaceId,
                                                                     @RequestParam(required = false) String keyword,
-                                                                    @RequestParam(required = false) Integer pageNo,
-                                                                    @RequestParam(required = false) Integer pageSize) {
+                                                                    @RequestParam(defaultValue = "1") Integer pageNo,
+                                                                    @RequestParam(defaultValue = "10") Integer pageSize) {
         AsyncTaskDtos.Query query = new AsyncTaskDtos.Query();
         query.setStatus(status);
         query.setTaskType(taskType);
@@ -113,4 +113,3 @@ public class AsyncTaskController {
         return ApiResponse.ok(asyncTaskService.getTask(id));
     }
 }
-

@@ -151,6 +151,9 @@ public class OpenAgentFlowProperties {
         /** JWT 有效分钟数。 */
         private Long jwtExpireMinutes = 1440L;
 
+        /** CORS 允许来源，多个域名用英文逗号分隔。 */
+        private String allowedOrigins = "http://localhost:5173,http://127.0.0.1:5173";
+
         public Boolean getAuthEnabled() {
             return authEnabled;
         }
@@ -173,6 +176,14 @@ public class OpenAgentFlowProperties {
 
         public void setJwtExpireMinutes(Long jwtExpireMinutes) {
             this.jwtExpireMinutes = jwtExpireMinutes;
+        }
+
+        public String getAllowedOrigins() {
+            return allowedOrigins;
+        }
+
+        public void setAllowedOrigins(String allowedOrigins) {
+            this.allowedOrigins = allowedOrigins;
         }
     }
 

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Download, RefreshCw, Search } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { fetchAgents, type AgentSummary } from '../../api/agents';
@@ -16,6 +17,8 @@ const loading = ref(false);
 const statusFilter = ref('all');
 const agentFilter = ref('all');
 const keyword = ref('');
+const runPage = ref(1);
+const runTotal = ref(0);
 
 const successRate = computed(() => {
   if (!stats.value || stats.value.totalRuns === 0) return '100%';
@@ -30,16 +33,27 @@ async function loadData() {
   loading.value = true;
   try {
     const [runResult, statsResult, agentResult] = await Promise.all([
-      fetchRuns({ pageNo: 1, pageSize: 50, status: statusFilter.value, agentId: agentFilter.value, keyword: keyword.value }),
+      fetchRuns({ pageNo: runPage.value, pageSize: 10, status: statusFilter.value, agentId: agentFilter.value, keyword: keyword.value }),
       fetchRunStats(),
       fetchAgents(),
     ]);
     runs.value = runResult.records;
+    runTotal.value = runResult.total;
     stats.value = statsResult;
     agents.value = agentResult;
   } finally {
     loading.value = false;
   }
+}
+
+async function searchRuns() {
+  runPage.value = 1;
+  await loadData();
+}
+
+async function changeRunPage(page: number) {
+  runPage.value = page;
+  await loadData();
 }
 
 function formatMs(value?: number) {
@@ -75,8 +89,8 @@ function formatCost(value?: number) {
       <option value="FAILED">失败</option>
       <option value="RUNNING">运行中</option>
     </select>
-    <input v-model="keyword" placeholder="搜索 Run ID、输入或输出内容" @keydown.enter="loadData" />
-    <button class="primary-button" type="button" @click="loadData"><Search :size="16" /> 搜索</button>
+    <input v-model="keyword" placeholder="搜索 Run ID、输入或输出内容" @keydown.enter="searchRuns" />
+    <button class="primary-button" type="button" @click="searchRuns"><Search :size="16" /> 搜索</button>
   </section>
 
   <section class="metric-grid">
@@ -108,5 +122,6 @@ function formatCost(value?: number) {
         </tr>
       </tbody>
     </table>
+    <PaginationBar v-if="runTotal > 0" :page="runPage" :total="runTotal" @update:page="changeRunPage" />
   </section>
 </template>

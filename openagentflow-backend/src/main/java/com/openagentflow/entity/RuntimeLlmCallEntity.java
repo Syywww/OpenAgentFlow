@@ -33,6 +33,22 @@ public class RuntimeLlmCallEntity {
     @TableField("model_id")
     private String modelId;
 
+    /** 模型路由策略ID。 */
+    @TableField("route_policy_id")
+    private String routePolicyId;
+
+    /** 模型网关场景类型。 */
+    @TableField("gateway_scene_type")
+    private String gatewaySceneType;
+
+    /** 模型网关路由决策快照。 */
+    @TableField("route_decision")
+    private String routeDecision;
+
+    /** 是否使用模型回退。 */
+    @TableField("fallback_used")
+    private Boolean fallbackUsed;
+
     /** 请求MESSAGES。 */
     @TableField("request_messages")
     private String requestMessages;
@@ -115,6 +131,38 @@ public class RuntimeLlmCallEntity {
 
     public void setModelId(String modelId) {
         this.modelId = modelId;
+    }
+
+    public String getRoutePolicyId() {
+        return routePolicyId;
+    }
+
+    public void setRoutePolicyId(String routePolicyId) {
+        this.routePolicyId = routePolicyId;
+    }
+
+    public String getGatewaySceneType() {
+        return gatewaySceneType;
+    }
+
+    public void setGatewaySceneType(String gatewaySceneType) {
+        this.gatewaySceneType = gatewaySceneType;
+    }
+
+    public String getRouteDecision() {
+        return routeDecision;
+    }
+
+    public void setRouteDecision(String routeDecision) {
+        this.routeDecision = routeDecision;
+    }
+
+    public Boolean getFallbackUsed() {
+        return fallbackUsed;
+    }
+
+    public void setFallbackUsed(Boolean fallbackUsed) {
+        this.fallbackUsed = fallbackUsed;
     }
 
     public String getRequestMessages() {

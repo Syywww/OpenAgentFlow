@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Copy, Eye, Rocket, Save, TestTube2, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {
   copyAgent,
@@ -37,6 +38,7 @@ import {
 } from '../../api/workflows';
 import { fetchChatModels, type ModelConfigSummary } from '../../api/models';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const route = useRoute();
 const router = useRouter();
@@ -55,6 +57,9 @@ const selectedToolIds = ref<string[]>([]);
 const workflows = ref<WorkflowSummary[]>([]);
 const workflowBindings = ref<AgentWorkflowBindingSummary[]>([]);
 const selectedWorkflowIds = ref<string[]>([]);
+const { currentPage: kbPage, pagedItems: pagedKnowledgeBases } = usePagination(knowledgeBases);
+const { currentPage: toolPage, pagedItems: pagedTools } = usePagination(tools);
+const { currentPage: workflowPage, pagedItems: pagedWorkflows } = usePagination(workflows);
 
 const form = reactive({
   agentCode: '',
@@ -291,7 +296,7 @@ function statusText(status: string) {
       <div class="section-title"><h2>已绑定知识库</h2><span>{{ selectedKnowledgeBaseIds.length }} 个</span></div>
       <div v-if="knowledgeBases.length === 0" class="empty-state">暂无知识库，请先在知识库模块创建并上传文档</div>
       <template v-else>
-        <div v-for="kb in knowledgeBases" :key="kb.id" class="list-row">
+        <div v-for="kb in pagedKnowledgeBases" :key="kb.id" class="list-row">
           <label class="checkbox-row">
             <input v-model="selectedKnowledgeBaseIds" type="checkbox" :value="kb.id" />
             <b>{{ kb.kbName }}</b>
@@ -299,6 +304,7 @@ function statusText(status: string) {
           <span>{{ kb.documentCount }} 文档 · {{ kb.chunkCount }} 分片</span>
           <StatusBadge :label="selectedKnowledgeBaseIds.includes(kb.id) ? '已启用' : '未绑定'" />
         </div>
+        <PaginationBar v-model:page="kbPage" :total="knowledgeBases.length" />
       </template>
     </div>
 
@@ -306,7 +312,7 @@ function statusText(status: string) {
       <div class="section-title"><h2>已绑定工具</h2><span>{{ selectedToolIds.length }} 个</span></div>
       <div v-if="tools.length === 0" class="empty-state">暂无工具，请先在工具中心创建 REST API、Webhook 或数据库查询工具</div>
       <template v-else>
-        <div v-for="tool in tools" :key="tool.id" class="list-row">
+        <div v-for="tool in pagedTools" :key="tool.id" class="list-row">
           <label class="checkbox-row">
             <input v-model="selectedToolIds" type="checkbox" :value="tool.id" />
             <b>{{ tool.toolName }}</b>
@@ -314,6 +320,7 @@ function statusText(status: string) {
           <span class="mono">{{ tool.toolCode }}</span>
           <StatusBadge :label="selectedToolIds.includes(tool.id) ? '已启用' : tool.riskLabel" :tone="tool.riskLevel === 'high' ? 'danger' : tool.riskLevel === 'medium' ? 'warning' : undefined" />
         </div>
+        <PaginationBar v-model:page="toolPage" :total="tools.length" />
       </template>
     </div>
 
@@ -321,7 +328,7 @@ function statusText(status: string) {
       <div class="section-title"><h2>已绑定工作流</h2><span>{{ selectedWorkflowIds.length }} 个</span></div>
       <div v-if="workflows.length === 0" class="empty-state">暂无工作流，请先在工作流编排中创建并发布</div>
       <template v-else>
-        <div v-for="workflow in workflows" :key="workflow.id" class="list-row">
+        <div v-for="workflow in pagedWorkflows" :key="workflow.id" class="list-row">
           <label class="checkbox-row">
             <input v-model="selectedWorkflowIds" type="checkbox" :value="workflow.id" />
             <b>{{ workflow.workflowName }}</b>
@@ -329,6 +336,7 @@ function statusText(status: string) {
           <span class="mono">{{ workflow.workflowCode }}</span>
           <StatusBadge :label="selectedWorkflowIds.includes(workflow.id) ? '调试时优先运行' : workflow.statusLabel" />
         </div>
+        <PaginationBar v-model:page="workflowPage" :total="workflows.length" />
       </template>
     </div>
   </section>

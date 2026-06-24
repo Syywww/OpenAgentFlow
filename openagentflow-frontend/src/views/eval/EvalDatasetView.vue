@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { Play, Plus, RefreshCw, Save, Trash2, Upload } from 'lucide-vue-next';
+import { Pencil, Play, Plus, RefreshCw, Save, Trash2, Upload, X } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
+import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { fetchAgents, type AgentSummary } from '../../api/agents';
 import { fetchChatModels, type ModelConfigSummary } from '../../api/models';
@@ -20,6 +22,7 @@ import {
   type EvaluationDatasetSummary,
   type EvaluationTaskSummary,
 } from '../../api/evaluations';
+import { usePagination } from '../../composables/usePagination';
 
 const router = useRouter();
 const loading = ref(false);
@@ -33,6 +36,8 @@ const agents = ref<AgentSummary[]>([]);
 const models = ref<ModelConfigSummary[]>([]);
 const compareModelIds = ref<string[]>([]);
 const replaceExisting = ref(true);
+const activePanel = ref<'datasets' | 'samples' | 'run' | 'tasks'>('datasets');
+const datasetModalOpen = ref(false);
 const sampleText = ref(`[
   {
     "question": "请回答：1+1 等于几？",
@@ -64,7 +69,11 @@ const runForm = reactive({
   maxSamples: 20,
 });
 
-const latestTasks = computed(() => tasks.value.slice(0, 8));
+const latestTasks = computed(() => tasks.value);
+const totalSamples = computed(() => datasets.value.reduce((sum, item) => sum + Number(item.sampleCount || 0), 0));
+const runningTaskCount = computed(() => tasks.value.filter((task) => task.status === 'running').length);
+const { currentPage: datasetPage, pagedItems: pagedDatasets } = usePagination(datasets);
+const { currentPage: taskPage, pagedItems: pagedLatestTasks } = usePagination(latestTasks);
 
 function statusLabel(status?: string) {
   const map: Record<string, string> = {
@@ -88,6 +97,21 @@ function resetDatasetForm() {
   datasetForm.visibility = 'private';
   datasetForm.status = 'active';
   selectedDataset.value = null;
+}
+
+function openCreateDatasetModal() {
+  resetDatasetForm();
+  datasetModalOpen.value = true;
+}
+
+async function openEditDatasetModal(id: string) {
+  await selectDataset(id);
+  datasetModalOpen.value = true;
+}
+
+function closeDatasetModal() {
+  datasetModalOpen.value = false;
+  resetDatasetForm();
 }
 
 function fillDatasetForm(dataset: EvaluationDatasetDetail | EvaluationDatasetSummary) {
@@ -147,6 +171,7 @@ async function saveDataset() {
       : await createEvaluationDataset(datasetForm);
     selectedDataset.value = saved;
     successMessage.value = '评测集已保存';
+    datasetModalOpen.value = false;
     await loadAll();
     await selectDataset(saved.id);
   } catch (error) {
@@ -249,22 +274,57 @@ onMounted(() => {
   <PageHeader title="评测集管理" description="管理测试样本，支持 Agent、模型、Prompt 与知识库策略对比评测">
     <template #actions>
       <button class="secondary-button" type="button" :disabled="loading" @click="loadAll"><RefreshCw :size="16" /> 刷新</button>
-      <button class="secondary-button" type="button" @click="resetDatasetForm"><Plus :size="16" /> 新建评测集</button>
     </template>
   </PageHeader>
 
   <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>
   <p v-if="successMessage" class="form-success">{{ successMessage }}</p>
 
-  <section class="dashboard-columns">
-    <div class="section-block">
-      <div class="section-title"><h2>评测集</h2><span>{{ datasets.length }} 个</span></div>
+  <section class="metric-grid">
+    <StatCard label="评测集" :value="String(datasets.length)" detail="当前可用基准集" icon="Database" tone="info" />
+    <StatCard label="样本数" :value="String(totalSamples)" detail="问题与标准答案" icon="Library" tone="success" />
+    <StatCard label="评测任务" :value="String(latestTasks.length)" detail="历史批量执行" icon="Activity" tone="warning" />
+    <StatCard label="运行中" :value="String(runningTaskCount)" detail="正在评测" icon="Timer" tone="neutral" />
+  </section>
+
+  <section class="governance-card-tabs">
+    <button class="governance-tab-card" :class="{ active: activePanel === 'datasets' }" type="button" @click="activePanel = 'datasets'">
+      <span>评测集</span>
+      <b>{{ datasets.length }}</b>
+      <small>样本集合、领域和状态</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'samples' }" type="button" @click="activePanel = 'samples'">
+      <span>样本导入</span>
+      <b>{{ selectedDataset?.samples.length || 0 }}</b>
+      <small>{{ selectedDataset?.datasetName || '请选择评测集' }}</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'run' }" type="button" @click="activePanel = 'run'">
+      <span>运行评测</span>
+      <b>{{ agents.length }}</b>
+      <small>Agent、模型、Prompt 和知识库策略</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'tasks' }" type="button" @click="activePanel = 'tasks'">
+      <span>最近评测任务</span>
+      <b>{{ latestTasks.length }}</b>
+      <small>查看结果和 Trace</small>
+    </button>
+  </section>
+
+  <section class="section-block evaluation-panel">
+    <template v-if="activePanel === 'datasets'">
+      <div class="section-title">
+        <h2>评测集</h2>
+        <div class="title-actions">
+          <span>{{ datasets.length }} 个</span>
+          <button class="primary-button slim" type="button" @click="openCreateDatasetModal"><Plus :size="14" /> 新建评测集</button>
+        </div>
+      </div>
       <table class="data-table rich">
         <thead>
           <tr><th>名称</th><th>样本</th><th>标签</th><th>状态</th><th>操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="item in datasets" :key="item.id">
+          <tr v-for="item in pagedDatasets" :key="item.id">
             <td>
               <b>{{ item.datasetName }}</b>
               <span class="block muted">{{ item.description || item.datasetCode }}</span>
@@ -273,36 +333,16 @@ onMounted(() => {
             <td><StatusBadge :label="item.domain || '通用'" /></td>
             <td><StatusBadge :label="statusLabel(item.status)" /></td>
             <td>
-              <button class="secondary-button slim" type="button" @click="selectDataset(item.id)">编辑</button>
+              <button class="secondary-button slim" type="button" @click="openEditDatasetModal(item.id)"><Pencil :size="14" /> 编辑</button>
             </td>
           </tr>
         </tbody>
       </table>
+      <PaginationBar v-model:page="datasetPage" :total="datasets.length" />
       <div v-if="datasets.length === 0" class="empty-state">暂无评测集</div>
-    </div>
+    </template>
 
-    <div class="section-block">
-      <div class="section-title"><h2>{{ selectedDataset ? '编辑评测集' : '新建评测集' }}</h2><span>{{ selectedDataset?.datasetCode || '自动生成编码' }}</span></div>
-      <div class="form-stack">
-        <label>评测集名称<input v-model="datasetForm.datasetName" placeholder="例如：企业知识库问答基准集" /></label>
-        <label>评测集编码<input v-model="datasetForm.datasetCode" placeholder="不填自动生成" /></label>
-        <label>业务领域<input v-model="datasetForm.domain" placeholder="客服 / 金融 / 法务" /></label>
-        <label>标签<textarea v-model="datasetForm.tags" class="code-editor compact" placeholder="可以填写 JSON 数组或逗号分隔标签" /></label>
-        <label>描述<textarea v-model="datasetForm.description" placeholder="说明评测集覆盖范围" /></label>
-        <div class="two-cols">
-          <label>可见性<select v-model="datasetForm.visibility"><option value="private">私有</option><option value="public">公开</option></select></label>
-          <label>状态<select v-model="datasetForm.status"><option value="active">启用</option><option value="disabled">停用</option></select></label>
-        </div>
-        <div class="action-row end">
-          <button class="danger-button" type="button" :disabled="!selectedDataset || loading" @click="removeDataset"><Trash2 :size="16" /> 删除</button>
-          <button class="primary-button" type="button" :disabled="loading" @click="saveDataset"><Save :size="16" /> 保存</button>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="dashboard-columns">
-    <div class="section-block">
+    <template v-else-if="activePanel === 'samples'">
       <div class="section-title"><h2>样本导入</h2><span>{{ selectedDataset?.samples.length || 0 }} 条</span></div>
       <div class="form-stack">
         <label class="checkbox-row"><input v-model="replaceExisting" type="checkbox" /> 替换已有样本</label>
@@ -311,9 +351,9 @@ onMounted(() => {
           <button class="primary-button" type="button" :disabled="!selectedDataset || loading" @click="importSamples"><Upload :size="16" /> 导入样本</button>
         </div>
       </div>
-    </div>
+    </template>
 
-    <div class="section-block">
+    <template v-else-if="activePanel === 'run'">
       <div class="section-title"><h2>运行评测</h2><span>同步批量执行</span></div>
       <div class="form-stack">
         <label>任务名称<input v-model="runForm.taskName" placeholder="例如：知识库问答回归评测" /></label>
@@ -340,27 +380,56 @@ onMounted(() => {
           <button class="primary-button" type="button" :disabled="running || !selectedDataset" @click="runTask"><Play :size="16" /> {{ running ? '评测中' : '运行评测' }}</button>
         </div>
       </div>
-    </div>
+    </template>
+
+    <template v-else>
+      <div class="section-title"><h2>最近评测任务</h2><span>{{ latestTasks.length }} 条</span></div>
+      <table class="data-table">
+        <thead>
+          <tr><th>任务</th><th>评测集</th><th>Agent</th><th>进度</th><th>得分</th><th>Token</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="task in pagedLatestTasks" :key="task.id">
+            <td><b>{{ task.taskName }}</b><span class="block muted">{{ task.taskCode }}</span></td>
+            <td>{{ task.datasetName }}</td>
+            <td>{{ task.agentName }}</td>
+            <td>{{ task.finishedSamples }}/{{ task.totalSamples }}</td>
+            <td>{{ task.overallScore ?? 0 }}</td>
+            <td>{{ task.totalTokens ?? 0 }}</td>
+            <td><button class="secondary-button slim" type="button" @click="router.push(`/eval/result/${task.id}`)">结果</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <PaginationBar v-model:page="taskPage" :total="latestTasks.length" />
+      <div v-if="latestTasks.length === 0" class="empty-state">暂无评测任务</div>
+    </template>
   </section>
 
-  <section class="section-block">
-    <div class="section-title"><h2>最近评测任务</h2><span>{{ latestTasks.length }} 条</span></div>
-    <table class="data-table">
-      <thead>
-        <tr><th>任务</th><th>评测集</th><th>Agent</th><th>进度</th><th>得分</th><th>Token</th><th>操作</th></tr>
-      </thead>
-      <tbody>
-        <tr v-for="task in latestTasks" :key="task.id">
-          <td><b>{{ task.taskName }}</b><span class="block muted">{{ task.taskCode }}</span></td>
-          <td>{{ task.datasetName }}</td>
-          <td>{{ task.agentName }}</td>
-          <td>{{ task.finishedSamples }}/{{ task.totalSamples }}</td>
-          <td>{{ task.overallScore ?? 0 }}</td>
-          <td>{{ task.totalTokens ?? 0 }}</td>
-          <td><button class="secondary-button slim" type="button" @click="router.push(`/eval/result/${task.id}`)">结果</button></td>
-        </tr>
-      </tbody>
-    </table>
-    <div v-if="latestTasks.length === 0" class="empty-state">暂无评测任务</div>
-  </section>
+  <div v-if="datasetModalOpen" class="overlay-backdrop" @click.self="closeDatasetModal">
+    <section class="modal-panel evaluation-dataset-modal">
+      <header class="overlay-header">
+        <div>
+          <h2>{{ selectedDataset ? '编辑评测集' : '新建评测集' }}</h2>
+          <p class="muted">{{ selectedDataset?.datasetCode || '保存后可导入样本并运行评测' }}</p>
+        </div>
+        <button class="icon-button" type="button" title="关闭" @click="closeDatasetModal"><X :size="18" /></button>
+      </header>
+      <div class="form-stack">
+        <label>评测集名称<input v-model="datasetForm.datasetName" placeholder="例如：企业知识库问答基准集" /></label>
+        <label>评测集编码<input v-model="datasetForm.datasetCode" placeholder="不填自动生成" /></label>
+        <label>业务领域<input v-model="datasetForm.domain" placeholder="客服 / 金融 / 法务" /></label>
+        <label>标签<textarea v-model="datasetForm.tags" class="code-editor compact" placeholder="可以填写 JSON 数组或逗号分隔标签" /></label>
+        <label>描述<textarea v-model="datasetForm.description" placeholder="说明评测集覆盖范围" /></label>
+        <div class="two-cols">
+          <label>可见性<select v-model="datasetForm.visibility"><option value="private">私有</option><option value="public">公开</option></select></label>
+          <label>状态<select v-model="datasetForm.status"><option value="active">启用</option><option value="disabled">停用</option></select></label>
+        </div>
+        <div class="action-row end">
+          <button class="danger-button" type="button" :disabled="!selectedDataset || loading" @click="removeDataset"><Trash2 :size="16" /> 删除</button>
+          <button class="secondary-button" type="button" @click="closeDatasetModal">取消</button>
+          <button class="primary-button" type="button" :disabled="loading" @click="saveDataset"><Save :size="16" /> 保存</button>
+        </div>
+      </div>
+    </section>
+  </div>
 </template>

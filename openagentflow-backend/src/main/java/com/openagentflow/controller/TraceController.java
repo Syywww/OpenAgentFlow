@@ -41,7 +41,7 @@ public class TraceController {
      */
     @GetMapping
     public ApiResponse<PageResult<RunSummary>> listRuns(@RequestParam(defaultValue = "1") Integer pageNo,
-                                                        @RequestParam(defaultValue = "20") Integer pageSize,
+                                                        @RequestParam(defaultValue = "10") Integer pageSize,
                                                         @RequestParam(required = false) String status,
                                                         @RequestParam(required = false) String agentId,
                                                         @RequestParam(required = false) String keyword) {

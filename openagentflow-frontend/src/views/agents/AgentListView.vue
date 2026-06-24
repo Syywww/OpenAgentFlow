@@ -3,10 +3,12 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Copy, Edit3, Plus } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { copyAgent, fetchAgents, type AgentSummary } from '../../api/agents';
 import { useOverlay } from '../../composables/useOverlay';
+import { usePagination } from '../../composables/usePagination';
 
 const router = useRouter();
 const { toast } = useOverlay();
@@ -29,6 +31,7 @@ const filteredAgents = computed(() => {
 const publishedCount = computed(() => agents.value.filter((agent) => agent.status === 'published').length);
 const draftCount = computed(() => agents.value.filter((agent) => agent.status === 'draft').length);
 const disabledCount = computed(() => agents.value.filter((agent) => agent.status === 'disabled').length);
+const { currentPage: agentPage, pagedItems: pagedAgents, resetPage: resetAgentPage } = usePagination(filteredAgents);
 
 onMounted(() => {
   loadAgents();
@@ -62,7 +65,7 @@ async function handleCopy(agent: AgentSummary) {
     <select><option>全部类型</option></select>
     <select><option>全部状态</option></select>
     <select><option>全部模型</option></select>
-    <input v-model="keyword" placeholder="搜索智能体名称、描述、负责人" />
+    <input v-model="keyword" placeholder="搜索智能体名称、描述、负责人" @input="resetAgentPage" />
   </section>
 
   <section class="metric-grid">
@@ -78,7 +81,7 @@ async function handleCopy(agent: AgentSummary) {
         <tr><th>智能体</th><th>类型</th><th>模型</th><th>知识库</th><th>工具</th><th>状态</th><th>操作</th></tr>
       </thead>
       <tbody>
-        <tr v-for="agent in filteredAgents" :key="agent.id">
+        <tr v-for="agent in pagedAgents" :key="agent.id">
           <td>
             <div class="entity-cell">
               <div class="entity-icon">A</div>
@@ -104,5 +107,6 @@ async function handleCopy(agent: AgentSummary) {
         </tr>
       </tbody>
     </table>
+    <PaginationBar v-model:page="agentPage" :total="filteredAgents.length" />
   </section>
 </template>

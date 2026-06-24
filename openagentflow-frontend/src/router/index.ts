@@ -6,6 +6,7 @@ import AgentDetailView from '../views/agents/AgentDetailView.vue';
 import DebugWorkbenchView from '../views/DebugWorkbenchView.vue';
 import KnowledgeListView from '../views/knowledge/KnowledgeListView.vue';
 import KnowledgeDetailView from '../views/knowledge/KnowledgeDetailView.vue';
+import KnowledgeGovernanceView from '../views/knowledge/KnowledgeGovernanceView.vue';
 import ToolListView from '../views/tools/ToolListView.vue';
 import ToolEditView from '../views/tools/ToolEditView.vue';
 import McpServerListView from '../views/mcp/McpServerListView.vue';
@@ -14,10 +15,13 @@ import WorkflowDesignerView from '../views/WorkflowDesignerView.vue';
 import RunLogListView from '../views/logs/RunLogListView.vue';
 import RunDetailView from '../views/logs/RunDetailView.vue';
 import UsageCenterView from '../views/UsageCenterView.vue';
+import OpsMonitorView from '../views/OpsMonitorView.vue';
+import ModelGatewayView from '../views/ModelGatewayView.vue';
 import EvalDatasetView from '../views/eval/EvalDatasetView.vue';
 import EvalResultView from '../views/eval/EvalResultView.vue';
 import WorkspaceGovernanceView from '../views/WorkspaceGovernanceView.vue';
 import TaskCenterView from '../views/TaskCenterView.vue';
+import GovernanceCenterView from '../views/GovernanceCenterView.vue';
 import TemplateGalleryView from '../views/TemplateGalleryView.vue';
 import SettingsView from '../views/SettingsView.vue';
 import { getAccessToken } from '../api/http';
@@ -33,6 +37,7 @@ const router = createRouter({
     { path: '/debug', component: DebugWorkbenchView },
     { path: '/knowledge', component: KnowledgeListView },
     { path: '/knowledge/:id', component: KnowledgeDetailView },
+    { path: '/knowledge-governance', component: KnowledgeGovernanceView },
     { path: '/tools', component: ToolListView },
     { path: '/tools/:id', component: ToolEditView },
     { path: '/mcp', component: McpServerListView },
@@ -41,8 +46,11 @@ const router = createRouter({
     { path: '/logs', component: RunLogListView },
     { path: '/logs/:id', component: RunDetailView },
     { path: '/usage', component: UsageCenterView },
+    { path: '/ops', component: OpsMonitorView },
+    { path: '/model-gateway', component: ModelGatewayView },
     { path: '/workspaces', component: WorkspaceGovernanceView },
     { path: '/tasks', component: TaskCenterView },
+    { path: '/governance', component: GovernanceCenterView },
     { path: '/eval', component: EvalDatasetView },
     { path: '/eval/result', component: EvalResultView },
     { path: '/eval/result/:id', component: EvalResultView },

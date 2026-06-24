@@ -3,9 +3,11 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, Download, RefreshCw } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { fetchEvaluationTask, fetchEvaluationTasks, type EvaluationTaskDetail, type EvaluationTaskSummary } from '../../api/evaluations';
+import { usePagination } from '../../composables/usePagination';
 
 const route = useRoute();
 const router = useRouter();
@@ -13,10 +15,15 @@ const loading = ref(false);
 const errorMessage = ref('');
 const tasks = ref<EvaluationTaskSummary[]>([]);
 const task = ref<EvaluationTaskDetail | null>(null);
+const activePanel = ref<'compare' | 'runs' | 'lowScore'>('compare');
 
 const summary = computed(() => task.value?.summary ?? {});
 const runs = computed(() => task.value?.runs ?? []);
 const modelCompare = computed(() => task.value?.modelCompare ?? []);
+const lowScoreRuns = computed(() => runs.value.slice().sort((a, b) => metricScore(a, 'accuracy') - metricScore(b, 'accuracy')));
+const { currentPage: comparePage, pagedItems: pagedModelCompare } = usePagination(modelCompare);
+const { currentPage: runPage, pagedItems: pagedRuns } = usePagination(runs);
+const { currentPage: lowScorePage, pagedItems: pagedLowScoreRuns } = usePagination(lowScoreRuns);
 
 function numberValue(value: unknown) {
   return typeof value === 'number' ? value : Number(value ?? 0);
@@ -107,38 +114,57 @@ watch(() => route.params.id, () => {
       <StatCard label="平均耗时" :value="`${summary.averageLatencyMs ?? task.averageLatencyMs ?? 0}ms`" detail="样本平均" icon="Timer" tone="neutral" />
     </section>
 
-    <section class="section-block">
-      <div class="section-title"><h2>模型 / Prompt / 知识库策略对比</h2><span>{{ modelCompare.length }} 组</span></div>
-      <table class="data-table">
-        <thead>
-          <tr><th>模型</th><th>综合</th><th>准确率</th><th>相关性</th><th>完整性</th><th>幻觉率</th><th>引用</th><th>工具</th><th>耗时</th><th>Token</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in modelCompare" :key="String(row.modelId)">
-            <td><b>{{ row.modelName }}</b><span class="block muted">{{ row.modelId }}</span></td>
-            <td>{{ row.overallScore }}</td>
-            <td>{{ percent(row.accuracy) }}</td>
-            <td>{{ percent(row.relevance) }}</td>
-            <td>{{ percent(row.completeness) }}</td>
-            <td>{{ percent(row.hallucinationRate) }}</td>
-            <td>{{ percent(row.citationCorrectness) }}</td>
-            <td>{{ percent(row.toolSuccessRate) }}</td>
-            <td>{{ row.averageLatencyMs }}ms</td>
-            <td>{{ row.totalTokens }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <section class="governance-card-tabs">
+      <button class="governance-tab-card" :class="{ active: activePanel === 'compare' }" type="button" @click="activePanel = 'compare'">
+        <span>模型策略对比</span>
+        <b>{{ modelCompare.length }}</b>
+        <small>模型、Prompt 和知识库策略</small>
+      </button>
+      <button class="governance-tab-card" :class="{ active: activePanel === 'runs' }" type="button" @click="activePanel = 'runs'">
+        <span>样本结果</span>
+        <b>{{ runs.length }}</b>
+        <small>逐样本评分与 Trace</small>
+      </button>
+      <button class="governance-tab-card" :class="{ active: activePanel === 'lowScore' }" type="button" @click="activePanel = 'lowScore'">
+        <span>低分样本详情</span>
+        <b>{{ lowScoreRuns.length }}</b>
+        <small>定位效果偏低的样本</small>
+      </button>
     </section>
 
-    <section class="dashboard-columns">
-      <div class="section-block">
+    <section class="section-block evaluation-result-panel">
+      <template v-if="activePanel === 'compare'">
+        <div class="section-title"><h2>模型 / Prompt / 知识库策略对比</h2><span>{{ modelCompare.length }} 组</span></div>
+        <table class="data-table">
+          <thead>
+            <tr><th>模型</th><th>综合</th><th>准确率</th><th>相关性</th><th>完整性</th><th>幻觉率</th><th>引用</th><th>工具</th><th>耗时</th><th>Token</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in pagedModelCompare" :key="String(row.modelId)">
+              <td><b>{{ row.modelName }}</b><span class="block muted">{{ row.modelId }}</span></td>
+              <td>{{ row.overallScore }}</td>
+              <td>{{ percent(row.accuracy) }}</td>
+              <td>{{ percent(row.relevance) }}</td>
+              <td>{{ percent(row.completeness) }}</td>
+              <td>{{ percent(row.hallucinationRate) }}</td>
+              <td>{{ percent(row.citationCorrectness) }}</td>
+              <td>{{ percent(row.toolSuccessRate) }}</td>
+              <td>{{ row.averageLatencyMs }}ms</td>
+              <td>{{ row.totalTokens }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <PaginationBar v-model:page="comparePage" :total="modelCompare.length" />
+      </template>
+
+      <template v-else-if="activePanel === 'runs'">
         <div class="section-title"><h2>样本结果</h2><span>{{ runs.length }} 条</span></div>
         <table class="data-table">
           <thead>
             <tr><th>样本</th><th>模型</th><th>状态</th><th>准确</th><th>完整</th><th>耗时</th><th>Trace</th></tr>
           </thead>
           <tbody>
-            <tr v-for="run in runs" :key="run.id">
+            <tr v-for="run in pagedRuns" :key="run.id">
               <td><b>#{{ run.sampleNo }}</b><span class="block muted">{{ run.question }}</span></td>
               <td>{{ run.modelName || run.modelId }}</td>
               <td><StatusBadge :label="statusLabel(run.status)" /></td>
@@ -151,12 +177,13 @@ watch(() => route.params.id, () => {
             </tr>
           </tbody>
         </table>
-      </div>
+        <PaginationBar v-model:page="runPage" :total="runs.length" />
+      </template>
 
-      <div class="section-block">
+      <template v-else>
         <div class="section-title"><h2>低分样本详情</h2><span>可追溯</span></div>
         <div v-if="runs.length === 0" class="empty-state">暂无样本结果</div>
-        <article v-for="run in runs.slice(0, 6)" :key="`${run.id}-detail`" class="list-row">
+        <article v-for="run in pagedLowScoreRuns" :key="`${run.id}-detail`" class="list-row">
           <div>
             <b>{{ run.modelName || run.modelId }} / #{{ run.sampleNo }}</b>
             <span>{{ run.errorMessage || run.answerText || '无回答内容' }}</span>
@@ -165,7 +192,8 @@ watch(() => route.params.id, () => {
           <StatusBadge :label="statusLabel(run.status)" />
           <button class="secondary-button slim" type="button" :disabled="!run.runId" @click="router.push(`/logs/${run.runId}`)">Trace</button>
         </article>
-      </div>
+        <PaginationBar v-model:page="lowScorePage" :total="lowScoreRuns.length" />
+      </template>
     </section>
   </template>
 

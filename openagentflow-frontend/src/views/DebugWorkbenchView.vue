@@ -272,18 +272,21 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
           </option>
         </select>
       </label>
-      <button
-        v-for="agent in agents"
-        :key="agent.id"
-        class="agent-pick"
-        :class="{ selected: selectedAgentId === agent.id }"
-        type="button"
-        @click="selectAgent(agent.id)"
-      >
-        <span>A</span>
-        <b>{{ agent.agentName }}</b>
-        <small>{{ agent.category }} - {{ agent.statusLabel || agent.status }}</small>
-      </button>
+      <section class="debug-scroll-box agent-scroll-box">
+        <button
+          v-for="agent in agents"
+          :key="agent.id"
+          class="agent-pick"
+          :class="{ selected: selectedAgentId === agent.id }"
+          type="button"
+          @click="selectAgent(agent.id)"
+        >
+          <span>A</span>
+          <b>{{ agent.agentName }}</b>
+          <small>{{ agent.category }} - {{ agent.statusLabel || agent.status }}</small>
+        </button>
+        <div v-if="agents.length === 0" class="session-empty">暂无可用智能体</div>
+      </section>
 
       <div class="session-header">
         <h2>历史会话</h2>
@@ -291,7 +294,7 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
           <MessageSquarePlus :size="16" />
         </button>
       </div>
-      <div class="session-list">
+      <section class="debug-scroll-box session-list">
         <div v-if="sessionsLoading" class="session-empty">正在加载会话...</div>
         <article
           v-for="session in sessions"
@@ -309,7 +312,7 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
           </button>
         </article>
         <div v-if="!sessionsLoading && sessions.length === 0" class="session-empty">暂无历史会话</div>
-      </div>
+      </section>
     </aside>
 
     <div class="chat-panel">
@@ -342,26 +345,34 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
       <div class="trace-step"><b>模型</b><span>{{ runMeta.modelName || selectedModel?.modelName || '-' }}</span></div>
       <div class="trace-step"><b>Session ID</b><span class="mono">{{ selectedSessionId || '-' }}</span></div>
       <div class="trace-step"><b>Run ID</b><span class="mono">{{ runMeta.runId || '-' }}</span></div>
-      <div class="section-title"><h2>引用来源</h2><span>{{ retrievalSources.length }} 条</span></div>
-      <div v-if="retrievalSources.length === 0" class="empty-state">当前对话暂无知识库引用</div>
-      <article v-for="source in retrievalSources" :key="source.chunkId" class="chunk-item">
-        <div>
-          <b>{{ source.documentName || source.kbName }}</b>
-          <StatusBadge :label="source.score ? source.score.toFixed(4) : '命中'" />
+      <section class="trace-scroll-section">
+        <div class="section-title"><h2>引用来源</h2><span>{{ retrievalSources.length }} 条</span></div>
+        <div class="debug-scroll-box source-scroll-box">
+          <div v-if="retrievalSources.length === 0" class="empty-state compact-empty">当前对话暂无知识库引用</div>
+          <article v-for="source in retrievalSources" :key="source.chunkId" class="chunk-item">
+            <div>
+              <b>{{ source.documentName || source.kbName }}</b>
+              <StatusBadge :label="source.score ? source.score.toFixed(4) : '命中'" />
+            </div>
+            <p>{{ source.quoteText }}</p>
+          </article>
         </div>
-        <p>{{ source.quoteText }}</p>
-      </article>
-      <div class="section-title"><h2>工具调用</h2><span>{{ toolResults.length }} 次</span></div>
-      <div v-if="toolResults.length === 0" class="empty-state">当前对话暂无工具调用</div>
-      <article v-for="tool in toolResults" :key="String(tool.toolCallId || tool.toolName)" class="chunk-item">
-        <div>
-          <b>{{ tool.toolName }}</b>
-          <StatusBadge :label="tool.success ? '成功' : tool.confirmationRequired ? '待确认' : '失败'" :tone="tool.success ? 'success' : tool.confirmationRequired ? 'warning' : 'danger'" />
+      </section>
+      <section class="trace-scroll-section">
+        <div class="section-title"><h2>工具调用</h2><span>{{ toolResults.length }} 次</span></div>
+        <div class="debug-scroll-box tool-scroll-box">
+          <div v-if="toolResults.length === 0" class="empty-state compact-empty">当前对话暂无工具调用</div>
+          <article v-for="tool in toolResults" :key="String(tool.toolCallId || tool.toolName)" class="chunk-item">
+            <div>
+              <b>{{ tool.toolName }}</b>
+              <StatusBadge :label="tool.success ? '成功' : tool.confirmationRequired ? '待确认' : '失败'" :tone="tool.success ? 'success' : tool.confirmationRequired ? 'warning' : 'danger'" />
+            </div>
+            <p>statusCode: {{ tool.statusCode || 0 }} - latencyMs: {{ tool.latencyMs || 0 }}</p>
+            <p v-if="tool.confirmationId" class="mono">confirmationId: {{ tool.confirmationId }}</p>
+            <p>{{ tool.errorMessage || tool.responseBody || '工具已执行' }}</p>
+          </article>
         </div>
-        <p>statusCode: {{ tool.statusCode || 0 }} - latencyMs: {{ tool.latencyMs || 0 }}</p>
-        <p v-if="tool.confirmationId" class="mono">confirmationId: {{ tool.confirmationId }}</p>
-        <p>{{ tool.errorMessage || tool.responseBody || '工具已执行' }}</p>
-      </article>
+      </section>
       <pre class="code-block light">promptTokens: {{ runDone.promptTokens || 0 }}
 completionTokens: {{ runDone.completionTokens || 0 }}
 totalTokens: {{ runDone.totalTokens || 0 }}

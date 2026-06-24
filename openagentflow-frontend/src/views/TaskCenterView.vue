@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { PauseCircle, PlayCircle, RefreshCw, RotateCcw, Search } from 'lucide-vue-next';
+import { Eye, PauseCircle, PlayCircle, RefreshCw, RotateCcw, Search, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import PaginationBar from '../components/PaginationBar.vue';
 import StatCard from '../components/StatCard.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import {
@@ -23,6 +24,7 @@ const tasks = ref<AsyncTaskSummary[]>([]);
 const selectedTask = ref<AsyncTaskDetail | null>(null);
 const workspaces = ref<WorkspaceSummary[]>([]);
 const total = ref(0);
+const detailModalOpen = ref(false);
 
 const filters = reactive({
   status: 'all',
@@ -30,7 +32,7 @@ const filters = reactive({
   workspaceId: 'all',
   keyword: '',
   pageNo: 1,
-  pageSize: 20,
+  pageSize: 10,
 });
 
 const taskTypes = [
@@ -99,8 +101,27 @@ async function reloadList() {
   }
 }
 
+async function changeTaskPage(page: number) {
+  filters.pageNo = page;
+  await reloadList();
+}
+
+async function searchTasks() {
+  filters.pageNo = 1;
+  await reloadList();
+}
+
 async function selectTask(task: AsyncTaskSummary) {
   selectedTask.value = await fetchTask(task.id);
+}
+
+async function openTaskDetail(task: AsyncTaskSummary) {
+  await selectTask(task);
+  detailModalOpen.value = true;
+}
+
+function closeTaskDetail() {
+  detailModalOpen.value = false;
 }
 
 async function handleCancel(task: AsyncTaskSummary) {
@@ -178,7 +199,7 @@ function formatJson(value?: Record<string, unknown>) {
 
   <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>
 
-  <section class="metrics-grid">
+  <section class="metric-grid">
     <StatCard label="全部任务" :value="String(overview?.totalCount || 0)" detail="当前可见任务" icon="Gauge" tone="neutral" />
     <StatCard label="运行中" :value="String(overview?.runningCount || 0)" detail="正在执行" icon="Activity" tone="info" />
     <StatCard label="排队中" :value="String(overview?.pendingCount || 0)" detail="等待线程池调度" icon="Timer" tone="warning" />
@@ -187,84 +208,91 @@ function formatJson(value?: Record<string, unknown>) {
 
   <section class="section-block">
     <div class="filter-row">
-      <select v-model="filters.status" @change="reloadList">
+      <select v-model="filters.status" @change="searchTasks">
         <option v-for="item in statusOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
       </select>
-      <select v-model="filters.taskType" @change="reloadList">
+      <select v-model="filters.taskType" @change="searchTasks">
         <option v-for="item in taskTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
       </select>
-      <select v-model="filters.workspaceId" @change="reloadList">
+      <select v-model="filters.workspaceId" @change="searchTasks">
         <option value="all">全部空间</option>
         <option v-for="workspace in workspaces" :key="workspace.id" :value="workspace.id">{{ workspace.workspaceName }}</option>
       </select>
       <label class="search-input">
         <Search :size="16" />
-        <input v-model="filters.keyword" placeholder="搜索任务名称、编码、业务ID" @keyup.enter="reloadList" />
+        <input v-model="filters.keyword" placeholder="搜索任务名称、编码、业务ID" @keyup.enter="searchTasks" />
       </label>
-      <button class="secondary-button" type="button" :disabled="loading" @click="reloadList">
+      <button class="secondary-button" type="button" :disabled="loading" @click="searchTasks">
         <Search :size="16" /> 查询
       </button>
     </div>
   </section>
 
-  <section class="run-detail-layout">
-    <div class="section-block">
-      <div class="section-title">
-        <h2>任务队列</h2>
-        <span>共 {{ total }} 条</span>
-      </div>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>任务</th>
-            <th>类型</th>
-            <th>状态</th>
-            <th>进度</th>
-            <th>空间</th>
-            <th>创建时间</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="task in tasks"
-            :key="task.id"
-            :class="{ selected: selectedTask?.id === task.id }"
-            @click="selectTask(task)"
-          >
-            <td><b>{{ task.taskName }}</b><span class="muted block">{{ task.taskCode }}</span></td>
-            <td>{{ task.taskTypeLabel }}</td>
-            <td><StatusBadge :label="statusLabel(task.status)" :tone="statusTone(task.status)" /></td>
-            <td>
-              <div class="progress-track small">
-                <div class="progress-bar" :style="{ width: `${task.progressPercent || 0}%` }"></div>
-              </div>
-              <span class="muted">{{ task.progressPercent || 0 }}%</span>
-            </td>
-            <td>{{ task.workspaceName || '-' }}</td>
-            <td>{{ formatTime(task.createdAt) }}</td>
-            <td>
-              <div class="table-actions">
-                <button class="icon-button" type="button" title="取消" :disabled="!canCancel(task)" @click.stop="handleCancel(task)">
-                  <PauseCircle :size="16" />
-                </button>
-                <button class="icon-button" type="button" title="重试" :disabled="!canRetry(task)" @click.stop="handleRetry(task)">
-                  <RotateCcw :size="16" />
-                </button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+  <section class="section-block task-center-panel">
+    <div class="section-title">
+      <h2>任务队列</h2>
+      <span>共 {{ total }} 条，点击任务行或详情按钮查看完整执行信息</span>
     </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>任务</th>
+          <th>类型</th>
+          <th>状态</th>
+          <th>进度</th>
+          <th>空间</th>
+          <th>创建时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="task in tasks"
+          :key="task.id"
+          :class="{ selected: selectedTask?.id === task.id }"
+          @click="openTaskDetail(task)"
+        >
+          <td><b>{{ task.taskName }}</b><span class="muted block">{{ task.taskCode }}</span></td>
+          <td>{{ task.taskTypeLabel }}</td>
+          <td><StatusBadge :label="statusLabel(task.status)" :tone="statusTone(task.status)" /></td>
+          <td>
+            <div class="progress-track small">
+              <div class="progress-bar" :style="{ width: `${task.progressPercent || 0}%` }"></div>
+            </div>
+            <span class="muted">{{ task.progressPercent || 0 }}%</span>
+          </td>
+          <td>{{ task.workspaceName || '-' }}</td>
+          <td>{{ formatTime(task.createdAt) }}</td>
+          <td>
+            <div class="table-actions">
+              <button class="icon-button" type="button" title="详情" @click.stop="openTaskDetail(task)">
+                <Eye :size="16" />
+              </button>
+              <button class="icon-button" type="button" title="取消" :disabled="!canCancel(task)" @click.stop="handleCancel(task)">
+                <PauseCircle :size="16" />
+              </button>
+              <button class="icon-button" type="button" title="重试" :disabled="!canRetry(task)" @click.stop="handleRetry(task)">
+                <RotateCcw :size="16" />
+              </button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <PaginationBar :page="filters.pageNo" :total="total" @update:page="changeTaskPage" />
+  </section>
 
-    <aside class="section-block">
-      <div class="section-title">
-        <h2>任务详情</h2>
-        <span>{{ selectedTask?.taskTypeLabel || '请选择任务' }}</span>
-      </div>
+  <div v-if="detailModalOpen" class="overlay-backdrop" @click.self="closeTaskDetail">
+    <section class="modal-panel task-detail-modal">
+      <header class="overlay-header">
+        <div>
+          <h2>任务详情</h2>
+          <p class="muted">{{ selectedTask?.taskTypeLabel || '请选择任务' }}</p>
+        </div>
+        <button class="icon-button" type="button" title="关闭" @click="closeTaskDetail"><X :size="18" /></button>
+      </header>
 
-      <template v-if="selectedTask">
+      <div v-if="selectedTask" class="task-detail-content">
         <div class="trace-meta">
           <span>状态</span><b>{{ statusLabel(selectedTask.status) }}</b>
           <span>当前阶段</span><b>{{ selectedTask.currentStage || '-' }}</b>
@@ -301,9 +329,9 @@ function formatJson(value?: Record<string, unknown>) {
           <h2>结果数据</h2>
         </div>
         <pre class="json-preview">{{ formatJson(selectedTask.resultPayload) }}</pre>
-      </template>
+      </div>
 
       <div v-else class="empty-state">暂无任务</div>
-    </aside>
-  </section>
+    </section>
+  </div>
 </template>

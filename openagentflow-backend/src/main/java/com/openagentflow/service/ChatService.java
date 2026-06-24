@@ -10,6 +10,7 @@ import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.model.ModelRouteDecision;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentSessionEntity;
 import com.openagentflow.entity.ModelConfigEntity;
@@ -41,6 +42,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * 聊天调试服务。
@@ -86,6 +89,9 @@ public class ChatService {
     /** 成本与用量服务。 */
     private final UsageCostService usageCostService;
 
+    /** 模型网关服务。 */
+    private final ModelGatewayService modelGatewayService;
+
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
@@ -101,6 +107,7 @@ public class ChatService {
                        ToolService toolService,
                        AgentSessionService agentSessionService,
                        UsageCostService usageCostService,
+                       ModelGatewayService modelGatewayService,
                        ObjectMapper objectMapper) {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
@@ -114,6 +121,7 @@ public class ChatService {
         this.toolService = toolService;
         this.agentSessionService = agentSessionService;
         this.usageCostService = usageCostService;
+        this.modelGatewayService = modelGatewayService;
         this.objectMapper = objectMapper;
     }
 
@@ -134,8 +142,9 @@ public class ChatService {
         }
         RuntimeTraceStepEntity step = createLlmStep(run, context);
         try {
-            usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
-            LlmCallResult result = openAiCompatibleClient.complete(context, request.getTemperature(), effectiveMaxTokens(request, context));
+            LlmCallResult result = invokeWithGatewayFallback(context,
+                    current -> openAiCompatibleClient.complete(current, request.getTemperature(), effectiveMaxTokens(request, current)),
+                    current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
             finishSuccess(run, step, context, result, false);
             return toResponse(run, context, result, "SUCCESS", null);
         } catch (Exception exception) {
@@ -171,13 +180,14 @@ public class ChatService {
                         "modelName", context.getModel().getModelName(),
                         "sources", context.getSources() == null ? List.of() : context.getSources()
                 ));
-                usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
-                LlmCallResult result = openAiCompatibleClient.completeStream(
-                        context,
-                        request.getTemperature(),
-                        effectiveMaxTokens(request, context),
-                        delta -> sendSse(emitter, "delta", Map.of("content", delta))
-                );
+                LlmCallResult result = invokeWithGatewayFallback(context,
+                        current -> openAiCompatibleClient.completeStream(
+                                current,
+                                request.getTemperature(),
+                                effectiveMaxTokens(request, current),
+                                delta -> sendSse(emitter, "delta", Map.of("content", delta))
+                        ),
+                        current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
                 finishSuccess(run, step, context, result, true);
                 sendSse(emitter, "done", Map.of(
                         "runId", run.getId(),
@@ -207,15 +217,17 @@ public class ChatService {
      */
     private ChatRunContext buildRunContext(ChatCompletionRequest request) {
         AgentEntity agent = resolveAgent(request.getAgentId());
-        ModelConfigEntity model = resolveModel(request.getModelId(), agent);
-        ModelProviderEntity provider = modelProviderService.requireProviderByModel(model);
-        String apiKey = modelProviderService.findApiKeyValue(provider.getId());
+        ModelRouteDecision routeDecision = modelGatewayService.resolveAgentChatRoute(request.getModelId(), agent);
+        ModelConfigEntity model = routeDecision.getModel();
+        ModelProviderEntity provider = routeDecision.getProvider();
+        String apiKey = routeDecision.getApiKey();
 
         ChatRunContext context = new ChatRunContext();
         context.setAgent(agent);
         context.setModel(model);
         context.setProvider(provider);
         context.setApiKey(apiKey);
+        context.setRouteDecision(routeDecision);
         context.setMessages(buildMessages(agent, request));
         context.setSources(List.of());
         context.setTools(toolService.listModelToolsForAgent(agent));
@@ -249,8 +261,9 @@ public class ChatService {
                                                            RuntimeRunEntity run) {
         RuntimeTraceStepEntity decisionStep = createLlmStep(run, context);
         try {
-            usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
-            LlmCallResult decision = openAiCompatibleClient.completeWithTools(context, request.getTemperature(), effectiveMaxTokens(request, context));
+            LlmCallResult decision = invokeWithGatewayFallback(context,
+                    current -> openAiCompatibleClient.completeWithTools(current, request.getTemperature(), effectiveMaxTokens(request, current)),
+                    current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
             if (decision.getToolCalls() == null || decision.getToolCalls().isEmpty()) {
                 finishSuccess(run, decisionStep, context, decision, false);
                 return toResponse(run, context, decision, "SUCCESS", null);
@@ -258,8 +271,9 @@ public class ChatService {
             finishIntermediateLlmStep(run, decisionStep, context, decision, false);
             List<Map<String, Object>> toolResults = executeToolCalls(context, run, decisionStep.getId(), decision);
             RuntimeTraceStepEntity finalStep = createLlmStep(run, context);
-            usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
-            LlmCallResult finalResult = openAiCompatibleClient.complete(context, request.getTemperature(), effectiveMaxTokens(request, context));
+            LlmCallResult finalResult = invokeWithGatewayFallback(context,
+                    current -> openAiCompatibleClient.complete(current, request.getTemperature(), effectiveMaxTokens(request, current)),
+                    current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
             finishSuccess(run, finalStep, context, finalResult, false);
             ChatCompletionResponse response = toResponse(run, context, finalResult, "SUCCESS", null);
             response.setToolResults(toolResults);
@@ -293,8 +307,9 @@ public class ChatService {
                         "sources", context.getSources() == null ? List.of() : context.getSources(),
                         "tools", context.getTools() == null ? List.of() : context.getTools()
                 ));
-                usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
-                LlmCallResult decision = openAiCompatibleClient.completeWithTools(context, request.getTemperature(), effectiveMaxTokens(request, context));
+                LlmCallResult decision = invokeWithGatewayFallback(context,
+                        current -> openAiCompatibleClient.completeWithTools(current, request.getTemperature(), effectiveMaxTokens(request, current)),
+                        current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
                 if (decision.getToolCalls() == null || decision.getToolCalls().isEmpty()) {
                     // 模型未选择工具时直接返回本次非流式决策内容，避免重复调用模型。
                     finishSuccess(run, decisionStep, context, decision, false);
@@ -307,13 +322,14 @@ public class ChatService {
                 List<Map<String, Object>> toolResults = executeToolCalls(context, run, decisionStep.getId(), decision);
                 sendSse(emitter, "tool", Map.of("toolResults", toolResults));
                 RuntimeTraceStepEntity finalStep = createLlmStep(run, context);
-                usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), context.getProvider(), context.getModel(), context.getMessages(), effectiveMaxTokens(request, context));
-                LlmCallResult finalResult = openAiCompatibleClient.completeStream(
-                        context,
-                        request.getTemperature(),
-                        effectiveMaxTokens(request, context),
-                        delta -> sendSse(emitter, "delta", Map.of("content", delta))
-                );
+                LlmCallResult finalResult = invokeWithGatewayFallback(context,
+                        current -> openAiCompatibleClient.completeStream(
+                                current,
+                                request.getTemperature(),
+                                effectiveMaxTokens(request, current),
+                                delta -> sendSse(emitter, "delta", Map.of("content", delta))
+                        ),
+                        current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
                 finishSuccess(run, finalStep, context, finalResult, true);
                 sendDone(emitter, run, context, finalResult, toolResults);
                 emitter.complete();
@@ -463,6 +479,35 @@ public class ChatService {
      * @param agentId Agent ID
      * @return Agent 实体，可为空
      */
+    /**
+     * 通过模型网关执行 LLM 调用，并在允许回退时自动切换候选模型。
+     *
+     * @param context 聊天运行上下文
+     * @param invoker 实际模型调用函数
+     * @param precheck 调用前预检查，主要用于配额拦截
+     * @return LLM 调用结果
+     */
+    private LlmCallResult invokeWithGatewayFallback(ChatRunContext context,
+                                                    Function<ChatRunContext, LlmCallResult> invoker,
+                                                    Consumer<ChatRunContext> precheck) {
+        try {
+            precheck.accept(context);
+            return invoker.apply(context);
+        } catch (Exception firstException) {
+            ModelRouteDecision fallback = modelGatewayService.nextFallbackDecision(context.getRouteDecision(), firstException.getMessage());
+            if (fallback == null) {
+                throw firstException;
+            }
+            // 回退时直接更新上下文中的模型、服务商和密钥，后续 Trace 和调用日志会记录新的实际调用对象。
+            context.setRouteDecision(fallback);
+            context.setModel(fallback.getModel());
+            context.setProvider(fallback.getProvider());
+            context.setApiKey(fallback.getApiKey());
+            precheck.accept(context);
+            return invoker.apply(context);
+        }
+    }
+
     private AgentEntity resolveAgent(String agentId) {
         if (StringUtils.hasText(agentId)) {
             AgentEntity agent = agentMapper.selectById(agentId);
@@ -622,6 +667,7 @@ public class ChatService {
         runtimeRunMapper.updateById(run);
 
         step.setStatus("SUCCESS");
+        step.setModelId(context.getModel().getId());
         step.setOutputPayload(toJson(Map.of(
                 "content", safeText(result.getContent()),
                 "sources", context.getSources() == null ? List.of() : context.getSources()
@@ -668,6 +714,7 @@ public class ChatService {
         run.setTotalCost(safeCost(run.getTotalCost()).add(cost));
         runtimeRunMapper.updateById(run);
         step.setStatus("SUCCESS");
+        step.setModelId(context.getModel().getId());
         step.setOutputPayload(toJson(Map.of(
                 "content", safeText(result.getContent()),
                 "toolCalls", result.getToolCalls() == null ? List.of() : result.getToolCalls()
@@ -709,6 +756,7 @@ public class ChatService {
         runtimeRunMapper.updateById(run);
 
         step.setStatus("FAILED");
+        step.setModelId(context.getModel().getId());
         step.setErrorMessage(exception.getMessage());
         step.setFinishedAt(finishedAt);
         runtimeTraceStepMapper.updateById(step);
@@ -748,6 +796,12 @@ public class ChatService {
         call.setStepId(step.getId());
         call.setProviderId(context.getProvider().getId());
         call.setModelId(context.getModel().getId());
+        if (context.getRouteDecision() != null) {
+            call.setRoutePolicyId(context.getRouteDecision().getRoutePolicyId());
+            call.setGatewaySceneType(context.getRouteDecision().getSceneType());
+            call.setRouteDecision(modelGatewayService.toDecisionJson(context.getRouteDecision()));
+            call.setFallbackUsed(Boolean.TRUE.equals(context.getRouteDecision().getFallbackUsed()));
+        }
         call.setRequestMessages(toJson(context.getMessages()));
         call.setResponseMessage(toJson(Map.of("content", safeText(result.getContent()))));
         call.setStream(stream);

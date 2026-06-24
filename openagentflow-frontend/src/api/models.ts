@@ -69,6 +69,96 @@ export interface ModelConnectivityResult {
   errorMessage?: string;
 }
 
+export interface ModelGatewayOverview {
+  enabledPolicyCount: number;
+  enabledModelCount: number;
+  callCount24h: number;
+  failureCount24h: number;
+  failureRate24h: number;
+  avgLatencyMs24h: number;
+  fallbackCount24h: number;
+}
+
+export interface ModelRouteCandidateSummary {
+  id: string;
+  policyId: string;
+  modelId: string;
+  modelName: string;
+  modelCode: string;
+  providerName: string;
+  priority: number;
+  weight: number;
+  maxLatencyMs?: number;
+  maxCostPer1k?: number;
+  enabled: boolean;
+  recentFailureRate: number;
+  recentAvgLatencyMs: number;
+}
+
+export interface ModelRoutePolicySummary {
+  id: string;
+  policyCode: string;
+  policyName: string;
+  sceneType: string;
+  matchRule: string;
+  fallbackEnabled: boolean;
+  status: string;
+  candidates: ModelRouteCandidateSummary[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ModelRouteCandidateRequest {
+  id?: string;
+  modelId: string;
+  priority: number;
+  weight: number;
+  maxLatencyMs?: number;
+  maxCostPer1k?: number;
+  enabled: boolean;
+}
+
+export interface ModelRoutePolicyRequest {
+  policyCode: string;
+  policyName: string;
+  sceneType: string;
+  matchRule: string;
+  fallbackEnabled: boolean;
+  status: string;
+  candidates: ModelRouteCandidateRequest[];
+}
+
+export interface ModelHealthSummary {
+  modelId: string;
+  modelName: string;
+  modelCode: string;
+  providerName: string;
+  status: string;
+  healthStatus: string;
+  recentCallCount: number;
+  recentFailureCount: number;
+  recentFailureRate: number;
+  recentAvgLatencyMs: number;
+  recentCost: number;
+}
+
+export interface ModelGatewayCallSummary {
+  id: string;
+  runId: string;
+  gatewaySceneType?: string;
+  routePolicyId?: string;
+  policyName?: string;
+  providerName?: string;
+  modelName?: string;
+  fallbackUsed: boolean;
+  success: boolean;
+  totalTokens: number;
+  costAmount: number;
+  latencyMs: number;
+  errorMessage?: string;
+  createdAt?: string;
+}
+
 export async function fetchModelProviders() {
   return request<ModelProviderSummary[]>('/model-providers');
 }
@@ -97,4 +187,38 @@ export async function deleteModelProvider(id: string) {
 
 export async function testModelProvider(id: string) {
   return request<ModelConnectivityResult>(`/model-providers/${id}/test`, { method: 'POST' });
+}
+
+export async function fetchModelGatewayOverview() {
+  return request<ModelGatewayOverview>('/model-gateway/overview');
+}
+
+export async function fetchModelRoutePolicies() {
+  return request<ModelRoutePolicySummary[]>('/model-gateway/policies');
+}
+
+export async function createModelRoutePolicy(payload: ModelRoutePolicyRequest) {
+  return request<ModelRoutePolicySummary>('/model-gateway/policies', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateModelRoutePolicy(id: string, payload: ModelRoutePolicyRequest) {
+  return request<ModelRoutePolicySummary>(`/model-gateway/policies/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteModelRoutePolicy(id: string) {
+  return request<void>(`/model-gateway/policies/${id}`, { method: 'DELETE' });
+}
+
+export async function fetchModelHealth() {
+  return request<ModelHealthSummary[]>('/model-gateway/health');
+}
+
+export async function fetchModelGatewayCalls(limit = 30) {
+  return request<ModelGatewayCallSummary[]>(`/model-gateway/calls?limit=${limit}`);
 }

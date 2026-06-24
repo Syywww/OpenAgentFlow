@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, RefreshCw, Share2 } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
+import PaginationBar from '../../components/PaginationBar.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { fetchRunDetail, type RunDetail, type TraceStepDetail } from '../../api/traces';
+import { usePagination } from '../../composables/usePagination';
 
 const route = useRoute();
 const router = useRouter();
@@ -13,6 +15,8 @@ const loading = ref(false);
 const run = ref<RunDetail | null>(null);
 const selectedStepId = ref('');
 const activeTab = ref('运行概览');
+const steps = computed(() => run.value?.steps || []);
+const { currentPage: stepPage, pagedItems: pagedSteps, pageSize: stepPageSize, resetPage: resetStepPage } = usePagination(steps);
 
 const selectedStep = computed(() => run.value?.steps.find((step) => step.id === selectedStepId.value) || run.value?.steps[0]);
 const successStepCount = computed(() => run.value?.steps.filter((step) => step.status === 'SUCCESS').length ?? 0);
@@ -26,6 +30,7 @@ async function loadRun() {
   try {
     run.value = await fetchRunDetail(String(route.params.id));
     selectedStepId.value = run.value.steps[0]?.id || '';
+    resetStepPage();
   } finally {
     loading.value = false;
   }
@@ -92,17 +97,18 @@ function stepBadge(step?: TraceStepDetail) {
       <div class="section-title"><h2>步骤时间线</h2><StatusBadge :label="run.statusLabel" /></div>
       <div class="timeline-list">
         <button
-          v-for="(step, index) in run.steps"
+          v-for="(step, index) in pagedSteps"
           :key="step.id"
           type="button"
           :class="{ active: selectedStepId === step.id }"
           @click="selectedStepId = step.id"
         >
-          <b>{{ index + 1 }}. {{ step.stepName }} <small>{{ stepBadge(step) }}</small></b>
+          <b>{{ (stepPage - 1) * stepPageSize + index + 1 }}. {{ step.stepName }} <small>{{ stepBadge(step) }}</small></b>
           <span>{{ step.startedAt || '-' }} · 耗时 {{ formatMs(step.latencyMs) }} · {{ step.status }}</span>
         </button>
       </div>
       <div v-if="run.steps.length === 0" class="empty-state">暂无 Trace 步骤</div>
+      <PaginationBar v-model:page="stepPage" :total="run.steps.length" />
     </div>
 
     <div class="run-side">

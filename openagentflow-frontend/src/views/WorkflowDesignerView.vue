@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { Handle, Position, VueFlow, type Connection } from '@vue-flow/core';
 import { Bug, Plus, Play, Rocket, Save, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import PaginationBar from '../components/PaginationBar.vue';
 import { fetchAgents, type AgentSummary } from '../api/agents';
 import { fetchChatModels, type ModelConfigSummary } from '../api/models';
 import { fetchTools, type ToolDefinitionSummary } from '../api/tools';
@@ -20,6 +21,7 @@ import {
   type WorkflowSummary,
 } from '../api/workflows';
 import { useOverlay } from '../composables/useOverlay';
+import { usePagination } from '../composables/usePagination';
 
 const { toast } = useOverlay();
 const workflows = ref<WorkflowSummary[]>([]);
@@ -37,6 +39,7 @@ const runInput = ref('请基于工作流回答：OpenAgentFlow 现在支持哪�
 const selectedAgentId = ref('');
 const runResult = ref('');
 const traceRunId = ref('');
+const { currentPage: workflowPage, pagedItems: pagedWorkflows } = usePagination(workflows);
 
 const workflowForm = reactive({
   workflowCode: '',
@@ -369,10 +372,11 @@ function canSend(nodeType: unknown) {
 
       <div class="workflow-list">
         <h2>工作流</h2>
-        <button v-for="item in workflows" :key="item.id" type="button" :class="{ active: currentWorkflow?.id === item.id }" @click="openWorkflow(item.id)">
+        <button v-for="item in pagedWorkflows" :key="item.id" type="button" :class="{ active: currentWorkflow?.id === item.id }" @click="openWorkflow(item.id)">
           {{ item.workflowName }}
           <small>{{ item.statusLabel }}</small>
         </button>
+        <PaginationBar v-model:page="workflowPage" :total="workflows.length" />
       </div>
     </aside>
 
