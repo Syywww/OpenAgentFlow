@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
 import { computed } from 'vue';
-import { RouterLink, useRoute } from 'vue-router';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import {
   Activity,
   Bell,
@@ -19,6 +19,8 @@ import {
   Gauge,
   LayoutDashboard,
   Library,
+  LogOut,
+  MessageSquareText,
   Search,
   Server,
   Settings,
@@ -26,10 +28,14 @@ import {
   ShieldCheck,
   TestTube2,
 } from 'lucide-vue-next';
+import { logout as logoutApi } from '../api/auth';
+import { canAccessMenu, readCurrentUser } from '../api/permissions';
 import { useOverlay } from '../composables/useOverlay';
 
 const route = useRoute();
+const router = useRouter();
 const { showDrawer } = useOverlay();
+const currentUser = computed(() => readCurrentUser());
 
 const navigation: Array<{ path: string; match: string; label: string; icon: Component }> = [
   { path: '/dashboard', match: '/dashboard', label: '工作台', icon: LayoutDashboard },
@@ -47,15 +53,26 @@ const navigation: Array<{ path: string; match: string; label: string; icon: Comp
   { path: '/workspaces', match: '/workspaces', label: '组织空间', icon: Building2 },
   { path: '/tasks', match: '/tasks', label: '任务中心', icon: ClipboardList },
   { path: '/governance', match: '/governance', label: '风险治理', icon: ShieldAlert },
+  { path: '/prompts', match: '/prompts', label: 'Prompt 模板', icon: MessageSquareText },
   { path: '/eval', match: '/eval', label: '评测中心', icon: Database },
   { path: '/templates', match: '/templates', label: '模板广场', icon: GalleryVerticalEnd },
   { path: '/settings', match: '/settings', label: '系统设置', icon: Settings },
 ];
 
 const activePath = computed(() => route.path);
+const visibleNavigation = computed(() => navigation.filter((item) => canAccessMenu(currentUser.value, item.match)));
 
 function isActive(match: string) {
   return activePath.value === match || activePath.value.startsWith(`${match}/`);
+}
+
+async function handleLogout() {
+  try {
+    await logoutApi();
+  } catch {
+    // 后端 token 已过期或网络异常时，前端也应立即退出到登录页。
+  }
+  await router.replace('/login');
 }
 </script>
 
@@ -72,7 +89,7 @@ function isActive(match: string) {
 
       <nav class="sidebar-nav">
         <RouterLink
-          v-for="item in navigation"
+          v-for="item in visibleNavigation"
           :key="item.path"
           :to="item.path"
           class="nav-item"
@@ -104,9 +121,12 @@ function isActive(match: string) {
             <CircleHelp :size="18" />
           </button>
           <div class="user-chip">
-            <span>A</span>
-            <b>admin</b>
+            <span>{{ (currentUser?.displayName || currentUser?.username || 'A').slice(0, 1).toUpperCase() }}</span>
+            <b>{{ currentUser?.displayName || currentUser?.username || 'admin' }}</b>
           </div>
+          <button class="icon-button danger" type="button" title="退出登录" @click="handleLogout">
+            <LogOut :size="18" />
+          </button>
         </div>
       </header>
 

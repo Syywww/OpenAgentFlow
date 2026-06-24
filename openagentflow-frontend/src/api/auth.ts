@@ -1,4 +1,4 @@
-import { request, setAccessToken } from './http';
+import { clearAccessToken, request, setAccessToken } from './http';
 
 export interface LoginRequest {
   username: string;
@@ -48,4 +48,12 @@ export async function fetchCaptcha() {
 
 export async function fetchCurrentUser() {
   return request<CurrentUser>('/auth/me');
+}
+
+export async function logout() {
+  try {
+    await request<void>('/auth/logout', { method: 'POST' });
+  } finally {
+    clearAccessToken();
+  }
 }

@@ -22,9 +22,11 @@ import EvalResultView from '../views/eval/EvalResultView.vue';
 import WorkspaceGovernanceView from '../views/WorkspaceGovernanceView.vue';
 import TaskCenterView from '../views/TaskCenterView.vue';
 import GovernanceCenterView from '../views/GovernanceCenterView.vue';
+import PromptTemplateCenterView from '../views/PromptTemplateCenterView.vue';
 import TemplateGalleryView from '../views/TemplateGalleryView.vue';
 import SettingsView from '../views/SettingsView.vue';
 import { getAccessToken } from '../api/http';
+import { canAccessMenu, firstAllowedPath, menuAccessRules, readCurrentUser } from '../api/permissions';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -51,6 +53,7 @@ const router = createRouter({
     { path: '/workspaces', component: WorkspaceGovernanceView },
     { path: '/tasks', component: TaskCenterView },
     { path: '/governance', component: GovernanceCenterView },
+    { path: '/prompts', component: PromptTemplateCenterView },
     { path: '/eval', component: EvalDatasetView },
     { path: '/eval/result', component: EvalResultView },
     { path: '/eval/result/:id', component: EvalResultView },
@@ -65,6 +68,16 @@ router.beforeEach((to) => {
   }
   if (!getAccessToken()) {
     return '/login';
+  }
+  const currentUser = readCurrentUser();
+  if (!currentUser) {
+    return '/login';
+  }
+  const matchedMenu = [...menuAccessRules]
+    .sort((a, b) => b.match.length - a.match.length)
+    .find((item) => to.path === item.match || to.path.startsWith(`${item.match}/`));
+  if (matchedMenu && !canAccessMenu(currentUser, matchedMenu.match)) {
+    return firstAllowedPath(menuAccessRules, currentUser);
   }
   return true;
 });

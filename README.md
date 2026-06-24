@@ -12,6 +12,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 
 - **模型接入**：OpenAI-compatible、豆包方舟、Ollama、DeepSeek、Qwen 等供应商配置，支持连通性测试、普通对话和 SSE 流式输出。
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限和调试运行。
+- **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
 - **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、检索测试、引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
 - **可视化工作流**：Vue Flow 画布，支持开始、LLM、RAG、工具、条件、结束节点，支持发布、版本和执行 Trace。
@@ -152,6 +153,7 @@ V013__audit_risk_governance_center.sql
 V014__model_gateway_governance.sql
 V015__knowledge_governance_enhancement.sql
 V016__ops_monitor_alert_center.sql
+V017__prompt_template_center.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -178,25 +180,28 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | P15 模型网关与模型治理 | 已完成 | 路由策略、候选模型、健康统计、失败回退、网关调用观测 |
 | P16 知识库治理增强 | 已完成 | 治理策略、问题扫描、质量评分、风险级别、交付问题闭环 |
 | P17 平台运营监控与告警中心 | 已完成 | 运营总览、健康矩阵、告警规则、告警事件、通知渠道、一键巡检 |
+| P18 通知中心与消息触达 | 后置 | 已按优先级调整为低优先级，后续再做站内通知真实化和外部触达 |
+| P19 Prompt 模板中心与版本治理 | 已完成 | Prompt 模板 CRUD、变量解析、版本发布、复制、回滚、Agent 绑定 |
 
 ## 演示建议
 
 1. 登录 `admin / 123456`。
 2. 在系统设置中配置真实模型 API Key。
-3. 在调试台发起一次模型对话，并查看 Run ID。
-4. 上传知识库文档，等待处理完成后做检索测试。
-5. 绑定知识库到 Agent，在调试台查看引用来源。
-6. 创建工具并绑定 Agent，触发 Tool Calling。
-7. 打开运行日志，查看 LLM、RAG、Tool 的完整 Trace。
-8. 创建工作流并运行，查看工作流 Trace。
-9. 接入 MCP Server，发现并测试 MCP 工具。
-10. 创建评测集、导入样本、运行评测并跳转低分样本 Trace。
-11. 打开用量中心，查看模型成本趋势、调用明细、维度拆分和配额规则。
-12. 打开组织空间，创建团队空间、添加成员，并确认 Agent、知识库、工具、工作流归属到空间。
-13. 打开任务中心，查看知识库文档解析、切片、Embedding、Milvus 写入的实时进度和日志。
-14. 打开风险治理，查看审计日志、高风险工具、MCP 风险、护栏事件和待确认请求，并完成处置记录。
-15. 使用 `.env.prod` 和 `docker-compose.prod.yml` 验证生产部署配置，确认默认密钥不能启动生产后端。
-16. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
+3. 打开 Prompt 模板中心，创建或发布 System Prompt 模板，并在 Agent 详情页绑定。
+4. 在调试台发起一次模型对话，并查看 Run ID。
+5. 上传知识库文档，等待处理完成后做检索测试。
+6. 绑定知识库到 Agent，在调试台查看引用来源。
+7. 创建工具并绑定 Agent，触发 Tool Calling。
+8. 打开运行日志，查看 LLM、RAG、Tool 的完整 Trace。
+9. 创建工作流并运行，查看工作流 Trace。
+10. 接入 MCP Server，发现并测试 MCP 工具。
+11. 创建评测集、导入样本、运行评测并跳转低分样本 Trace。
+12. 打开用量中心，查看模型成本趋势、调用明细、维度拆分和配额规则。
+13. 打开组织空间，创建团队空间、添加成员，并确认 Agent、知识库、工具、工作流归属到空间。
+14. 打开任务中心，查看知识库文档解析、切片、Embedding、Milvus 写入的实时进度和日志。
+15. 打开风险治理，查看审计日志、高风险工具、MCP 风险、护栏事件和待确认请求，并完成处置记录。
+16. 使用 `.env.prod` 和 `docker-compose.prod.yml` 验证生产部署配置，确认默认密钥不能启动生产后端。
+17. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
 
 ## 开源发布清单
 
@@ -412,6 +417,75 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 - 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过。
 - 前端已执行 `npm run build`，结果通过。
 - 本地服务已启动：后端 `http://localhost:8080/api`，前端 `http://localhost:5173`；已验证登录、运营监控总览、手动巡检、告警规则分页、告警事件分页接口成功，浏览器快照确认 `/ops` 页面正常渲染。
+
+## P19 验证记录
+
+- 已按新的优先级安排将 P18 通知中心真实化后置，优先完成 P19 Prompt 模板中心与版本治理。
+- 已新增 SQL 迁移 `V017__prompt_template_center.sql`，刷新 `prompt_template` 和 `prompt_template_version` 中文表字段注释，新增 `prompt:manage` 权限，并初始化默认 Prompt 模板版本。
+- 已新增后端 Prompt 模板中心接口：`/prompt-templates/overview`、`/prompt-templates`、`/prompt-templates/{id}`、`/prompt-templates/{id}/publish`、`/prompt-templates/{id}/copy`、`/prompt-templates/{id}/versions/{versionId}/rollback`。
+- 已新增后端 Prompt 模板服务，支持模板 CRUD、变量 JSON 校验、从 `{{变量名}}` 自动解析变量、版本发布、版本复制和回滚。
+- 已新增前端“Prompt 模板中心”页面和左侧导航入口 `/prompts`，支持模板筛选、分页、编辑弹窗、变量预览、版本发布、复制和回滚。
+- 已在 Agent 详情页新增 System Prompt 模板选择，读取已发布 System Prompt 模板并自动带入模板内容，保存时写入 `systemPromptTemplateId`。
+- 已修复 Agent 新建/编辑页顶部 Tab 只高亮但不切换内容的问题；现在“基础信息”“模型参数”“Prompt 配置”“知识库绑定”“工具绑定”“工作流绑定”“安全策略”都会切换到对应配置面板。
+- 已修复 Agent 新建/编辑页“知识库绑定”“工具绑定”“工作流绑定”列表仍沿用三列布局导致宽度和长度异常的问题，改为单列全宽列表并设置固定高度内部滚动。
+- 已将智能体列表页“新建智能体”从跳转详情页改为弹框创建，并保留原新建页全部卡片切换：基础信息、模型参数、Prompt 配置、知识库绑定、工具绑定、工作流绑定、安全策略；创建时同步保存知识库、工具和工作流绑定关系。
+- 已修正新建智能体弹框“安全策略”卡片的状态短文案，避免出现单字“草”，统一显示为“启用 / 未发布”。
+- 已在本地 MySQL `openagentflow` 成功应用 `V017__prompt_template_center.sql`。
+- 前端已执行 `npm run build`，结果通过。
+- 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过；如直接运行 Maven，请先设置 `JAVA_HOME=D:\kfhj\jdk\jdk-21.0.11`，避免系统默认 Java 8 导致编译失败。
+
+## IAM 用户与权限中心更新记录
+
+- 已新增 SQL 迁移 `V018__iam_admin_center.sql`，初始化 `iam:manage` 权限，并默认授权给 `super_admin` 和 `admin` 角色。
+- 已在本地 MySQL `openagentflow` 成功应用 `V018__iam_admin_center.sql`，验证 `iam:manage` 权限记录数量为 1。
+- 已新增后端 IAM 管理接口：`/iam-admin/overview`、`/iam-admin/users`、`/iam-admin/departments`、`/iam-admin/roles`、`/iam-admin/roles/{id}/permissions`、`/iam-admin/permissions`。
+- 已新增后端 IAM 管理服务，支持用户 CRUD、用户软删除、BCrypt 密码保存、用户所属部门设置、系统角色分配、部门树 CRUD、角色 CRUD 和角色权限批量配置。
+- 已将系统设置页从静态用户 mock 改为真实接口，保留原“模型供应商配置”和“模型列表”卡片，并新增“用户管理”“部门树”“角色权限”卡片切换。
+- 已在前端新增用户弹框、部门弹框和角色权限弹框；用户弹框可设置所属部门和系统角色，角色弹框可勾选菜单/API 权限。
+- 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过。
+- 前端已执行 `npm run build`，结果通过。
+## 登录退出更新记录
+
+- 已在前端顶栏新增退出登录按钮，点击后调用后端 `/auth/logout`，由后端删除 Redis 中的 token 状态。
+- 已新增前端 `logout()` API 封装，退出时会清理 `oaf_access_token` 和 `oaf_current_user`，即使 token 已过期或网络异常也会回到登录页。
+- 顶栏用户信息已从本地当前用户缓存读取，不再固定显示 `admin`。
+- 本次已执行前端 `npm run build`，结果通过；后端退出接口已存在，本次未修改后端代码且未启动后端。
+## 默认演示账号修复记录
+
+- 已确认原始种子数据只初始化了 `admin` 登录账号，`developer` 和 `user` 仅存在于 `iam_role` 角色表中，因此此前不能直接用 `user / 123456` 登录。
+- 已新增 SQL 迁移 `V019__seed_default_login_users.sql`，初始化 `developer / 123456` 和 `user / 123456` 两个演示登录账号，并分别绑定 `developer`、`user` 系统角色。
+- 已在本地 MySQL `openagentflow` 成功写入并校验：`admin`、`developer`、`user` 三个账号的密码 `123456` 均可通过 BCrypt 匹配。
+## 菜单权限过滤更新记录
+
+- 已新增前端权限工具 `src/api/permissions.ts`，统一维护菜单与权限编码的映射关系。
+- 左侧菜单已改为按当前登录用户 `currentUser.permissions` 动态过滤；`super_admin` 和 `admin` 角色默认显示全部菜单。
+- 登录成功后不再固定跳转 `/dashboard`，会跳转到当前用户第一个有权限的菜单，避免普通用户进入无权限页面。
+- 前端路由守卫已接入菜单权限判断，用户直接访问无权限菜单路径时会自动跳转到第一个可访问菜单。
+- 本次已执行前端 `npm run build`，结果通过；未修改后端代码且未启动后端。
+## 菜单栏自适应高度更新记录
+
+- 已调整左侧菜单栏布局：菜单项较少时不再强制把“收起”按钮顶到底部，侧边栏内容会按实际菜单高度自然排列。
+- 菜单项较多时仍保留菜单列表内部滚动，避免整页被长菜单撑出视口。
+- 本次已执行前端 `npm run build`，结果通过；未修改后端代码且未启动后端。
+## 列表密度与长字段展示更新记录
+
+- 已为所有包含分页组件的标准列表卡片增加统一视口高度限制：当列表内容超过页面可用高度时，列表卡片内部出现纵向滚动条，分页条固定在卡片底部，表头在滚动时保持吸顶。
+- 已为模板广场、工作流侧栏列表、弹窗绑定列表等非标准表格分页场景补充内部滚动规则，避免长列表继续撑高页面。
+- 已新增前端全局长字段悬浮查看能力：表格单元格、列表行标题/说明、编码类字段默认单行省略，鼠标移动到被截断或较长文本上时展示完整内容浮层。
+- 已将顶部汇总数据卡片高度压缩约一半，并同步压缩卡片切换入口、快捷卡片、模板卡片、供应商卡片、列表行和筛选区间距，让下方业务列表获得更多可视空间。
+- 本次已执行前端 `npm run build`，结果通过；未修改后端代码，未自动启动或重启后端。
+
+## 指标卡片方块化更新记录
+
+- 已将各页面顶部汇总指标卡从横向铺满的大卡片改为固定小宽度的近方形卡片，桌面端不再四等分撑满整行，视觉上更像紧凑数据块。
+- 指标卡片现在使用自动填充布局，宽屏横向排列，空间不足时自动换行；数值、标题和说明保持单行省略，避免把卡片撑宽或撑高。
+- 本次已执行前端 `npm run build`，结果通过；未修改后端代码，未自动启动或重启后端。
+
+## 指标卡片横向自适应更新记录
+
+- 已按最新要求恢复各页面顶部汇总指标卡横向自适应铺满整行，卡片按当前数量平均分配宽度，不再自动换行。
+- 保留紧凑高度、单行省略和图标右上角布局，保证下方列表区域仍能获得更多可视空间。
+- 本次已执行前端 `npm run build`，结果通过；未修改后端代码，未自动启动或重启后端。
 
 ## License
 

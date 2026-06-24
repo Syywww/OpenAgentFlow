@@ -40,6 +40,7 @@ Redis: cache, sessions, queue state
 - `V014__model_gateway_governance.sql`: model gateway governance fields, route-policy indexes, default Agent chat route policy, and gateway decision logging.
 - `V015__knowledge_governance_enhancement.sql`: knowledge-base governance policies, quality issues, permissions, and default governance policy.
 - `V016__ops_monitor_alert_center.sql`: platform operation monitoring, health checks, alert rules, alert events, notification channels, and monitoring permissions.
+- `V017__prompt_template_center.sql`: Prompt template center permissions, default Prompt versions, variable comments, and seed Prompt templates.
 
 Recommended execution order:
 
@@ -60,6 +61,7 @@ V013__audit_risk_governance_center.sql
 V014__model_gateway_governance.sql
 V015__knowledge_governance_enhancement.sql
 V016__ops_monitor_alert_center.sql
+V017__prompt_template_center.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -122,6 +124,13 @@ Coverage matches the PostgreSQL version at the feature level:
 - The migration seeds station and Webhook notification channels, seven health checks, five default alert rules, and `ops:monitor:view` / `ops:monitor:manage` permissions.
 - The backend exposes `/ops-monitor/overview`, `/ops-monitor/health`, `/ops-monitor/inspect`, `/ops-monitor/rules`, `/ops-monitor/events`, `/ops-monitor/checks`, and `/ops-monitor/channels`.
 - The frontend now includes an Ops Monitor page for overview cards, health matrix, alert event handling, alert-rule CRUD, health checks, and notification channels.
+
+## Latest Prompt Template Update
+
+- `V017__prompt_template_center.sql` refreshes Chinese comments for `prompt_template` and `prompt_template_version`, and adds `prompt:manage` permission.
+- Existing default RAG and Tool Prompt rows get an initial `v1` version snapshot; the migration also seeds default Evaluation Judge and Workflow Summary Prompt templates.
+- The backend exposes `/prompt-templates/overview`, `/prompt-templates`, `/prompt-templates/{id}`, `/prompt-templates/{id}/publish`, `/prompt-templates/{id}/copy`, and `/prompt-templates/{id}/versions/{versionId}/rollback`.
+- The frontend now includes a Prompt Template Center page for template CRUD, variable preview, version publishing, copying, rollback, and Agent System Prompt binding.
 
 ## Milvus Mapping
 

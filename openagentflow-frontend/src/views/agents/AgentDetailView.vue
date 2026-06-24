@@ -37,6 +37,7 @@ import {
   type WorkflowSummary,
 } from '../../api/workflows';
 import { fetchChatModels, type ModelConfigSummary } from '../../api/models';
+import { fetchPromptTemplates, type PromptTemplateSummary } from '../../api/prompts';
 import { useOverlay } from '../../composables/useOverlay';
 import { usePagination } from '../../composables/usePagination';
 
@@ -47,6 +48,7 @@ const tabs = ['基础信息', '模型参数', 'Prompt 配置', '知识库绑定'
 const activeTab = ref('基础信息');
 const loading = ref(false);
 const models = ref<ModelConfigSummary[]>([]);
+const promptTemplates = ref<PromptTemplateSummary[]>([]);
 const currentAgent = ref<AgentDetail | null>(null);
 const knowledgeBases = ref<KnowledgeBaseSummary[]>([]);
 const knowledgeBindings = ref<AgentKnowledgeBindingSummary[]>([]);
@@ -68,6 +70,7 @@ const form = reactive({
   description: '',
   agentType: 'chat_agent',
   modelId: '',
+  systemPromptTemplateId: '',
   systemPrompt: '你是 OpenAgentFlow-Java 的智能体，请使用清晰、准确的中文回答用户。',
   temperature: 0.3,
   maxTokens: 2048,
@@ -82,7 +85,7 @@ const pageDescription = computed(() => form.description || '配置 Prompt、模�
 const statusLabel = computed(() => currentAgent.value?.statusLabel || statusText(form.status));
 
 onMounted(async () => {
-  await Promise.all([loadModels(), loadKnowledgeBases(), loadTools(), loadWorkflows(), loadAgent()]);
+  await Promise.all([loadModels(), loadPromptTemplates(), loadKnowledgeBases(), loadTools(), loadWorkflows(), loadAgent()]);
 });
 
 async function loadModels() {
@@ -105,6 +108,16 @@ async function loadAgent() {
   } finally {
     loading.value = false;
   }
+}
+
+async function loadPromptTemplates() {
+  const result = await fetchPromptTemplates({
+    promptType: 'system',
+    status: 'published',
+    pageNo: 1,
+    pageSize: 100,
+  });
+  promptTemplates.value = result.records;
 }
 
 async function loadKnowledgeBases() {
@@ -141,6 +154,7 @@ function fillForm(detail: AgentDetail) {
   form.description = detail.description || '';
   form.agentType = detail.agentType || 'chat_agent';
   form.modelId = detail.modelId || form.modelId;
+  form.systemPromptTemplateId = detail.systemPromptTemplateId || '';
   form.systemPrompt = detail.systemPrompt || form.systemPrompt;
   form.memoryStrategy = detail.memoryStrategy || 'none';
   form.visibility = detail.visibility || 'private';
@@ -232,6 +246,7 @@ function toRequest(): AgentRequest {
     description: form.description,
     agentType: form.agentType,
     modelId: form.modelId,
+    systemPromptTemplateId: form.systemPromptTemplateId || undefined,
     systemPrompt: form.systemPrompt,
     modelParams: JSON.stringify({
       temperature: Number(form.temperature),
@@ -241,6 +256,13 @@ function toRequest(): AgentRequest {
     visibility: form.visibility,
     status: form.status,
   };
+}
+
+function applySystemPromptTemplate() {
+  const template = promptTemplates.value.find((item) => item.id === form.systemPromptTemplateId);
+  if (template) {
+    form.systemPrompt = template.content;
+  }
 }
 
 function statusText(status: string) {
@@ -267,7 +289,7 @@ function statusText(status: string) {
     <button v-for="tab in tabs" :key="tab" class="tab" :class="{ active: activeTab === tab }" type="button" @click="activeTab = tab">{{ tab }}</button>
   </div>
 
-  <section class="form-layout">
+  <section v-if="activeTab === '基础信息'" class="form-layout">
     <div class="section-block">
       <div class="section-title"><h2>基础信息</h2><StatusBadge :label="statusLabel" /></div>
       <div class="form-grid">
@@ -278,7 +300,9 @@ function statusText(status: string) {
         <label>状态<select v-model="form.status"><option value="draft">开发中</option><option value="published">运行中</option><option value="disabled">已暂停</option></select></label>
       </div>
     </div>
+  </section>
 
+  <section v-else-if="activeTab === '模型参数'" class="form-layout">
     <div class="section-block">
       <div class="section-title"><h2>模型配置</h2><span>OpenAI-compatible / Ollama / Qwen / DeepSeek</span></div>
       <div class="form-grid">
@@ -286,58 +310,113 @@ function statusText(status: string) {
         <label>基础模型<select v-model="form.modelId"><option v-for="model in models" :key="model.id" :value="model.id">{{ model.providerName }} / {{ model.modelName }}</option></select></label>
         <label>Temperature<input v-model.number="form.temperature" type="range" min="0" max="2" step="0.01" /></label>
         <label>最大 Tokens<input v-model.number="form.maxTokens" type="range" min="256" max="8192" step="128" /></label>
+      </div>
+    </div>
+  </section>
+
+  <section v-else-if="activeTab === 'Prompt 配置'" class="form-layout">
+    <div class="section-block">
+      <div class="section-title"><h2>Prompt 配置</h2><span>可绑定 Prompt 模板，也可手动调整当前 Agent 的 System Prompt</span></div>
+      <div class="form-grid">
+        <label>System Prompt 模板
+          <select v-model="form.systemPromptTemplateId" @change="applySystemPromptTemplate">
+            <option value="">不使用模板</option>
+            <option v-for="template in promptTemplates" :key="template.id" :value="template.id">
+              {{ template.templateName }} / {{ template.latestVersionNo || '未发布版本' }}
+            </option>
+          </select>
+        </label>
         <label class="wide">System Prompt<textarea v-model="form.systemPrompt" /></label>
       </div>
     </div>
   </section>
 
-  <section class="detail-columns">
+  <section v-else-if="activeTab === '知识库绑定'" class="agent-binding-panel">
     <div class="section-block">
       <div class="section-title"><h2>已绑定知识库</h2><span>{{ selectedKnowledgeBaseIds.length }} 个</span></div>
       <div v-if="knowledgeBases.length === 0" class="empty-state">暂无知识库，请先在知识库模块创建并上传文档</div>
       <template v-else>
-        <div v-for="kb in pagedKnowledgeBases" :key="kb.id" class="list-row">
-          <label class="checkbox-row">
-            <input v-model="selectedKnowledgeBaseIds" type="checkbox" :value="kb.id" />
-            <b>{{ kb.kbName }}</b>
-          </label>
-          <span>{{ kb.documentCount }} 文档 · {{ kb.chunkCount }} 分片</span>
-          <StatusBadge :label="selectedKnowledgeBaseIds.includes(kb.id) ? '已启用' : '未绑定'" />
+        <div class="agent-binding-list">
+          <div v-for="kb in pagedKnowledgeBases" :key="kb.id" class="list-row agent-binding-row">
+            <label class="checkbox-row">
+              <input v-model="selectedKnowledgeBaseIds" type="checkbox" :value="kb.id" />
+              <b>{{ kb.kbName }}</b>
+            </label>
+            <span>{{ kb.documentCount }} 文档 · {{ kb.chunkCount }} 分片</span>
+            <StatusBadge :label="selectedKnowledgeBaseIds.includes(kb.id) ? '已启用' : '未绑定'" />
+          </div>
         </div>
         <PaginationBar v-model:page="kbPage" :total="knowledgeBases.length" />
       </template>
     </div>
+  </section>
 
+  <section v-else-if="activeTab === '工具绑定'" class="agent-binding-panel">
     <div class="section-block">
       <div class="section-title"><h2>已绑定工具</h2><span>{{ selectedToolIds.length }} 个</span></div>
       <div v-if="tools.length === 0" class="empty-state">暂无工具，请先在工具中心创建 REST API、Webhook 或数据库查询工具</div>
       <template v-else>
-        <div v-for="tool in pagedTools" :key="tool.id" class="list-row">
-          <label class="checkbox-row">
-            <input v-model="selectedToolIds" type="checkbox" :value="tool.id" />
-            <b>{{ tool.toolName }}</b>
-          </label>
-          <span class="mono">{{ tool.toolCode }}</span>
-          <StatusBadge :label="selectedToolIds.includes(tool.id) ? '已启用' : tool.riskLabel" :tone="tool.riskLevel === 'high' ? 'danger' : tool.riskLevel === 'medium' ? 'warning' : undefined" />
+        <div class="agent-binding-list">
+          <div v-for="tool in pagedTools" :key="tool.id" class="list-row agent-binding-row">
+            <label class="checkbox-row">
+              <input v-model="selectedToolIds" type="checkbox" :value="tool.id" />
+              <b>{{ tool.toolName }}</b>
+            </label>
+            <span class="mono">{{ tool.toolCode }}</span>
+            <StatusBadge :label="selectedToolIds.includes(tool.id) ? '已启用' : tool.riskLabel" :tone="tool.riskLevel === 'high' ? 'danger' : tool.riskLevel === 'medium' ? 'warning' : undefined" />
+          </div>
         </div>
         <PaginationBar v-model:page="toolPage" :total="tools.length" />
       </template>
     </div>
+  </section>
 
+  <section v-else-if="activeTab === '工作流绑定'" class="agent-binding-panel">
     <div class="section-block">
       <div class="section-title"><h2>已绑定工作流</h2><span>{{ selectedWorkflowIds.length }} 个</span></div>
       <div v-if="workflows.length === 0" class="empty-state">暂无工作流，请先在工作流编排中创建并发布</div>
       <template v-else>
-        <div v-for="workflow in pagedWorkflows" :key="workflow.id" class="list-row">
-          <label class="checkbox-row">
-            <input v-model="selectedWorkflowIds" type="checkbox" :value="workflow.id" />
-            <b>{{ workflow.workflowName }}</b>
-          </label>
-          <span class="mono">{{ workflow.workflowCode }}</span>
-          <StatusBadge :label="selectedWorkflowIds.includes(workflow.id) ? '调试时优先运行' : workflow.statusLabel" />
+        <div class="agent-binding-list">
+          <div v-for="workflow in pagedWorkflows" :key="workflow.id" class="list-row agent-binding-row">
+            <label class="checkbox-row">
+              <input v-model="selectedWorkflowIds" type="checkbox" :value="workflow.id" />
+              <b>{{ workflow.workflowName }}</b>
+            </label>
+            <span class="mono">{{ workflow.workflowCode }}</span>
+            <StatusBadge :label="selectedWorkflowIds.includes(workflow.id) ? '调试时优先运行' : workflow.statusLabel" />
+          </div>
         </div>
         <PaginationBar v-model:page="workflowPage" :total="workflows.length" />
       </template>
+    </div>
+  </section>
+
+  <section v-else class="form-layout">
+    <div class="section-block">
+      <div class="section-title"><h2>安全策略</h2><span>会话记忆、可见范围和发布状态</span></div>
+      <div class="form-grid">
+        <label>记忆策略
+          <select v-model="form.memoryStrategy">
+            <option value="none">不启用记忆</option>
+            <option value="short_term">短期会话记忆</option>
+            <option value="long_term">长期记忆</option>
+          </select>
+        </label>
+        <label>可见范围
+          <select v-model="form.visibility">
+            <option value="private">仅自己可见</option>
+            <option value="team">团队可见</option>
+            <option value="public">公开可见</option>
+          </select>
+        </label>
+        <label>运行状态
+          <select v-model="form.status">
+            <option value="draft">开发中</option>
+            <option value="published">运行中</option>
+            <option value="disabled">已暂停</option>
+          </select>
+        </label>
+      </div>
     </div>
   </section>
 </template>

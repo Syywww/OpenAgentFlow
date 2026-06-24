@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowRight, Bot, Braces, GitBranch, Library, RefreshCw, ShieldCheck } from 'lucide-vue-next';
 import { fetchCaptcha, login } from '../api/auth';
+import { firstAllowedPath, menuAccessRules } from '../api/permissions';
 
 const router = useRouter();
 
@@ -34,14 +35,14 @@ async function handleLogin() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    await login({
+    const result = await login({
       username: username.value,
       password: password.value,
       captchaKey: captchaKey.value,
       captcha: captcha.value,
       rememberMe: rememberMe.value,
     });
-    await router.push('/dashboard');
+    await router.push(firstAllowedPath(menuAccessRules, result.currentUser));
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '登录失败，请稍后重试';
     await loadCaptcha();
