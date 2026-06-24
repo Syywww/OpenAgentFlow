@@ -3,6 +3,7 @@ import LoginView from '../views/LoginView.vue';
 import DashboardView from '../views/DashboardView.vue';
 import AgentListView from '../views/agents/AgentListView.vue';
 import AgentDetailView from '../views/agents/AgentDetailView.vue';
+import AgentTeamView from '../views/agents/AgentTeamView.vue';
 import DebugWorkbenchView from '../views/DebugWorkbenchView.vue';
 import KnowledgeListView from '../views/knowledge/KnowledgeListView.vue';
 import KnowledgeDetailView from '../views/knowledge/KnowledgeDetailView.vue';
@@ -36,6 +37,7 @@ const router = createRouter({
     { path: '/dashboard', component: DashboardView },
     { path: '/agents', component: AgentListView },
     { path: '/agents/:id', component: AgentDetailView },
+    { path: '/agent-teams', component: AgentTeamView },
     { path: '/debug', component: DebugWorkbenchView },
     { path: '/knowledge', component: KnowledgeListView },
     { path: '/knowledge/:id', component: KnowledgeDetailView },

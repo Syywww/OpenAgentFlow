@@ -633,6 +633,125 @@ a {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.dashboard-metric-grid {
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.dashboard-side-stack {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.dashboard-insights {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-insights .insight-strip {
+  margin-top: 0;
+}
+
+.dashboard-trend-list,
+.dashboard-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-trend-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 52px minmax(150px, 0.75fr);
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 0;
+}
+
+.dashboard-trend-row:last-child {
+  border-bottom: 0;
+}
+
+.dashboard-trend-row span,
+.dashboard-trend-row small,
+.dashboard-list-item span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-trend-row i {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.dashboard-trend-row em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary), var(--teal));
+}
+
+.dashboard-health-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dashboard-health-grid div {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+  padding: 9px 10px;
+}
+
+.dashboard-health-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dashboard-health-grid b {
+  display: block;
+  margin-top: 4px;
+  font-size: 20px;
+}
+
+.dashboard-list.compact {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.dashboard-list-item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  padding: 9px 10px;
+}
+
+.dashboard-list-item div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dashboard-list-item b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .usage-bars {
   display: grid;
   gap: 14px;
@@ -1053,6 +1172,24 @@ label.wide {
   gap: 12px;
 }
 
+.button-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.button-row.right {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.check-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .list-row,
 .trace-step,
 .queue-row,
@@ -1108,6 +1245,103 @@ label.wide {
   height: 16px;
   margin: 0;
   flex: 0 0 auto;
+}
+
+.agent-team-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 0.95fr) minmax(0, 1.05fr);
+  gap: 16px;
+  min-height: 0;
+}
+
+.agent-team-list,
+.agent-team-detail {
+  min-height: 0;
+}
+
+.agent-team-detail {
+  display: grid;
+  gap: 12px;
+}
+
+.team-profile {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.team-profile div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.team-profile span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.team-profile b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-title.slim {
+  margin-bottom: 0;
+}
+
+.section-title.slim h2 {
+  font-size: 15px;
+}
+
+.team-member-scroll {
+  display: grid;
+  gap: 8px;
+  max-height: 210px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.agent-team-member-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.agent-team-result {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.agent-team-modal .overlay-grid {
+  grid-template-columns: minmax(0, 0.85fr) minmax(360px, 1.15fr);
+}
+
+.agent-team-detail-modal {
+  width: min(1180px, 96vw);
+}
+
+.agent-team-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.member-editor-row {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+  padding: 10px;
 }
 
 .code-editor {
@@ -2746,7 +2980,14 @@ label.wide {
   .provider-grid,
   .settings-form,
   .form-grid,
+  .agent-team-layout,
+  .agent-team-modal .overlay-grid,
+  .agent-team-detail-grid,
   .two-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .team-profile {
     grid-template-columns: 1fr;
   }
 

@@ -9,6 +9,7 @@ export interface MenuAccessRule {
 export const menuAccessRules: MenuAccessRule[] = [
   { path: '/dashboard', match: '/dashboard', permissions: ['dashboard:view'] },
   { path: '/agents', match: '/agents', permissions: ['agent:manage', 'agent:view', 'agent:create', 'agent:update'] },
+  { path: '/agent-teams', match: '/agent-teams', permissions: ['agent-team:manage', 'agent-team:view', 'agent-team:run'] },
   { path: '/debug', match: '/debug', permissions: ['debug:use', 'agent:run'] },
   { path: '/knowledge', match: '/knowledge', permissions: ['knowledge:manage', 'knowledge:view', 'knowledge:retrieve'] },
   { path: '/knowledge-governance', match: '/knowledge-governance', permissions: ['knowledge:governance:view', 'knowledge:governance:manage'] },

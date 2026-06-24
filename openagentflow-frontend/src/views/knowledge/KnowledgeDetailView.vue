@@ -36,6 +36,8 @@ const query = ref('请根据知识库总结核心内容');
 const sources = ref<KnowledgeSource[]>([]);
 const retrievalLatency = ref(0);
 const retrievalQuality = ref<KnowledgeRetrievalResult | null>(null);
+type KnowledgeDetailPanel = 'chunks' | 'retrieval' | 'sources';
+const activePanel = ref<KnowledgeDetailPanel>('chunks');
 const retrievalForm = reactive<KnowledgeRetrievalOptions>({
   query: '',
   topK: 5,
@@ -123,7 +125,13 @@ async function handleRetrievalTest() {
   sources.value = result.sources;
   retrievalLatency.value = result.latencyMs;
   retrievalQuality.value = result;
+  sourcePage.value = 1;
+  activePanel.value = 'sources';
   toast(result.lowConfidence ? '检索完成，但结果低置信，请检查阈值或知识库内容' : `检索完成，命中 ${result.sources.length} 条来源`);
+}
+
+function switchPanel(panel: KnowledgeDetailPanel) {
+  activePanel.value = panel;
 }
 
 async function handleRebuildVectors() {
@@ -253,99 +261,107 @@ function searchModeLabel(value?: string) {
 
     <div class="section-block">
       <div class="tabs">
-        <button class="tab active" type="button">切片预览</button>
-        <button class="tab" type="button">检索测试</button>
-        <button class="tab" type="button">引用来源</button>
+        <button class="tab" :class="{ active: activePanel === 'chunks' }" type="button" @click="switchPanel('chunks')">切片预览</button>
+        <button class="tab" :class="{ active: activePanel === 'retrieval' }" type="button" @click="switchPanel('retrieval')">检索测试</button>
+        <button class="tab" :class="{ active: activePanel === 'sources' }" type="button" @click="switchPanel('sources')">引用来源</button>
       </div>
 
-      <div v-if="selectedDocument" class="process-panel">
-        <div class="process-header">
-          <div>
-            <b>{{ selectedDocument.processStageLabel || statusLabel(selectedDocument.parseStatus) }}</b>
-            <span>{{ selectedDocument.lastMessage || '等待处理日志' }}</span>
+      <template v-if="activePanel === 'chunks'">
+        <div v-if="selectedDocument" class="process-panel">
+          <div class="process-header">
+            <div>
+              <b>{{ selectedDocument.processStageLabel || statusLabel(selectedDocument.parseStatus) }}</b>
+              <span>{{ selectedDocument.lastMessage || '等待处理日志' }}</span>
+            </div>
+            <StatusBadge :label="syncLabel(selectedDocument)" />
           </div>
-          <StatusBadge :label="syncLabel(selectedDocument)" />
+          <div class="progress-track">
+            <div class="progress-bar" :style="{ width: `${selectedDocument.progressPercent || 0}%` }"></div>
+          </div>
+          <div class="process-meta">
+            <span>状态：{{ statusLabel(selectedDocument.parseStatus) }}</span>
+            <span>接口：{{ selectedDocument.embeddingApi || '-' }}</span>
+            <span>模型：{{ selectedDocument.embeddingModelCode || '-' }}</span>
+            <span>Milvus：{{ selectedDocument.milvusSynced ? '已同步' : processing ? '同步中' : '未同步' }}</span>
+          </div>
+          <button
+            v-if="selectedDocument.asyncTaskId"
+            class="secondary-button"
+            type="button"
+            @click="router.push('/tasks')"
+          >
+            <ClipboardList :size="16" /> 查看任务中心日志
+          </button>
+          <ul class="process-log">
+            <li v-for="line in selectedDocument.processLogs || []" :key="line">{{ line }}</li>
+          </ul>
+          <p v-if="selectedDocument.parseError" class="error-text">{{ selectedDocument.parseError }}</p>
         </div>
-        <div class="progress-track">
-          <div class="progress-bar" :style="{ width: `${selectedDocument.progressPercent || 0}%` }"></div>
+
+        <article v-for="chunk in pagedChunks" :key="chunk.id" class="chunk-item">
+          <div>
+            <b>{{ chunk.title || `分片 ${chunk.chunkNo}` }}</b>
+            <StatusBadge :label="chunk.syncStatus === 'synced' ? '已写入 Milvus' : chunk.syncStatus || '待同步'" />
+          </div>
+          <p>{{ chunk.content }}</p>
+          <span>{{ chunk.tokenCount }} tokens</span>
+        </article>
+        <PaginationBar v-model:page="chunkPage" :total="visibleChunks.length" />
+        <div v-if="visibleChunks.length === 0" class="empty-state">
+          {{ selectedDocument ? '当前文档暂无切片' : '暂无可预览分片' }}
         </div>
-        <div class="process-meta">
-          <span>状态：{{ statusLabel(selectedDocument.parseStatus) }}</span>
-          <span>接口：{{ selectedDocument.embeddingApi || '-' }}</span>
-          <span>模型：{{ selectedDocument.embeddingModelCode || '-' }}</span>
-          <span>Milvus：{{ selectedDocument.milvusSynced ? '已同步' : processing ? '同步中' : '未同步' }}</span>
+      </template>
+
+      <template v-else-if="activePanel === 'retrieval'">
+        <div class="metric-grid compact">
+          <StatCard label="文档总数" :value="String(detail.documentCount)" detail="已上传" icon="Library" tone="info" />
+          <StatCard label="切片总数" :value="String(detail.chunkCount)" detail="已入库" icon="Braces" tone="success" />
+          <StatCard label="向量总数" :value="String(detail.embeddingCount)" detail="MySQL + Milvus" icon="Activity" tone="neutral" />
+          <StatCard label="检索耗时" :value="`${retrievalLatency}ms`" detail="最近一次" icon="ShieldCheck" tone="warning" />
         </div>
-        <button
-          v-if="selectedDocument.asyncTaskId"
-          class="secondary-button"
-          type="button"
-          @click="router.push('/tasks')"
-        >
-          <ClipboardList :size="16" /> 查看任务中心日志
-        </button>
-        <ul class="process-log">
-          <li v-for="line in selectedDocument.processLogs || []" :key="line">{{ line }}</li>
-        </ul>
-        <p v-if="selectedDocument.parseError" class="error-text">{{ selectedDocument.parseError }}</p>
-      </div>
 
-      <div class="metric-grid compact">
-        <StatCard label="文档总数" :value="String(detail.documentCount)" detail="已上传" icon="Library" tone="info" />
-        <StatCard label="切片总数" :value="String(detail.chunkCount)" detail="已入库" icon="Braces" tone="success" />
-        <StatCard label="向量总数" :value="String(detail.embeddingCount)" detail="MySQL + Milvus" icon="Activity" tone="neutral" />
-        <StatCard label="检索耗时" :value="`${retrievalLatency}ms`" detail="最近一次" icon="ShieldCheck" tone="warning" />
-      </div>
-
-      <div class="filter-row">
-        <input v-model="query" placeholder="输入检索测试问题" />
-        <select v-model="retrievalForm.searchMode">
-          <option value="hybrid">混合检索</option>
-          <option value="vector">向量检索</option>
-          <option value="keyword">关键词检索</option>
-        </select>
-        <label class="inline-field">TopK<input v-model.number="retrievalForm.topK" type="number" min="1" max="20" /></label>
-        <label class="inline-field">候选<input v-model.number="retrievalForm.candidateK" type="number" min="1" max="100" /></label>
-        <label class="inline-field">阈值<input v-model.number="retrievalForm.scoreThreshold" type="number" min="0" max="1" step="0.01" /></label>
-        <label class="inline-field">低置信<input v-model.number="retrievalForm.lowConfidenceThreshold" type="number" min="0" max="1" step="0.01" /></label>
-        <label class="checkbox-line"><input v-model="retrievalForm.rerankEnabled" type="checkbox" /> 重排</label>
-        <label class="checkbox-line"><input v-model="retrievalForm.rejectLowConfidence" type="checkbox" /> 低置信拒答</label>
-        <button class="primary-button" type="button" @click="handleRetrievalTest"><Search :size="16" /> 检索测试</button>
-      </div>
-
-      <div v-if="retrievalQuality" class="insight-strip retrieval-quality-summary">
-        <b>{{ retrievalQuality.lowConfidence ? '低置信检索结果' : '检索质量通过' }}</b>
-        <p>
-          模式：{{ searchModeLabel(retrievalQuality.searchMode) }}；
-          候选：{{ retrievalQuality.candidateCount || 0 }}；
-          返回：{{ retrievalQuality.resultCount || sources.length }}；
-          最佳置信：{{ scoreText(retrievalQuality.confidenceScore) }}；
-          阈值：{{ scoreText(retrievalQuality.scoreThreshold) }} / 低置信 {{ scoreText(retrievalQuality.lowConfidenceThreshold) }}。
-        </p>
-        <p v-if="retrievalQuality.rejectReason">{{ retrievalQuality.rejectReason }}</p>
-      </div>
-
-      <article v-for="source in pagedSources" :key="source.chunkId" class="chunk-item">
-        <div>
-          <b>{{ source.documentName }} / 分片 {{ source.chunkNo }}</b>
-          <StatusBadge :label="`最终 ${scoreText(source.score)}`" />
+        <div class="filter-row">
+          <input v-model="query" placeholder="输入检索测试问题" />
+          <select v-model="retrievalForm.searchMode">
+            <option value="hybrid">混合检索</option>
+            <option value="vector">向量检索</option>
+            <option value="keyword">关键词检索</option>
+          </select>
+          <label class="inline-field">TopK<input v-model.number="retrievalForm.topK" type="number" min="1" max="20" /></label>
+          <label class="inline-field">候选<input v-model.number="retrievalForm.candidateK" type="number" min="1" max="100" /></label>
+          <label class="inline-field">阈值<input v-model.number="retrievalForm.scoreThreshold" type="number" min="0" max="1" step="0.01" /></label>
+          <label class="inline-field">低置信<input v-model.number="retrievalForm.lowConfidenceThreshold" type="number" min="0" max="1" step="0.01" /></label>
+          <label class="checkbox-line"><input v-model="retrievalForm.rerankEnabled" type="checkbox" /> 重排</label>
+          <label class="checkbox-line"><input v-model="retrievalForm.rejectLowConfidence" type="checkbox" /> 低置信拒答</label>
+          <button class="primary-button" type="button" @click="handleRetrievalTest"><Search :size="16" /> 检索测试</button>
         </div>
-        <span>{{ source.matchReason || '向量相似' }} · 向量 {{ scoreText(source.vectorScore) }} · 关键词 {{ scoreText(source.keywordScore) }} · 重排 {{ scoreText(source.rerankScore) }}</span>
-        <p>{{ source.quoteText }}</p>
-      </article>
-      <PaginationBar v-model:page="sourcePage" :total="sources.length" />
 
-      <article v-for="chunk in pagedChunks" :key="chunk.id" class="chunk-item">
-        <div>
-          <b>{{ chunk.title || `分片 ${chunk.chunkNo}` }}</b>
-          <StatusBadge :label="chunk.syncStatus === 'synced' ? '已写入 Milvus' : chunk.syncStatus || '待同步'" />
+        <div v-if="retrievalQuality" class="insight-strip retrieval-quality-summary">
+          <b>{{ retrievalQuality.lowConfidence ? '低置信检索结果' : '检索质量通过' }}</b>
+          <p>
+            模式：{{ searchModeLabel(retrievalQuality.searchMode) }}；
+            候选：{{ retrievalQuality.candidateCount || 0 }}；
+            返回：{{ retrievalQuality.resultCount || sources.length }}；
+            最佳置信：{{ scoreText(retrievalQuality.confidenceScore) }}；
+            阈值：{{ scoreText(retrievalQuality.scoreThreshold) }} / 低置信 {{ scoreText(retrievalQuality.lowConfidenceThreshold) }}。
+          </p>
+          <p v-if="retrievalQuality.rejectReason">{{ retrievalQuality.rejectReason }}</p>
         </div>
-        <p>{{ chunk.content }}</p>
-        <span>{{ chunk.tokenCount }} tokens</span>
-      </article>
-      <PaginationBar v-model:page="chunkPage" :total="visibleChunks.length" />
-      <div v-if="visibleChunks.length === 0 && sources.length === 0" class="empty-state">
-        {{ selectedDocument ? '当前文档暂无切片' : '暂无可预览分片' }}
-      </div>
+        <div v-else class="empty-state">配置参数后执行一次检索测试，命中结果会自动进入引用来源卡片。</div>
+      </template>
+
+      <template v-else>
+        <article v-for="source in pagedSources" :key="source.chunkId" class="chunk-item">
+          <div>
+            <b>{{ source.documentName }} / 分片 {{ source.chunkNo }}</b>
+            <StatusBadge :label="`最终 ${scoreText(source.score)}`" />
+          </div>
+          <span>{{ source.matchReason || '向量相似' }} · 向量 {{ scoreText(source.vectorScore) }} · 关键词 {{ scoreText(source.keywordScore) }} · 重排 {{ scoreText(source.rerankScore) }}</span>
+          <p>{{ source.quoteText }}</p>
+        </article>
+        <PaginationBar v-model:page="sourcePage" :total="sources.length" />
+        <div v-if="sources.length === 0" class="empty-state">暂无引用来源，请先在检索测试卡片中执行查询。</div>
+      </template>
     </div>
   </section>
 </template>

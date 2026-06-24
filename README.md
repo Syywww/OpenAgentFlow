@@ -12,6 +12,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 
 - **模型接入**：OpenAI-compatible、豆包方舟、Ollama、DeepSeek、Qwen 等供应商配置，支持连通性测试、普通对话和 SSE 流式输出。
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限和调试运行。
+- **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、运行验证和 Trace 追踪。
 - **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
 - **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、检索测试、引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
@@ -154,6 +155,10 @@ V014__model_gateway_governance.sql
 V015__knowledge_governance_enhancement.sql
 V016__ops_monitor_alert_center.sql
 V017__prompt_template_center.sql
+V018__iam_admin_center.sql
+V019__seed_default_login_users.sql
+V020__multi_agent_collaboration.sql
+V021__runtime_trace_token_usage_default.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -182,6 +187,8 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | P17 平台运营监控与告警中心 | 已完成 | 运营总览、健康矩阵、告警规则、告警事件、通知渠道、一键巡检 |
 | P18 通知中心与消息触达 | 后置 | 已按优先级调整为低优先级，后续再做站内通知真实化和外部触达 |
 | P19 Prompt 模板中心与版本治理 | 已完成 | Prompt 模板 CRUD、变量解析、版本发布、复制、回滚、Agent 绑定 |
+| P20 工作台 Dashboard 全量真实化 | 已完成 | 真实指标、运行趋势、最近运行、模型排行、任务队列、告警健康、知识库质量 |
+| P21 多 Agent 协作 | 已完成 | 协作团队 CRUD、成员分工、五种协作模式、真实 Agent 调用、运行验证、Trace 追踪 |
 
 ## 演示建议
 
@@ -494,7 +501,48 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 - 已将 Agent 绑定知识库的默认检索配置升级为混合检索 + 本地规则重排 + 低置信拒答；聊天调试时如果知识库没有召回可靠来源，会注入系统约束，要求模型明确说明资料不足，避免无依据编造。
 - 已新增知识库向量重建接口 `/knowledge-bases/{id}/vectors/rebuild`，通过异步任务中心执行分批 Embedding、MySQL 向量更新和 Milvus 同步；任务中心新增“知识库向量重建”类型筛选。
 - 已在知识库详情页新增检索质量参数面板、低置信提示、分项得分展示和“重建向量”入口，重建任务提交后可跳转任务中心查看进度。
+- 已修复知识库详情页“切片预览 / 检索测试 / 引用来源”卡片点击无反应的问题，三个卡片现在按选中状态切换展示，检索测试完成后会自动切换到引用来源查看命中片段。
 - 本次已执行后端 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile` 和前端 `npm run build`，结果均通过；未自动启动或重启后端。
+- 本次 Tab 修复仅修改前端页面和 README，已重新执行前端 `npm run build`，结果通过；未修改后端且未启动或重启后端。
+
+## P20 工作台 Dashboard 全量真实化记录
+
+- 已扩展后端 `/dashboard/overview` 为工作台全量聚合接口，保留原有字段并新增已发布 Agent、启用工具、工作流、今日成功率、Token、平均耗时、任务积压、打开告警、异常组件等真实指标。
+- 已新增最近 7 天运行趋势、最近运行记录、模型使用排行、任务队列、打开告警、平台健康检查、知识库健康和运营洞察数据，统一从现有 MySQL 业务表实时汇总，不再依赖前端 mock。
+- 已新增前端 `api/dashboard.ts`，工作台页面改为真实接口加载，快捷入口改为实际路由跳转，最近运行可跳转 Trace 详情，用量、任务、告警、知识治理均可跳转对应治理页面。
+- 已补充工作台专用紧凑布局样式，运行趋势、模型排行、任务队列、告警健康和知识库质量在首页集中展示，并保留列表分页和长文本省略展示习惯。
+- 本次已执行后端 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile` 和前端 `npm run build`，结果均通过；未自动启动或重启后端。
+
+## IDEA 后端控制台日志更新记录
+
+- 已新增后端 `logback-spring.xml`，IDEA 直接运行 `OpenAgentFlowApplication` 时会在 Run Console 输出带时间、级别、线程、Logger 和消息的彩色控制台日志。
+- 已新增 `StartupLogRunner` 启动提示组件，Spring Boot 启动完成后会在控制台打印本机访问地址、局域网地址、Swagger 地址、MySQL、Redis、Milvus 等关键配置，方便确认服务已经启动成功。
+- 支持通过环境变量临时调整日志级别：`OAF_APP_LOG_LEVEL`、`OAF_MYBATIS_LOG_LEVEL`、`OAF_JDBC_LOG_LEVEL`、`OAF_SECURITY_LOG_LEVEL`；默认业务日志为 `INFO`，MyBatis/JDBC 为 `WARN`，避免控制台被 SQL 细节刷屏。
+- 本次已执行后端 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过；未自动启动或重启后端。
+
+## IDEA Debug 控制台日志更新记录
+
+- 已新增 `application-debug.yml`，在 IDEA 的 Run/Debug Configuration 中把 Active profiles 设置为 `debug` 后，Debug Console 会自动输出更详细的后端调试日志。
+- `debug` Profile 下已默认打开 `com.openagentflow`、`org.springframework.web`、`org.springframework.security`、MyBatis 和 JDBC 的关键日志，便于在断点调试时同步观察请求、鉴权、Mapper 和业务执行过程。
+- 启动成功提示中已新增 `Debug日志: 已启用/未启用`，方便确认 IDEA Debug 是否真正加载了 `debug` Profile。
+- 如需临时覆盖级别，可继续使用环境变量：`OAF_APP_LOG_LEVEL=TRACE`、`OAF_WEB_LOG_LEVEL=DEBUG`、`OAF_SECURITY_LOG_LEVEL=DEBUG`、`OAF_MYBATIS_LOG_LEVEL=DEBUG`、`OAF_JDBC_LOG_LEVEL=DEBUG`。
+- 本次已执行后端 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过；未自动启动或重启后端。
+
+## P21 多 Agent 协作记录
+
+- 已新增后端协作团队接口：`/agent-teams`、`/agent-teams/{id}`、`/agent-teams/{id}/publish`、`/agent-teams/{id}/run`，支持团队 CRUD、发布、删除和运行验证。
+- 已新增多 Agent 协作执行服务，支持 `sequential` 顺序协作、`parallel` 并行汇总、`router` 路由分派、`supervisor` 主控规划、`reviewer` 复核审阅五种模式。
+- 协作运行会创建顶层 `runtime_run`，每个成员 Agent 调用会写入 `runtime_trace_step`，并在 Step 输出中保留成员自身 `childRunId`，可从前端跳转 Trace 追踪完整链路。
+- 已新增 SQL 迁移 `V020__multi_agent_collaboration.sql`，刷新 `agent_team`、`agent_team_member`、`agent_collaboration_run` 中文表字段注释，并初始化 `agent-team:*` 权限。
+- 已新增 SQL 迁移 `V021__runtime_trace_token_usage_default.sql`，为 `runtime_trace_step.token_usage` 增加默认空 JSON，避免协作 Step 初始化时还没有 Token 用量而插入失败。
+- 已新增前端“多 Agent 协作”页面和左侧导航入口 `/agent-teams`，支持团队列表、筛选分页、新建/编辑弹框、成员配置、最近运行历史、发布、删除、运行验证和 Trace 跳转。
+- 已按交互统一要求将团队详情从页面右侧面板改为弹框展示，点击团队行或“详情”按钮后弹出成员分工、最近运行、运行验证和 Trace 跳转。
+- 已创建 3 个验证 Agent：任务规划专家、资料分析专家、质量复核专家，并创建协作团队 `multi-agent-demo-20260624152957`。
+- 已完成一次真实多 Agent 协作验证：团队 ID `7214d622-2698-4372-bec7-589bf8161a4f`，协作运行 ID `31964ae6-e99e-4cd9-acdd-d31e31cd75bb`，Trace Run ID `1cd73009-081d-4603-90c5-5bd3fa1b404b`，运行状态 `SUCCESS`，3 个成员步骤全部成功，总 Token `15423`。
+- 已通过 `/runs/1cd73009-081d-4603-90c5-5bd3fa1b404b` 和 `/runs/1cd73009-081d-4603-90c5-5bd3fa1b404b/steps` 验证 Trace 可查询，步骤数为 3，步骤类型均为 `AGENT_TEAM_MEMBER`。
+- 后端已使用 JDK 21 和指定 Maven 本地仓库执行 `mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" -DskipTests compile`，结果通过；前端已执行 `npm run build`，结果通过。
+- 本机未检测到 `mysql` 命令行客户端，本次通过本地 MySQL JDBC 驱动已成功应用 `runtime_trace_step.token_usage` 默认值修复；如需让普通用户/开发者账号立即看到菜单，请在 MySQL 客户端中执行 `V020__multi_agent_collaboration.sql`。
+- 本次修改遵守“后端代码修改后不自动重启”的要求，后续请手动启动后端验证真实模型调用。
 
 ## License
 

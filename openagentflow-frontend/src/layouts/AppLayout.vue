@@ -27,6 +27,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   TestTube2,
+  UsersRound,
 } from 'lucide-vue-next';
 import { logout as logoutApi } from '../api/auth';
 import { canAccessMenu, readCurrentUser } from '../api/permissions';
@@ -40,6 +41,7 @@ const currentUser = computed(() => readCurrentUser());
 const navigation: Array<{ path: string; match: string; label: string; icon: Component }> = [
   { path: '/dashboard', match: '/dashboard', label: '工作台', icon: LayoutDashboard },
   { path: '/agents', match: '/agents', label: '智能体', icon: Bot },
+  { path: '/agent-teams', match: '/agent-teams', label: '多 Agent', icon: UsersRound },
   { path: '/debug', match: '/debug', label: '调试台', icon: TestTube2 },
   { path: '/knowledge', match: '/knowledge', label: '知识库', icon: Library },
   { path: '/knowledge-governance', match: '/knowledge-governance', label: '知识治理', icon: ShieldCheck },

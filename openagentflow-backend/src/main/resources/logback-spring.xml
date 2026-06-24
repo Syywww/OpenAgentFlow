@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="60 seconds">
+    <!-- 引入 Spring Boot 默认转换器，支持 %clr、%wEx 等控制台友好格式。 -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- 应用名称，IDEA 控制台和后续文件日志都可以复用。 -->
+    <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="openagentflow-backend"/>
+    <!-- 控制台日志级别，开发时可通过环境变量 OAF_CONSOLE_LOG_LEVEL=DEBUG 临时放开。 -->
+    <property name="CONSOLE_LOG_LEVEL" value="${OAF_CONSOLE_LOG_LEVEL:-INFO}"/>
+
+    <!-- 彩色控制台输出，适合 IDEA Run Console 直接查看。 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder charset="UTF-8">
+            <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr(${APP_NAME}){cyan} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){blue} %clr(:){faint} %m%n%wEx</pattern>
+        </encoder>
+    </appender>
+
+    <springProfile name="debug">
+        <!-- IDEA Debug 使用 debug Profile 时自动打开更多排查日志。 -->
+        <logger name="com.openagentflow" level="${OAF_APP_LOG_LEVEL:-DEBUG}"/>
+        <logger name="org.springframework.web" level="${OAF_WEB_LOG_LEVEL:-DEBUG}"/>
+        <logger name="org.springframework.security" level="${OAF_SECURITY_LOG_LEVEL:-DEBUG}"/>
+        <logger name="com.baomidou.mybatisplus" level="${OAF_MYBATIS_LOG_LEVEL:-INFO}"/>
+        <logger name="org.mybatis" level="${OAF_MYBATIS_LOG_LEVEL:-INFO}"/>
+        <logger name="org.springframework.jdbc" level="${OAF_JDBC_LOG_LEVEL:-INFO}"/>
+        <root level="${CONSOLE_LOG_LEVEL}">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!debug">
+        <!-- 普通启动默认保持克制，排查接口、RAG、模型调用时可在环境变量里临时放开。 -->
+        <logger name="com.openagentflow" level="${OAF_APP_LOG_LEVEL:-INFO}"/>
+        <!-- MyBatis 与 JDBC 关键日志保留 WARN，避免 IDEA 控制台被大量 SQL 细节刷屏。 -->
+        <logger name="com.baomidou.mybatisplus" level="${OAF_MYBATIS_LOG_LEVEL:-WARN}"/>
+        <logger name="org.mybatis" level="${OAF_MYBATIS_LOG_LEVEL:-WARN}"/>
+        <logger name="org.springframework.jdbc" level="${OAF_JDBC_LOG_LEVEL:-WARN}"/>
+        <!-- Spring Security 默认 INFO 足够确认过滤链启动；需要排查鉴权时设置 OAF_SECURITY_LOG_LEVEL=DEBUG。 -->
+        <logger name="org.springframework.security" level="${OAF_SECURITY_LOG_LEVEL:-INFO}"/>
+        <root level="${CONSOLE_LOG_LEVEL}">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+</configuration>
