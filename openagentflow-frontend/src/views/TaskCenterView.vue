@@ -38,6 +38,7 @@ const filters = reactive({
 const taskTypes = [
   { value: 'all', label: '全部类型' },
   { value: 'DOCUMENT_PROCESS', label: '知识文档处理' },
+  { value: 'KNOWLEDGE_VECTOR_REBUILD', label: '知识库向量重建' },
   { value: 'EVALUATION_RUN', label: '评测批量运行' },
   { value: 'MCP_DISCOVERY', label: 'MCP 能力发现' },
   { value: 'DATA_IMPORT', label: '数据导入' },

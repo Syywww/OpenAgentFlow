@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, ClipboardList, RefreshCw, Search, Upload } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
@@ -9,10 +9,13 @@ import StatusBadge from '../../components/StatusBadge.vue';
 import {
   fetchKnowledgeBase,
   fetchKnowledgeDocumentStatus,
+  rebuildKnowledgeVectors,
   retrievalTest,
   uploadKnowledgeDocument,
   type KnowledgeBaseDetail,
   type KnowledgeDocumentSummary,
+  type KnowledgeRetrievalOptions,
+  type KnowledgeRetrievalResult,
   type KnowledgeSource,
 } from '../../api/knowledge';
 import { useOverlay } from '../../composables/useOverlay';
@@ -26,11 +29,25 @@ const selectedDocumentId = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
 const loading = ref(false);
 const uploading = ref(false);
+const rebuilding = ref(false);
 const pollingDocumentId = ref('');
 const pollTimer = ref<number | null>(null);
 const query = ref('请根据知识库总结核心内容');
 const sources = ref<KnowledgeSource[]>([]);
 const retrievalLatency = ref(0);
+const retrievalQuality = ref<KnowledgeRetrievalResult | null>(null);
+const retrievalForm = reactive<KnowledgeRetrievalOptions>({
+  query: '',
+  topK: 5,
+  candidateK: 20,
+  scoreThreshold: 0.55,
+  searchMode: 'hybrid',
+  rerankEnabled: true,
+  vectorWeight: 0.72,
+  keywordWeight: 0.28,
+  lowConfidenceThreshold: 0.62,
+  rejectLowConfidence: true,
+});
 
 const documents = computed(() => detail.value?.documents ?? []);
 const selectedDocument = computed(() => detail.value?.documents.find((doc) => doc.id === selectedDocumentId.value));
@@ -93,10 +110,37 @@ async function handleRetrievalTest() {
   if (!query.value.trim()) {
     return;
   }
-  const result = await retrievalTest(String(route.params.id), query.value.trim(), 5, 0.55);
+  const result = await retrievalTest(String(route.params.id), {
+    ...retrievalForm,
+    query: query.value.trim(),
+    topK: Number(retrievalForm.topK || 5),
+    candidateK: Number(retrievalForm.candidateK || 20),
+    scoreThreshold: Number(retrievalForm.scoreThreshold ?? 0.55),
+    lowConfidenceThreshold: Number(retrievalForm.lowConfidenceThreshold ?? 0.62),
+    vectorWeight: Number(retrievalForm.vectorWeight ?? 0.72),
+    keywordWeight: Number(retrievalForm.keywordWeight ?? 0.28),
+  });
   sources.value = result.sources;
   retrievalLatency.value = result.latencyMs;
-  toast(`检索完成，命中 ${result.sources.length} 条来源`);
+  retrievalQuality.value = result;
+  toast(result.lowConfidence ? '检索完成，但结果低置信，请检查阈值或知识库内容' : `检索完成，命中 ${result.sources.length} 条来源`);
+}
+
+async function handleRebuildVectors() {
+  if (!detail.value || rebuilding.value) {
+    return;
+  }
+  if (!window.confirm(`确认重建知识库「${detail.value.kbName}」的全部分片向量吗？任务会在后台执行。`)) {
+    return;
+  }
+  rebuilding.value = true;
+  try {
+    const result = await rebuildKnowledgeVectors(String(route.params.id));
+    toast(result.message || '向量重建任务已提交');
+    router.push('/tasks');
+  } finally {
+    rebuilding.value = false;
+  }
 }
 
 function startPolling(documentId: string) {
@@ -162,6 +206,16 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
   if (doc.parseStatus === 'processing') return '等待模型返回';
   return '未生成';
 }
+
+function scoreText(value?: number) {
+  return Number(value || 0).toFixed(4);
+}
+
+function searchModeLabel(value?: string) {
+  if (value === 'vector') return '向量检索';
+  if (value === 'keyword') return '关键词检索';
+  return '混合检索';
+}
 </script>
 
 <template>
@@ -172,6 +226,9 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
     <template #actions>
       <button class="secondary-button" type="button" @click="router.push('/knowledge')"><ArrowLeft :size="16" /> 返回</button>
       <button class="secondary-button" type="button" :disabled="loading" @click="loadDetail"><RefreshCw :size="16" /> 刷新</button>
+      <button class="secondary-button" type="button" :disabled="rebuilding || !detail?.chunkCount" @click="handleRebuildVectors">
+        <RefreshCw :size="16" /> {{ rebuilding ? '提交中' : '重建向量' }}
+      </button>
       <button class="primary-button" type="button" :disabled="uploading" @click="chooseFile"><Upload :size="16" /> {{ uploading ? '上传中' : '上传文档' }}</button>
       <input ref="fileInput" type="file" hidden @change="handleFileChange" />
     </template>
@@ -241,14 +298,38 @@ function syncLabel(doc?: KnowledgeDocumentSummary) {
 
       <div class="filter-row">
         <input v-model="query" placeholder="输入检索测试问题" />
+        <select v-model="retrievalForm.searchMode">
+          <option value="hybrid">混合检索</option>
+          <option value="vector">向量检索</option>
+          <option value="keyword">关键词检索</option>
+        </select>
+        <label class="inline-field">TopK<input v-model.number="retrievalForm.topK" type="number" min="1" max="20" /></label>
+        <label class="inline-field">候选<input v-model.number="retrievalForm.candidateK" type="number" min="1" max="100" /></label>
+        <label class="inline-field">阈值<input v-model.number="retrievalForm.scoreThreshold" type="number" min="0" max="1" step="0.01" /></label>
+        <label class="inline-field">低置信<input v-model.number="retrievalForm.lowConfidenceThreshold" type="number" min="0" max="1" step="0.01" /></label>
+        <label class="checkbox-line"><input v-model="retrievalForm.rerankEnabled" type="checkbox" /> 重排</label>
+        <label class="checkbox-line"><input v-model="retrievalForm.rejectLowConfidence" type="checkbox" /> 低置信拒答</label>
         <button class="primary-button" type="button" @click="handleRetrievalTest"><Search :size="16" /> 检索测试</button>
+      </div>
+
+      <div v-if="retrievalQuality" class="insight-strip retrieval-quality-summary">
+        <b>{{ retrievalQuality.lowConfidence ? '低置信检索结果' : '检索质量通过' }}</b>
+        <p>
+          模式：{{ searchModeLabel(retrievalQuality.searchMode) }}；
+          候选：{{ retrievalQuality.candidateCount || 0 }}；
+          返回：{{ retrievalQuality.resultCount || sources.length }}；
+          最佳置信：{{ scoreText(retrievalQuality.confidenceScore) }}；
+          阈值：{{ scoreText(retrievalQuality.scoreThreshold) }} / 低置信 {{ scoreText(retrievalQuality.lowConfidenceThreshold) }}。
+        </p>
+        <p v-if="retrievalQuality.rejectReason">{{ retrievalQuality.rejectReason }}</p>
       </div>
 
       <article v-for="source in pagedSources" :key="source.chunkId" class="chunk-item">
         <div>
           <b>{{ source.documentName }} / 分片 {{ source.chunkNo }}</b>
-          <StatusBadge :label="`相似度 ${source.score.toFixed(4)}`" />
+          <StatusBadge :label="`最终 ${scoreText(source.score)}`" />
         </div>
+        <span>{{ source.matchReason || '向量相似' }} · 向量 {{ scoreText(source.vectorScore) }} · 关键词 {{ scoreText(source.keywordScore) }} · 重排 {{ scoreText(source.rerankScore) }}</span>
         <p>{{ source.quoteText }}</p>
       </article>
       <PaginationBar v-model:page="sourcePage" :total="sources.length" />

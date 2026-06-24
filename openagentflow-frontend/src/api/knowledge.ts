@@ -9,6 +9,10 @@ export interface KnowledgeSource {
   chunkNo: number;
   quoteText: string;
   score: number;
+  vectorScore?: number;
+  keywordScore?: number;
+  rerankScore?: number;
+  matchReason?: string;
   pageNo?: number;
   retrievalLogId?: string;
 }
@@ -102,6 +106,38 @@ export interface KnowledgeRetrievalResult {
   retrievalLogId: string;
   sources: KnowledgeSource[];
   latencyMs: number;
+  searchMode?: string;
+  rerankEnabled?: boolean;
+  candidateCount?: number;
+  resultCount?: number;
+  confidenceScore?: number;
+  lowConfidence?: boolean;
+  answerable?: boolean;
+  rejectReason?: string;
+  scoreThreshold?: number;
+  lowConfidenceThreshold?: number;
+}
+
+export interface KnowledgeRetrievalOptions {
+  query: string;
+  topK?: number;
+  candidateK?: number;
+  scoreThreshold?: number;
+  searchMode?: 'vector' | 'keyword' | 'hybrid';
+  rerankEnabled?: boolean;
+  vectorWeight?: number;
+  keywordWeight?: number;
+  lowConfidenceThreshold?: number;
+  rejectLowConfidence?: boolean;
+}
+
+export interface KnowledgeVectorRebuildResult {
+  kbId: string;
+  kbName: string;
+  chunkCount: number;
+  asyncAccepted: boolean;
+  asyncTaskId: string;
+  message: string;
 }
 
 export interface AgentKnowledgeBindingSummary {
@@ -248,11 +284,16 @@ export async function fetchKnowledgeDocumentStatus(kbId: string, documentId: str
   return request<KnowledgeDocumentSummary>(`/knowledge-bases/${kbId}/documents/${documentId}`);
 }
 
-export async function retrievalTest(id: string, query: string, topK = 5, scoreThreshold = 0.65) {
+export async function retrievalTest(id: string, payload: string | KnowledgeRetrievalOptions, topK = 5, scoreThreshold = 0.65) {
+  const body = typeof payload === 'string' ? { query: payload, topK, scoreThreshold } : payload;
   return request<KnowledgeRetrievalResult>(`/knowledge-bases/${id}/retrieval-test`, {
     method: 'POST',
-    body: JSON.stringify({ query, topK, scoreThreshold }),
+    body: JSON.stringify(body),
   });
+}
+
+export async function rebuildKnowledgeVectors(id: string) {
+  return request<KnowledgeVectorRebuildResult>(`/knowledge-bases/${id}/vectors/rebuild`, { method: 'POST' });
 }
 
 export async function fetchAgentKnowledgeBindings(agentId: string) {

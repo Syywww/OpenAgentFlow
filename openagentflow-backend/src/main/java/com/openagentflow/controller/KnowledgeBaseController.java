@@ -11,6 +11,7 @@ import com.openagentflow.domain.knowledge.KnowledgeDocumentSummary;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalRequest;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalResult;
 import com.openagentflow.domain.knowledge.KnowledgeUploadResult;
+import com.openagentflow.domain.knowledge.KnowledgeVectorRebuildResult;
 import com.openagentflow.service.KnowledgeBaseService;
 import com.openagentflow.service.KnowledgeDocumentProcessingService;
 import jakarta.validation.Valid;
@@ -162,6 +163,17 @@ public class KnowledgeBaseController {
     public ApiResponse<KnowledgeRetrievalResult> retrievalTest(@PathVariable String id,
                                                                @Valid @RequestBody KnowledgeRetrievalRequest request) {
         return ApiResponse.ok(knowledgeBaseService.retrievalTest(id, request));
+    }
+
+    /**
+     * 提交知识库向量重建任务。
+     *
+     * @param id 知识库 ID
+     * @return 异步任务受理结果
+     */
+    @PostMapping("/knowledge-bases/{id}/vectors/rebuild")
+    public ApiResponse<KnowledgeVectorRebuildResult> rebuildKnowledgeVectors(@PathVariable String id) {
+        return ApiResponse.ok(knowledgeBaseService.rebuildKnowledgeVectors(id));
     }
 
     /**

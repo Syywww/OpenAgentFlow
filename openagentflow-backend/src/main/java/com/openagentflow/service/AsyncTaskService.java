@@ -553,6 +553,9 @@ public class AsyncTaskService {
         if ("DOCUMENT_PROCESS".equals(taskType)) {
             return "知识文档处理";
         }
+        if ("KNOWLEDGE_VECTOR_REBUILD".equals(taskType)) {
+            return "知识库向量重建";
+        }
         if ("EVALUATION_RUN".equals(taskType)) {
             return "评测批量运行";
         }

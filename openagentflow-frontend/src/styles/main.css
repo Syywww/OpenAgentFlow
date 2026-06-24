@@ -699,6 +699,27 @@ a {
   min-width: 260px;
 }
 
+.filter-row .inline-field {
+  display: inline-grid;
+  grid-template-columns: auto 72px;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.filter-row .inline-field input {
+  width: 72px;
+  min-width: 0;
+}
+
+.retrieval-quality-summary {
+  margin-top: 8px;
+  margin-bottom: 10px;
+}
+
 .filter-row .search-input {
   display: inline-flex;
   align-items: center;

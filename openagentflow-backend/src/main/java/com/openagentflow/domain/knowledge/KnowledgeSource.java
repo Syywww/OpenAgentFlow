@@ -29,6 +29,18 @@ public class KnowledgeSource {
     /** 相似度得分。 */
     private Double score;
 
+    /** 向量相似度得分。 */
+    private Double vectorScore;
+
+    /** 关键词命中得分。 */
+    private Double keywordScore;
+
+    /** 重排后的最终得分。 */
+    private Double rerankScore;
+
+    /** 命中原因说明。 */
+    private String matchReason;
+
     /** 页码。 */
     private Integer pageNo;
 
@@ -97,6 +109,38 @@ public class KnowledgeSource {
 
     public void setScore(Double score) {
         this.score = score;
+    }
+
+    public Double getVectorScore() {
+        return vectorScore;
+    }
+
+    public void setVectorScore(Double vectorScore) {
+        this.vectorScore = vectorScore;
+    }
+
+    public Double getKeywordScore() {
+        return keywordScore;
+    }
+
+    public void setKeywordScore(Double keywordScore) {
+        this.keywordScore = keywordScore;
+    }
+
+    public Double getRerankScore() {
+        return rerankScore;
+    }
+
+    public void setRerankScore(Double rerankScore) {
+        this.rerankScore = rerankScore;
+    }
+
+    public String getMatchReason() {
+        return matchReason;
+    }
+
+    public void setMatchReason(String matchReason) {
+        this.matchReason = matchReason;
     }
 
     public Integer getPageNo() {

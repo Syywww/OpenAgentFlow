@@ -15,6 +15,8 @@ import com.openagentflow.domain.knowledge.KnowledgeRetrievalRequest;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.knowledge.KnowledgeUploadResult;
+import com.openagentflow.domain.knowledge.KnowledgeVectorRebuildResult;
+import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentKnowledgeBindingEntity;
 import com.openagentflow.entity.KnowledgeBaseEntity;
@@ -33,6 +35,7 @@ import com.openagentflow.mapper.KnowledgeEmbeddingMapper;
 import com.openagentflow.mapper.KnowledgeRetrievalLogMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
 import com.openagentflow.security.AuthUserDetails;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -61,7 +64,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * 知识库应用服务。
@@ -105,6 +108,12 @@ public class KnowledgeBaseService {
     /** 工作空间治理服务。 */
     private final WorkspaceGovernanceService workspaceGovernanceService;
 
+    /** 异步任务中心服务。 */
+    private final AsyncTaskService asyncTaskService;
+
+    /** 平台异步任务线程池。 */
+    private final Executor asyncTaskExecutor;
+
     /** 模型配置 Mapper。 */
     private final ModelConfigMapper modelConfigMapper;
 
@@ -138,6 +147,8 @@ public class KnowledgeBaseService {
                                 AgentMapper agentMapper,
                                 AgentAccessService agentAccessService,
                                 WorkspaceGovernanceService workspaceGovernanceService,
+                                AsyncTaskService asyncTaskService,
+                                @Qualifier("oafAsyncTaskExecutor") Executor asyncTaskExecutor,
                                 ModelConfigMapper modelConfigMapper,
                                 DocumentParseService documentParseService,
                                 KnowledgeChunkingService chunkingService,
@@ -155,6 +166,8 @@ public class KnowledgeBaseService {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
         this.workspaceGovernanceService = workspaceGovernanceService;
+        this.asyncTaskService = asyncTaskService;
+        this.asyncTaskExecutor = asyncTaskExecutor;
         this.modelConfigMapper = modelConfigMapper;
         this.documentParseService = documentParseService;
         this.chunkingService = chunkingService;
@@ -376,9 +389,7 @@ public class KnowledgeBaseService {
     public KnowledgeRetrievalResult retrievalTest(String kbId, KnowledgeRetrievalRequest request) {
         KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
         assertCanView(kb);
-        int topK = request.getTopK() == null ? properties.getRag().getDefaultTopK() : request.getTopK();
-        double threshold = request.getScoreThreshold() == null ? properties.getRag().getDefaultScoreThreshold() : request.getScoreThreshold();
-        return retrieveFromKnowledgeBase(kb, null, null, request.getQuery(), topK, threshold);
+        return retrieveFromKnowledgeBase(kb, null, null, request.getQuery(), optionsFromRequest(request));
     }
 
     /**
@@ -414,8 +425,15 @@ public class KnowledgeBaseService {
         List<String> ids = request.getKnowledgeBaseIds() == null ? List.of() : request.getKnowledgeBaseIds();
         Set<String> uniqueIds = new LinkedHashSet<>(ids);
         String config = toJson(Map.of(
-                "topK", request.getTopK() == null ? properties.getRag().getDefaultTopK() : request.getTopK(),
-                "scoreThreshold", request.getScoreThreshold() == null ? properties.getRag().getDefaultScoreThreshold() : request.getScoreThreshold()
+                "topK", normalizeTopK(request.getTopK()),
+                "candidateK", normalizeCandidateK(null, normalizeTopK(request.getTopK())),
+                "scoreThreshold", clampScore(request.getScoreThreshold(), properties.getRag().getDefaultScoreThreshold()),
+                "lowConfidenceThreshold", clampScore(null, Math.max(properties.getRag().getDefaultScoreThreshold(), 0.62D)),
+                "searchMode", "hybrid",
+                "rerankEnabled", true,
+                "rejectLowConfidence", true,
+                "vectorWeight", 0.72D,
+                "keywordWeight", 0.28D
         ));
         for (String kbId : uniqueIds) {
             KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
@@ -452,9 +470,12 @@ public class KnowledgeBaseService {
                 continue;
             }
             Map<String, Object> config = parseMap(binding.getRetrievalConfig());
-            int topK = intValue(config.get("topK"), properties.getRag().getDefaultTopK());
-            double threshold = doubleValue(config.get("scoreThreshold"), properties.getRag().getDefaultScoreThreshold());
-            KnowledgeRetrievalResult result = retrieveFromKnowledgeBase(kb, agent.getId(), runId, query, topK, threshold);
+            RetrievalOptions options = optionsFromConfig(config);
+            KnowledgeRetrievalResult result = retrieveFromKnowledgeBase(kb, agent.getId(), runId, query, options);
+            // 低置信拒答开启时不把弱相关片段注入模型，避免模型基于不可靠资料继续编造答案。
+            if (Boolean.FALSE.equals(result.getAnswerable()) && options.rejectLowConfidence) {
+                continue;
+            }
             allSources.addAll(result.getSources());
         }
         return allSources.stream()
@@ -464,26 +485,130 @@ public class KnowledgeBaseService {
     }
 
     /**
-     * 执行单知识库 MySQL 向量兜底检索。
+     * 判断 Agent 是否绑定了启用中的知识库。
+     *
+     * @param agentId Agent ID
+     * @return 是否存在启用绑定
+     */
+    public boolean hasEnabledKnowledgeBindings(String agentId) {
+        if (!StringUtils.hasText(agentId)) {
+            return false;
+        }
+        return agentKnowledgeBindingMapper.selectCount(new LambdaQueryWrapper<AgentKnowledgeBindingEntity>()
+                .eq(AgentKnowledgeBindingEntity::getAgentId, agentId)
+                .eq(AgentKnowledgeBindingEntity::getEnabled, true)) > 0;
+    }
+
+    /**
+     * 提交知识库向量重建任务。
+     *
+     * @param kbId 知识库 ID
+     * @return 异步任务受理结果
+     */
+    public KnowledgeVectorRebuildResult rebuildKnowledgeVectors(String kbId) {
+        KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
+        assertCanManage(kb);
+        int chunkCount = count("knowledge_chunk", "kb_id", kb.getId());
+        AsyncTaskEntity task = asyncTaskService.createTask(
+                "重建知识库向量：" + kb.getKbName(),
+                "KNOWLEDGE_VECTOR_REBUILD",
+                "knowledge_base",
+                kb.getId(),
+                "knowledge_base",
+                kb.getId(),
+                kb.getWorkspaceId(),
+                Map.of("kbId", kb.getId(), "kbName", kb.getKbName(), "chunkCount", chunkCount));
+        asyncTaskExecutor.execute(() -> rebuildKnowledgeVectorsTask(task.getId(), kb.getId()));
+
+        KnowledgeVectorRebuildResult result = new KnowledgeVectorRebuildResult();
+        result.setKbId(kb.getId());
+        result.setKbName(kb.getKbName());
+        result.setChunkCount(chunkCount);
+        result.setAsyncAccepted(true);
+        result.setAsyncTaskId(task.getId());
+        result.setMessage("向量重建任务已提交，可在任务中心查看进度");
+        return result;
+    }
+
+    /**
+     * 执行单知识库质量增强检索。
      *
      * @param kb 知识库实体
      * @param agentId Agent ID
      * @param runId 运行 ID
      * @param query 查询文本
-     * @param topK 返回条数
-     * @param threshold 相似度阈值
+     * @param options 检索参数
      * @return 检索结果
      */
     private KnowledgeRetrievalResult retrieveFromKnowledgeBase(KnowledgeBaseEntity kb,
                                                               String agentId,
                                                               String runId,
                                                               String query,
-                                                              int topK,
-                                                              double threshold) {
+                                                              RetrievalOptions options) {
         Instant startedAt = Instant.now();
-        ModelConfigEntity embeddingModel = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
-        List<Double> queryVector = embeddingService.embed(embeddingModel, List.of(query)).getFirst();
-        List<KnowledgeSource> sources = new ArrayList<>();
+        List<String> terms = extractQueryTerms(query);
+        List<Double> queryVector = shouldUseVector(options.searchMode)
+                ? embeddingService.embed(embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId()), List.of(query)).getFirst()
+                : List.of();
+        List<RetrievalCandidate> candidates = recallCandidates(kb, query, terms, queryVector, options);
+        List<RetrievalCandidate> rankedCandidates = rankCandidates(candidates, query, terms, options);
+        List<KnowledgeSource> sources = rankedCandidates.stream()
+                .filter(candidate -> candidate.finalScore >= options.scoreThreshold)
+                .limit(options.topK)
+                .map(candidate -> toSource(kb, candidate))
+                .toList();
+        Double confidenceScore = sources.isEmpty() ? 0D : sources.getFirst().getScore();
+        boolean lowConfidence = sources.isEmpty() || confidenceScore < options.lowConfidenceThreshold;
+        String rejectReason = lowConfidence
+                ? "未召回达到低置信阈值的可靠片段，建议拒答或引导用户补充问题"
+                : "";
+        String logId = saveRetrievalLog(kb, agentId, runId, query, queryVector, options, sources, rankedCandidates.size(), lowConfidence, rejectReason, startedAt);
+        sources.forEach(source -> source.setRetrievalLogId(logId));
+
+        KnowledgeRetrievalResult result = new KnowledgeRetrievalResult();
+        result.setRetrievalLogId(logId);
+        result.setSources(sources);
+        result.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
+        result.setSearchMode(options.searchMode);
+        result.setRerankEnabled(options.rerankEnabled);
+        result.setCandidateCount(rankedCandidates.size());
+        result.setResultCount(sources.size());
+        result.setConfidenceScore(confidenceScore);
+        result.setLowConfidence(lowConfidence);
+        result.setAnswerable(!lowConfidence || !options.rejectLowConfidence);
+        result.setRejectReason(rejectReason);
+        result.setScoreThreshold(options.scoreThreshold);
+        result.setLowConfidenceThreshold(options.lowConfidenceThreshold);
+        return result;
+    }
+
+    /**
+     * 召回候选分片。
+     *
+     * @param kb 知识库
+     * @param query 查询文本
+     * @param terms 查询关键词
+     * @param queryVector 查询向量
+     * @param options 检索参数
+     * @return 候选列表
+     */
+    private List<RetrievalCandidate> recallCandidates(KnowledgeBaseEntity kb,
+                                                      String query,
+                                                      List<String> terms,
+                                                      List<Double> queryVector,
+                                                      RetrievalOptions options) {
+        List<RetrievalCandidate> candidates = new ArrayList<>();
+        if ("keyword".equals(options.searchMode)) {
+            List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
+                    .eq(KnowledgeChunkEntity::getKbId, kb.getId())
+                    .eq(KnowledgeChunkEntity::getStatus, "active")
+                    .last("limit 2000"));
+            for (KnowledgeChunkEntity chunk : chunks) {
+                candidates.add(buildCandidate(chunk, 0D, keywordScore(query, terms, chunk), options));
+            }
+            return candidates;
+        }
+
         List<KnowledgeEmbeddingEntity> embeddings = knowledgeEmbeddingMapper.selectList(new LambdaQueryWrapper<KnowledgeEmbeddingEntity>()
                 .eq(KnowledgeEmbeddingEntity::getKbId, kb.getId())
                 .isNotNull(KnowledgeEmbeddingEntity::getEmbeddingJson)
@@ -493,25 +618,248 @@ public class KnowledgeBaseService {
             if (chunk == null || !"active".equalsIgnoreCase(chunk.getStatus())) {
                 continue;
             }
-            List<Double> vector = parseVector(embedding.getEmbeddingJson());
-            double score = cosine(queryVector, vector);
-            if (score < threshold) {
-                continue;
-            }
-            sources.add(toSource(kb, chunk, score));
+            double vectorScore = cosine(queryVector, parseVector(embedding.getEmbeddingJson()));
+            double keywordScore = keywordScore(query, terms, chunk);
+            candidates.add(buildCandidate(chunk, vectorScore, keywordScore, options));
         }
-        sources = sources.stream()
-                .sorted(Comparator.comparing(KnowledgeSource::getScore, Comparator.nullsLast(Comparator.reverseOrder())))
-                .limit(Math.max(1, topK))
-                .toList();
-        String logId = saveRetrievalLog(kb, agentId, runId, query, queryVector, topK, threshold, sources, startedAt);
-        sources.forEach(source -> source.setRetrievalLogId(logId));
+        return candidates;
+    }
 
-        KnowledgeRetrievalResult result = new KnowledgeRetrievalResult();
-        result.setRetrievalLogId(logId);
-        result.setSources(sources);
-        result.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
-        return result;
+    /**
+     * 构建候选项。
+     *
+     * @param chunk 分片
+     * @param vectorScore 向量得分
+     * @param keywordScore 关键词得分
+     * @param options 检索参数
+     * @return 候选项
+     */
+    private RetrievalCandidate buildCandidate(KnowledgeChunkEntity chunk,
+                                              double vectorScore,
+                                              double keywordScore,
+                                              RetrievalOptions options) {
+        RetrievalCandidate candidate = new RetrievalCandidate();
+        candidate.chunk = chunk;
+        candidate.vectorScore = vectorScore;
+        candidate.keywordScore = keywordScore;
+        if ("vector".equals(options.searchMode)) {
+            candidate.baseScore = vectorScore;
+        } else if ("keyword".equals(options.searchMode)) {
+            candidate.baseScore = keywordScore;
+        } else {
+            double totalWeight = Math.max(0.01D, options.vectorWeight + options.keywordWeight);
+            candidate.baseScore = (vectorScore * options.vectorWeight + keywordScore * options.keywordWeight) / totalWeight;
+        }
+        candidate.finalScore = candidate.baseScore;
+        return candidate;
+    }
+
+    /**
+     * 排序并可选重排候选分片。
+     *
+     * @param candidates 原始候选
+     * @param query 查询文本
+     * @param terms 查询关键词
+     * @param options 检索参数
+     * @return 排序后的候选
+     */
+    private List<RetrievalCandidate> rankCandidates(List<RetrievalCandidate> candidates,
+                                                    String query,
+                                                    List<String> terms,
+                                                    RetrievalOptions options) {
+        List<RetrievalCandidate> recalled = candidates.stream()
+                .sorted(Comparator.comparing((RetrievalCandidate item) -> item.baseScore).reversed())
+                .limit(options.candidateK)
+                .toList();
+        if (!options.rerankEnabled) {
+            return recalled;
+        }
+        for (RetrievalCandidate candidate : recalled) {
+            double phraseBoost = containsNormalized(candidate.chunk.getContent(), query) ? 0.05D : 0D;
+            double titleBoost = containsAny(candidate.chunk.getTitle(), terms) ? 0.04D : 0D;
+            double lengthPenalty = candidate.chunk.getTokenCount() != null && candidate.chunk.getTokenCount() < 20 ? 0.04D : 0D;
+            // 本地规则重排会轻量提升关键词密集、标题命中和短语直接命中的候选，避免纯向量得分误召回。
+            candidate.finalScore = clamp(candidate.baseScore + candidate.keywordScore * 0.12D + phraseBoost + titleBoost - lengthPenalty, 0D, 1D);
+        }
+        return recalled.stream()
+                .sorted(Comparator.comparing((RetrievalCandidate item) -> item.finalScore).reversed())
+                .toList();
+    }
+
+    /**
+     * 将候选项转换为引用来源。
+     *
+     * @param kb 知识库
+     * @param candidate 候选项
+     * @return 引用来源
+     */
+    private KnowledgeSource toSource(KnowledgeBaseEntity kb, RetrievalCandidate candidate) {
+        KnowledgeSource source = toSource(kb, candidate.chunk, candidate.finalScore);
+        source.setVectorScore(candidate.vectorScore);
+        source.setKeywordScore(candidate.keywordScore);
+        source.setRerankScore(candidate.finalScore);
+        source.setMatchReason(matchReason(candidate));
+        return source;
+    }
+
+    /**
+     * 生成人类可读的命中原因。
+     *
+     * @param candidate 候选项
+     * @return 命中原因
+     */
+    private String matchReason(RetrievalCandidate candidate) {
+        if (candidate.keywordScore > 0.25D && candidate.vectorScore > 0.25D) {
+            return "向量相似 + 关键词命中";
+        }
+        if (candidate.keywordScore > 0.25D) {
+            return "关键词命中";
+        }
+        return "向量相似";
+    }
+
+    /**
+     * 执行知识库向量重建任务。
+     *
+     * @param taskId 异步任务 ID
+     * @param kbId 知识库 ID
+     */
+    private void rebuildKnowledgeVectorsTask(String taskId, String kbId) {
+        try {
+            asyncTaskService.markRunning(taskId);
+            KnowledgeBaseEntity kb = knowledgeBaseMapper.selectById(kbId);
+            if (kb == null || kb.getDeletedAt() != null) {
+                asyncTaskService.markFailed(taskId, "KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在，无法重建向量");
+                return;
+            }
+            List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
+                    .eq(KnowledgeChunkEntity::getKbId, kbId)
+                    .eq(KnowledgeChunkEntity::getStatus, "active")
+                    .orderByAsc(KnowledgeChunkEntity::getChunkNo));
+            if (chunks.isEmpty()) {
+                asyncTaskService.markSuccess(taskId, "知识库暂无可重建分片", Map.of("chunkCount", 0));
+                return;
+            }
+
+            ModelConfigEntity embeddingModel = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
+            List<KnowledgeEmbeddingEntity> savedEmbeddings = new ArrayList<>();
+            List<KnowledgeChunkEntity> savedChunks = new ArrayList<>();
+            List<List<Double>> savedVectors = new ArrayList<>();
+            int batchSize = 64;
+            for (int start = 0; start < chunks.size(); start += batchSize) {
+                if (asyncTaskService.isCancelRequested(taskId)) {
+                    asyncTaskService.markCanceled(taskId, "用户取消向量重建任务");
+                    return;
+                }
+                int end = Math.min(start + batchSize, chunks.size());
+                List<KnowledgeChunkEntity> batchChunks = chunks.subList(start, end);
+                EmbeddingBatchResult embeddingResult = embeddingService.embedWithTrace(embeddingModel, batchChunks.stream().map(KnowledgeChunkEntity::getContent).toList());
+                List<List<Double>> vectors = embeddingResult.getVectors();
+                for (int index = 0; index < batchChunks.size(); index++) {
+                    KnowledgeChunkEntity chunk = batchChunks.get(index);
+                    KnowledgeEmbeddingEntity embedding = saveOrUpdateEmbedding(kb, chunk, embeddingModel, vectors.get(index));
+                    savedEmbeddings.add(embedding);
+                    savedChunks.add(chunk);
+                    savedVectors.add(vectors.get(index));
+                }
+                int progress = 10 + (int) ((end * 65.0D) / chunks.size());
+                asyncTaskService.updateProgress(taskId, "embedding", "已重建 " + end + " / " + chunks.size() + " 个分片向量", progress, Map.of(
+                        "processed", end,
+                        "total", chunks.size(),
+                        "embeddingModel", embeddingModel.getModelName(),
+                        "fallbackUsed", Boolean.TRUE.equals(embeddingResult.getFallbackUsed()),
+                        "embeddingApi", safeString(embeddingResult.getEmbeddingApi())
+                ));
+            }
+
+            boolean milvusSynced = syncRebuiltVectors(taskId, kb, savedEmbeddings, savedChunks, savedVectors);
+            asyncTaskService.markSuccess(taskId, "向量重建完成", Map.of(
+                    "chunkCount", chunks.size(),
+                    "embeddingCount", savedEmbeddings.size(),
+                    "milvusSynced", milvusSynced
+            ));
+        } catch (Exception exception) {
+            asyncTaskService.markFailed(taskId, "KNOWLEDGE_VECTOR_REBUILD_FAILED", exception.getMessage());
+        }
+    }
+
+    /**
+     * 保存或更新单个分片向量。
+     *
+     * @param kb 知识库
+     * @param chunk 分片
+     * @param model Embedding 模型
+     * @param vector 向量
+     * @return 向量记录
+     */
+    private KnowledgeEmbeddingEntity saveOrUpdateEmbedding(KnowledgeBaseEntity kb,
+                                                           KnowledgeChunkEntity chunk,
+                                                           ModelConfigEntity model,
+                                                           List<Double> vector) {
+        KnowledgeEmbeddingEntity embedding = knowledgeEmbeddingMapper.selectOne(new LambdaQueryWrapper<KnowledgeEmbeddingEntity>()
+                .eq(KnowledgeEmbeddingEntity::getChunkId, chunk.getId())
+                .last("limit 1"));
+        boolean create = embedding == null;
+        if (create) {
+            embedding = new KnowledgeEmbeddingEntity();
+            embedding.setId(newId());
+        }
+        embedding.setChunkId(chunk.getId());
+        embedding.setKbId(kb.getId());
+        embedding.setModelId(model.getId());
+        embedding.setVectorCollectionId(StringUtils.hasText(kb.getVectorCollectionId()) ? kb.getVectorCollectionId() : DEFAULT_VECTOR_COLLECTION_ID);
+        embedding.setMilvusCollectionName(kb.getMilvusCollectionName());
+        embedding.setVectorPrimaryKey("chunk_" + chunk.getId().replace("-", ""));
+        embedding.setSyncStatus("pending");
+        embedding.setLastSyncedAt(null);
+        embedding.setEmbeddingJson(toJson(vector));
+        embedding.setEmbeddingDim(vector.size());
+        embedding.setContentHash(DigestUtils.md5DigestAsHex(chunk.getContent().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        if (create) {
+            knowledgeEmbeddingMapper.insert(embedding);
+        } else {
+            knowledgeEmbeddingMapper.updateById(embedding);
+        }
+        return embedding;
+    }
+
+    /**
+     * 同步重建后的向量到 Milvus。
+     *
+     * @param taskId 异步任务 ID
+     * @param kb 知识库
+     * @param embeddings 向量记录
+     * @param chunks 分片列表
+     * @param vectors 向量列表
+     * @return 是否全部同步成功
+     */
+    private boolean syncRebuiltVectors(String taskId,
+                                       KnowledgeBaseEntity kb,
+                                       List<KnowledgeEmbeddingEntity> embeddings,
+                                       List<KnowledgeChunkEntity> chunks,
+                                       List<List<Double>> vectors) {
+        asyncTaskService.updateProgress(taskId, "milvus_sync", "开始写入 Milvus 或保留 MySQL 向量兜底", 82, Map.of("embeddingCount", embeddings.size()));
+        try {
+            milvusKnowledgeVectorService.upsertKnowledgeChunks(kb.getMilvusCollectionName(), embeddings, chunks, vectors);
+            LocalDateTime syncedAt = LocalDateTime.now();
+            for (KnowledgeEmbeddingEntity embedding : embeddings) {
+                embedding.setSyncStatus("synced");
+                embedding.setLastSyncedAt(syncedAt);
+                knowledgeEmbeddingMapper.updateById(embedding);
+            }
+            asyncTaskService.updateProgress(taskId, "milvus_done", "Milvus 向量写入完成", 95, Map.of("milvusSynced", true));
+            return true;
+        } catch (Exception exception) {
+            for (KnowledgeEmbeddingEntity embedding : embeddings) {
+                embedding.setSyncStatus("mysql_fallback");
+                knowledgeEmbeddingMapper.updateById(embedding);
+            }
+            asyncTaskService.updateProgress(taskId, "mysql_fallback", "Milvus 写入失败，已保留 MySQL 向量兜底：" + exception.getMessage(), 95, Map.of(
+                    "milvusSynced", false,
+                    "error", exception.getMessage()
+            ));
+            return false;
+        }
     }
 
     /**
@@ -604,9 +952,11 @@ public class KnowledgeBaseService {
      * @param runId 运行 ID
      * @param query 查询文本
      * @param queryVector 查询向量
-     * @param topK 返回条数
-     * @param threshold 阈值
+     * @param options 检索参数
      * @param sources 引用来源
+     * @param candidateCount 候选数量
+     * @param lowConfidence 是否低置信
+     * @param rejectReason 拒答原因
      * @param startedAt 开始时间
      * @return 检索日志 ID
      */
@@ -615,9 +965,11 @@ public class KnowledgeBaseService {
                                     String runId,
                                     String query,
                                     List<Double> queryVector,
-                                    int topK,
-                                    double threshold,
+                                    RetrievalOptions options,
                                     List<KnowledgeSource> sources,
+                                    int candidateCount,
+                                    boolean lowConfidence,
+                                    String rejectReason,
                                     Instant startedAt) {
         KnowledgeRetrievalLogEntity log = new KnowledgeRetrievalLogEntity();
         log.setId(newId());
@@ -628,10 +980,21 @@ public class KnowledgeBaseService {
         log.setMilvusCollectionName(kb.getMilvusCollectionName());
         log.setQueryText(query);
         log.setQueryEmbeddingJson(toJson(queryVector));
-        log.setMilvusSearchParams(toJson(Map.of("mode", "mysql_cosine_fallback")));
-        log.setTopK(topK);
-        log.setScoreThreshold(BigDecimal.valueOf(threshold));
-        log.setRerankEnabled(false);
+        log.setMilvusSearchParams(toJson(Map.of(
+                "mode", options.searchMode,
+                "candidateK", options.candidateK,
+                "candidateCount", candidateCount,
+                "vectorWeight", options.vectorWeight,
+                "keywordWeight", options.keywordWeight,
+                "lowConfidence", lowConfidence,
+                "lowConfidenceThreshold", options.lowConfidenceThreshold,
+                "rejectLowConfidence", options.rejectLowConfidence,
+                "rejectReason", rejectReason,
+                "engine", "mysql_hybrid_fallback"
+        )));
+        log.setTopK(options.topK);
+        log.setScoreThreshold(BigDecimal.valueOf(options.scoreThreshold));
+        log.setRerankEnabled(options.rerankEnabled);
         log.setResultCount(sources.size());
         log.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
         log.setResults(toJson(sources));
@@ -853,6 +1216,208 @@ public class KnowledgeBaseService {
         if (!workspaceGovernanceService.canManageResource(entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy())) {
             throw new BusinessException("KNOWLEDGE_FORBIDDEN", "没有管理该知识库的权限");
         }
+    }
+
+    /**
+     * 从请求对象构建检索参数。
+     *
+     * @param request 检索请求
+     * @return 检索参数
+     */
+    private RetrievalOptions optionsFromRequest(KnowledgeRetrievalRequest request) {
+        RetrievalOptions options = new RetrievalOptions();
+        options.topK = normalizeTopK(request.getTopK());
+        options.candidateK = normalizeCandidateK(request.getCandidateK(), options.topK);
+        options.scoreThreshold = clampScore(request.getScoreThreshold(), properties.getRag().getDefaultScoreThreshold());
+        options.searchMode = normalizeSearchMode(request.getSearchMode());
+        options.rerankEnabled = request.getRerankEnabled() == null || Boolean.TRUE.equals(request.getRerankEnabled());
+        options.vectorWeight = clamp(request.getVectorWeight() == null ? 0.72D : request.getVectorWeight(), 0D, 1D);
+        options.keywordWeight = clamp(request.getKeywordWeight() == null ? 0.28D : request.getKeywordWeight(), 0D, 1D);
+        options.lowConfidenceThreshold = clampScore(request.getLowConfidenceThreshold(), Math.max(options.scoreThreshold, 0.62D));
+        options.rejectLowConfidence = request.getRejectLowConfidence() == null || Boolean.TRUE.equals(request.getRejectLowConfidence());
+        return options;
+    }
+
+    /**
+     * 从 Agent 绑定配置构建检索参数。
+     *
+     * @param config 绑定配置
+     * @return 检索参数
+     */
+    private RetrievalOptions optionsFromConfig(Map<String, Object> config) {
+        RetrievalOptions options = new RetrievalOptions();
+        options.topK = normalizeTopK(intValue(config.get("topK"), properties.getRag().getDefaultTopK()));
+        options.candidateK = normalizeCandidateK(intValue(config.get("candidateK"), options.topK * 4), options.topK);
+        options.scoreThreshold = clampScore(doubleValue(config.get("scoreThreshold"), properties.getRag().getDefaultScoreThreshold()), properties.getRag().getDefaultScoreThreshold());
+        options.searchMode = normalizeSearchMode(asString(config.get("searchMode")));
+        options.rerankEnabled = booleanValue(config.get("rerankEnabled"), true);
+        options.vectorWeight = clamp(doubleValue(config.get("vectorWeight"), 0.72D), 0D, 1D);
+        options.keywordWeight = clamp(doubleValue(config.get("keywordWeight"), 0.28D), 0D, 1D);
+        options.lowConfidenceThreshold = clampScore(doubleValue(config.get("lowConfidenceThreshold"), Math.max(options.scoreThreshold, 0.62D)), Math.max(options.scoreThreshold, 0.62D));
+        options.rejectLowConfidence = booleanValue(config.get("rejectLowConfidence"), true);
+        return options;
+    }
+
+    /**
+     * 归一化检索条数。
+     *
+     * @param value 原始条数
+     * @return 安全条数
+     */
+    private int normalizeTopK(Integer value) {
+        int fallback = properties.getRag().getDefaultTopK();
+        int topK = value == null ? fallback : value;
+        return Math.max(1, Math.min(20, topK));
+    }
+
+    /**
+     * 归一化候选召回条数。
+     *
+     * @param value 原始候选数
+     * @param topK 最终条数
+     * @return 安全候选数
+     */
+    private int normalizeCandidateK(Integer value, int topK) {
+        int candidateK = value == null ? topK * 4 : value;
+        return Math.max(topK, Math.min(100, candidateK));
+    }
+
+    /**
+     * 归一化检索模式。
+     *
+     * @param value 原始模式
+     * @return 检索模式
+     */
+    private String normalizeSearchMode(String value) {
+        String mode = StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT) : "hybrid";
+        if ("vector".equals(mode) || "keyword".equals(mode) || "hybrid".equals(mode)) {
+            return mode;
+        }
+        return "hybrid";
+    }
+
+    /**
+     * 判断是否需要向量检索。
+     *
+     * @param searchMode 检索模式
+     * @return 是否需要向量
+     */
+    private boolean shouldUseVector(String searchMode) {
+        return !"keyword".equals(searchMode);
+    }
+
+    /**
+     * 归一化得分阈值。
+     *
+     * @param value 原始阈值
+     * @param fallback 默认阈值
+     * @return 安全阈值
+     */
+    private double clampScore(Double value, double fallback) {
+        return clamp(value == null ? fallback : value, 0D, 1D);
+    }
+
+    /**
+     * 提取查询关键词。
+     *
+     * @param query 查询文本
+     * @return 关键词列表
+     */
+    private List<String> extractQueryTerms(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String normalized = query.toLowerCase(Locale.ROOT).replaceAll("[\\p{Punct}\\s]+", " ").trim();
+        LinkedHashSet<String> terms = new LinkedHashSet<>();
+        for (String term : normalized.split("\\s+")) {
+            if (term.length() >= 2) {
+                terms.add(term);
+            }
+        }
+        String compact = normalized.replace(" ", "");
+        if (containsCjk(compact) && compact.length() >= 2) {
+            for (int index = 0; index < compact.length() - 1; index++) {
+                terms.add(compact.substring(index, index + 2));
+            }
+        }
+        return new ArrayList<>(terms);
+    }
+
+    /**
+     * 计算关键词命中得分。
+     *
+     * @param query 查询文本
+     * @param terms 关键词列表
+     * @param chunk 分片
+     * @return 关键词得分
+     */
+    private double keywordScore(String query, List<String> terms, KnowledgeChunkEntity chunk) {
+        if (chunk == null || terms.isEmpty()) {
+            return 0D;
+        }
+        String content = normalizeText((chunk.getTitle() == null ? "" : chunk.getTitle() + " ") + chunk.getContent());
+        long matched = terms.stream().filter(content::contains).count();
+        double coverage = matched / (double) terms.size();
+        double phraseBoost = containsNormalized(chunk.getContent(), query) ? 0.15D : 0D;
+        double titleBoost = containsAny(chunk.getTitle(), terms) ? 0.1D : 0D;
+        return clamp(coverage * 0.85D + phraseBoost + titleBoost, 0D, 1D);
+    }
+
+    /**
+     * 判断文本是否包含标准化后的短语。
+     *
+     * @param text 文本
+     * @param phrase 短语
+     * @return 是否包含
+     */
+    private boolean containsNormalized(String text, String phrase) {
+        String normalizedText = normalizeText(text);
+        String normalizedPhrase = normalizeText(phrase);
+        return StringUtils.hasText(normalizedPhrase) && normalizedText.contains(normalizedPhrase);
+    }
+
+    /**
+     * 判断文本是否命中任一关键词。
+     *
+     * @param text 文本
+     * @param terms 关键词
+     * @return 是否命中
+     */
+    private boolean containsAny(String text, List<String> terms) {
+        if (!StringUtils.hasText(text)) {
+            return false;
+        }
+        String normalized = normalizeText(text);
+        return terms.stream().anyMatch(normalized::contains);
+    }
+
+    /**
+     * 标准化文本用于关键词比较。
+     *
+     * @param text 原始文本
+     * @return 标准化文本
+     */
+    private String normalizeText(String text) {
+        return text == null ? "" : text.toLowerCase(Locale.ROOT).replaceAll("[\\p{Punct}\\s]+", "");
+    }
+
+    /**
+     * 判断文本是否包含中文字符。
+     *
+     * @param text 文本
+     * @return 是否包含中文
+     */
+    private boolean containsCjk(String text) {
+        if (text == null) {
+            return false;
+        }
+        for (int index = 0; index < text.length(); index++) {
+            Character.UnicodeScript script = Character.UnicodeScript.of(text.charAt(index));
+            if (script == Character.UnicodeScript.HAN) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1125,6 +1690,35 @@ public class KnowledgeBaseService {
     }
 
     /**
+     * 读取布尔配置值。
+     *
+     * @param value 配置值
+     * @param fallback 默认值
+     * @return 布尔值
+     */
+    private boolean booleanValue(Object value, boolean fallback) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value != null) {
+            return Boolean.parseBoolean(String.valueOf(value));
+        }
+        return fallback;
+    }
+
+    /**
+     * 限制小数范围。
+     *
+     * @param value 原始值
+     * @param min 最小值
+     * @param max 最大值
+     * @return 限制后的值
+     */
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    /**
      * 安全读取字符串值。
      *
      * @param value 原始值
@@ -1132,6 +1726,16 @@ public class KnowledgeBaseService {
      */
     private String asString(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    /**
+     * 安全字符串，避免任务日志 Map 写入 null。
+     *
+     * @param value 原始值
+     * @return 非空字符串
+     */
+    private String safeString(String value) {
+        return value == null ? "" : value;
     }
 
     /**
@@ -1155,5 +1759,45 @@ public class KnowledgeBaseService {
         } catch (Exception exception) {
             return "{}";
         }
+    }
+
+    /**
+     * 检索参数内部对象。
+     */
+    private static final class RetrievalOptions {
+        /** 最终返回条数。 */
+        private int topK;
+        /** 候选召回条数。 */
+        private int candidateK;
+        /** 检索模式。 */
+        private String searchMode;
+        /** 得分阈值。 */
+        private double scoreThreshold;
+        /** 低置信阈值。 */
+        private double lowConfidenceThreshold;
+        /** 是否启用重排。 */
+        private boolean rerankEnabled;
+        /** 是否低置信拒答。 */
+        private boolean rejectLowConfidence;
+        /** 向量权重。 */
+        private double vectorWeight;
+        /** 关键词权重。 */
+        private double keywordWeight;
+    }
+
+    /**
+     * 检索候选内部对象。
+     */
+    private static final class RetrievalCandidate {
+        /** 分片实体。 */
+        private KnowledgeChunkEntity chunk;
+        /** 向量得分。 */
+        private double vectorScore;
+        /** 关键词得分。 */
+        private double keywordScore;
+        /** 初始混合得分。 */
+        private double baseScore;
+        /** 重排后的最终得分。 */
+        private double finalScore;
     }
 }

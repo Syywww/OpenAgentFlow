@@ -407,6 +407,11 @@ public class ChatService {
         }
         context.setSources(sources);
         if (sources.isEmpty()) {
+            if (knowledgeBaseService.hasEnabledKnowledgeBindings(context.getAgent().getId())) {
+                List<ChatMessage> messages = new ArrayList<>(context.getMessages());
+                messages.add(1, new ChatMessage("system", "已绑定知识库，但本次 RAG 检索没有召回达到置信阈值的可靠资料。请不要编造知识库中不存在的事实；如果问题依赖企业知识库，请明确说明“当前知识库资料不足，无法确认”。"));
+                context.setMessages(messages);
+            }
             return;
         }
         List<ChatMessage> messages = new ArrayList<>(context.getMessages());
