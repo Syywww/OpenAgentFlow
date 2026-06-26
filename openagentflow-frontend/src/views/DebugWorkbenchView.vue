@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge.vue';
 import { fetchAgents, streamAgent, type AgentSummary } from '../api/agents';
 import { streamChat, type ChatMessage } from '../api/chat';
 import type { KnowledgeSource } from '../api/knowledge';
+import type { MemoryRecallItem } from '../api/memories';
 import { fetchChatModels, type ModelConfigSummary } from '../api/models';
 import {
   deleteAgentSession,
@@ -40,6 +41,7 @@ const errorMessage = ref('');
 const runMeta = ref<Record<string, unknown>>({});
 const runDone = ref<Record<string, unknown>>({});
 const retrievalSources = ref<KnowledgeSource[]>([]);
+const memoryResults = ref<MemoryRecallItem[]>([]);
 const toolResults = ref<Record<string, unknown>[]>([]);
 
 const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value));
@@ -105,6 +107,7 @@ async function openSession(sessionId: string) {
   runMeta.value = {};
   runDone.value = {};
   retrievalSources.value = [];
+  memoryResults.value = [];
   toolResults.value = [];
 }
 
@@ -114,6 +117,7 @@ function startNewSession() {
   runMeta.value = {};
   runDone.value = {};
   retrievalSources.value = [];
+  memoryResults.value = [];
   toolResults.value = [];
   errorMessage.value = '';
 }
@@ -154,6 +158,7 @@ async function sendMessage() {
   runMeta.value = {};
   runDone.value = {};
   retrievalSources.value = [];
+  memoryResults.value = [];
   toolResults.value = [];
 
   const payload = {
@@ -190,6 +195,7 @@ function streamHandlers(assistantMessage: UiMessage) {
     onMeta: (data: Record<string, unknown>) => {
       runMeta.value = data;
       selectedSessionId.value = String(data.sessionId || selectedSessionId.value || '');
+      memoryResults.value = normalizeMemories(data.memories);
       retrievalSources.value = normalizeSources(data.sources);
     },
     onDelta: (content: string) => {
@@ -201,6 +207,7 @@ function streamHandlers(assistantMessage: UiMessage) {
     onDone: (data: Record<string, unknown>) => {
       runDone.value = data;
       selectedSessionId.value = String(data.sessionId || selectedSessionId.value || '');
+      memoryResults.value = normalizeMemories(data.memories);
       retrievalSources.value = normalizeSources(data.sources);
       toolResults.value = normalizeToolResults(data.toolResults);
       assistantMessage.status = '已完成';
@@ -215,6 +222,10 @@ function streamHandlers(assistantMessage: UiMessage) {
 
 function normalizeSources(value: unknown): KnowledgeSource[] {
   return Array.isArray(value) ? (value as KnowledgeSource[]) : [];
+}
+
+function normalizeMemories(value: unknown): MemoryRecallItem[] {
+  return Array.isArray(value) ? (value as MemoryRecallItem[]) : [];
 }
 
 function normalizeToolResults(value: unknown): Record<string, unknown>[] {
@@ -345,6 +356,7 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
       <div class="trace-step"><b>模型</b><span>{{ runMeta.modelName || selectedModel?.modelName || '-' }}</span></div>
       <div class="trace-step"><b>Session ID</b><span class="mono">{{ selectedSessionId || '-' }}</span></div>
       <div class="trace-step"><b>Run ID</b><span class="mono">{{ runMeta.runId || '-' }}</span></div>
+      <div class="trace-step"><b>记忆召回</b><span :title="memoryResults.map((item) => item.memoryText).join('\n\n')">{{ memoryResults.length }} 条</span></div>
       <section class="trace-scroll-section">
         <div class="section-title"><h2>引用来源</h2><span>{{ retrievalSources.length }} 条</span></div>
         <div class="debug-scroll-box source-scroll-box">

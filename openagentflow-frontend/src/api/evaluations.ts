@@ -66,6 +66,9 @@ export interface EvaluationRunTaskRequest {
   temperature?: number;
   maxTokens?: number;
   maxSamples?: number;
+  judgeEnabled?: boolean;
+  judgeModelId?: string;
+  judgePrompt?: string;
   evalConfig?: Record<string, unknown>;
 }
 

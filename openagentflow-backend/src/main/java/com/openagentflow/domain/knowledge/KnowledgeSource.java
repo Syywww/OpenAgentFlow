@@ -26,6 +26,9 @@ public class KnowledgeSource {
     /** 引用文本。 */
     private String quoteText;
 
+    /** 高亮后的引用文本，命中的关键词会用 mark 标签包裹。 */
+    private String highlightedQuoteText;
+
     /** 相似度得分。 */
     private Double score;
 
@@ -40,6 +43,9 @@ public class KnowledgeSource {
 
     /** 命中原因说明。 */
     private String matchReason;
+
+    /** 重排原因说明，用于展示分数如何形成。 */
+    private String rankReason;
 
     /** 页码。 */
     private Integer pageNo;
@@ -103,6 +109,14 @@ public class KnowledgeSource {
         this.quoteText = quoteText;
     }
 
+    public String getHighlightedQuoteText() {
+        return highlightedQuoteText;
+    }
+
+    public void setHighlightedQuoteText(String highlightedQuoteText) {
+        this.highlightedQuoteText = highlightedQuoteText;
+    }
+
     public Double getScore() {
         return score;
     }
@@ -141,6 +155,14 @@ public class KnowledgeSource {
 
     public void setMatchReason(String matchReason) {
         this.matchReason = matchReason;
+    }
+
+    public String getRankReason() {
+        return rankReason;
+    }
+
+    public void setRankReason(String rankReason) {
+        this.rankReason = rankReason;
     }
 
     public Integer getPageNo() {

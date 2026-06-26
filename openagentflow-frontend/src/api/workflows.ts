@@ -6,6 +6,8 @@ export interface WorkflowSummary {
   workflowName: string;
   description?: string;
   workflowType: string;
+  workspaceId?: string;
+  workspaceName?: string;
   status: string;
   statusLabel: string;
   publishedVersion?: string;
@@ -92,6 +94,69 @@ export interface AgentWorkflowBindingSummary {
   enabled: boolean;
 }
 
+export interface WorkflowAdvancedCapability {
+  code: string;
+  name: string;
+  category: string;
+  status: string;
+  configKey: string;
+  description: string;
+}
+
+export interface WorkflowAdvancedOverview {
+  workflowCount: number;
+  publishedCount: number;
+  apiEndpointCount: number;
+  pendingHumanTaskCount: number;
+  templateCount: number;
+  todayRunCount: number;
+  todayFailedCount: number;
+  capabilities: WorkflowAdvancedCapability[];
+}
+
+export interface WorkflowTemplateSummary {
+  id: string;
+  templateCode: string;
+  templateName: string;
+  templateCategory: string;
+  description?: string;
+  graphJson: Record<string, unknown>;
+  variableSchema: Record<string, unknown>;
+  defaultPolicy: Record<string, unknown>;
+}
+
+export interface WorkflowApiEndpointSummary {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  endpointCode: string;
+  endpointName: string;
+  authType: string;
+  rateLimitPerMinute: number;
+  enabled: boolean;
+  lastInvokedAt?: string;
+}
+
+export interface WorkflowHumanTaskSummary {
+  id: string;
+  workflowRunId: string;
+  taskName: string;
+  status: string;
+  decision?: string;
+  payload?: Record<string, unknown>;
+  createdAt?: string;
+  expiredAt?: string;
+}
+
+export interface WorkflowVersionDiff {
+  leftVersion: string;
+  rightVersion: string;
+  addedNodes: number;
+  removedNodes: number;
+  changedEdges: number;
+  changes: string[];
+}
+
 export async function fetchWorkflows() {
   return request<WorkflowSummary[]>('/workflows');
 }
@@ -129,10 +194,10 @@ export async function publishWorkflow(id: string, publishNote?: string) {
   });
 }
 
-export async function runWorkflow(id: string, agentId: string | undefined, input: string) {
+export async function runWorkflow(id: string, agentId: string | undefined, input: string, options: Record<string, unknown> = {}) {
   return request<WorkflowRunResult>(`/workflows/${id}/run`, {
     method: 'POST',
-    body: JSON.stringify({ agentId, input, variables: {} }),
+    body: JSON.stringify({ agentId, input, variables: {}, ...options }),
   });
 }
 
@@ -145,4 +210,45 @@ export async function saveAgentWorkflowBindings(agentId: string, workflowIds: st
     method: 'PUT',
     body: JSON.stringify({ workflowIds, triggerMode: 'agent_run' }),
   });
+}
+
+export async function fetchWorkflowAdvancedOverview() {
+  return request<WorkflowAdvancedOverview>('/workflows/advanced/overview');
+}
+
+export async function fetchWorkflowTemplates() {
+  return request<WorkflowTemplateSummary[]>('/workflows/templates');
+}
+
+export async function fetchWorkflowApiEndpoints() {
+  return request<WorkflowApiEndpointSummary[]>('/workflows/api-endpoints');
+}
+
+export async function publishWorkflowApiEndpoint(id: string, payload: {
+  endpointCode?: string;
+  endpointName?: string;
+  authType?: string;
+  rateLimitPerMinute?: number;
+  enabled?: boolean;
+}) {
+  return request<WorkflowApiEndpointSummary>(`/workflows/${id}/api-endpoint`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchWorkflowHumanTasks() {
+  return request<WorkflowHumanTaskSummary[]>('/workflows/human-tasks');
+}
+
+export async function decideWorkflowHumanTask(id: string, payload: { decision: string; comment?: string; changedPayload?: Record<string, unknown> }) {
+  return request<WorkflowHumanTaskSummary>(`/workflows/human-tasks/${id}/decision`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchWorkflowVersionDiff(workflowId: string, leftVersion: string, rightVersion: string) {
+  const query = new URLSearchParams({ leftVersion, rightVersion });
+  return request<WorkflowVersionDiff>(`/workflows/${workflowId}/versions/diff?${query}`);
 }

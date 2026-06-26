@@ -418,12 +418,9 @@ public class WorkflowService {
      * @param request 保存请求
      */
     private void saveGraph(String workflowId, WorkflowDtos.Request request) {
-        List<WorkflowDtos.NodeDto> nodes = request.getNodes() == null || request.getNodes().isEmpty()
-                ? defaultNodes()
-                : request.getNodes();
-        List<WorkflowDtos.EdgeDto> edges = request.getEdges() == null || request.getEdges().isEmpty()
-                ? defaultEdges()
-                : request.getEdges();
+        // 前端显式传入空数组时保留空画布；只有旧调用未传节点字段时才补默认最小链路。
+        List<WorkflowDtos.NodeDto> nodes = request.getNodes() == null ? defaultNodes() : request.getNodes();
+        List<WorkflowDtos.EdgeDto> edges = request.getEdges() == null ? defaultEdges() : request.getEdges();
         for (WorkflowDtos.NodeDto dto : nodes) {
             WorkflowNodeEntity node = new WorkflowNodeEntity();
             node.setId(newId());

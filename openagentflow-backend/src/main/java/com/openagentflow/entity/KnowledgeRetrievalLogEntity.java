@@ -57,6 +57,18 @@ public class KnowledgeRetrievalLogEntity {
     @TableField("milvus_search_params")
     private String milvusSearchParams;
 
+    /** 检索模式：vector、keyword、hybrid。 */
+    @TableField("search_mode")
+    private String searchMode;
+
+    /** 候选召回数量。 */
+    @TableField("candidate_k")
+    private Integer candidateK;
+
+    /** 元数据过滤条件JSON。 */
+    @TableField("metadata_filter")
+    private String metadataFilter;
+
     /** 字段说明：TopK。 */
     @TableField("top_k")
     private Integer topK;
@@ -72,6 +84,18 @@ public class KnowledgeRetrievalLogEntity {
     /** 结果数量。 */
     @TableField("result_count")
     private Integer resultCount;
+
+    /** 最佳置信得分。 */
+    @TableField("confidence_score")
+    private BigDecimal confidenceScore;
+
+    /** 是否低置信。 */
+    @TableField("low_confidence")
+    private Boolean lowConfidence;
+
+    /** 检索质量建议。 */
+    @TableField("quality_advice")
+    private String qualityAdvice;
 
     /** 耗时毫秒。 */
     @TableField("latency_ms")
@@ -177,6 +201,30 @@ public class KnowledgeRetrievalLogEntity {
         this.milvusSearchParams = milvusSearchParams;
     }
 
+    public String getSearchMode() {
+        return searchMode;
+    }
+
+    public void setSearchMode(String searchMode) {
+        this.searchMode = searchMode;
+    }
+
+    public Integer getCandidateK() {
+        return candidateK;
+    }
+
+    public void setCandidateK(Integer candidateK) {
+        this.candidateK = candidateK;
+    }
+
+    public String getMetadataFilter() {
+        return metadataFilter;
+    }
+
+    public void setMetadataFilter(String metadataFilter) {
+        this.metadataFilter = metadataFilter;
+    }
+
     public Integer getTopK() {
         return topK;
     }
@@ -207,6 +255,30 @@ public class KnowledgeRetrievalLogEntity {
 
     public void setResultCount(Integer resultCount) {
         this.resultCount = resultCount;
+    }
+
+    public BigDecimal getConfidenceScore() {
+        return confidenceScore;
+    }
+
+    public void setConfidenceScore(BigDecimal confidenceScore) {
+        this.confidenceScore = confidenceScore;
+    }
+
+    public Boolean getLowConfidence() {
+        return lowConfidence;
+    }
+
+    public void setLowConfidence(Boolean lowConfidence) {
+        this.lowConfidence = lowConfidence;
+    }
+
+    public String getQualityAdvice() {
+        return qualityAdvice;
+    }
+
+    public void setQualityAdvice(String qualityAdvice) {
+        this.qualityAdvice = qualityAdvice;
     }
 
     public Integer getLatencyMs() {

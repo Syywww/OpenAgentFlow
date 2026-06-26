@@ -1,5 +1,6 @@
 import { API_BASE_URL, getAccessToken, request } from './http';
 import type { KnowledgeSource } from './knowledge';
+import type { MemoryRecallItem } from './memories';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -28,6 +29,7 @@ export interface ChatCompletionResponse {
   totalTokens: number;
   latencyMs: number;
   errorMessage?: string;
+  memories?: MemoryRecallItem[];
   sources?: KnowledgeSource[];
   toolResults?: Record<string, unknown>[];
 }

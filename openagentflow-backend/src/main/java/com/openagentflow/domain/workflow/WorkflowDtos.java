@@ -656,6 +656,14 @@ public final class WorkflowDtos {
         private String input;
         /** 额外上下文变量。 */
         private Map<String, Object> variables;
+        /** 是否开启调试模式，开启后保留更多节点中间态。 */
+        private Boolean debugMode;
+        /** 指定起始节点 Key，用于单步调试或局部重跑。 */
+        private String startNodeKey;
+        /** 最大执行步数，避免复杂工作流误循环。 */
+        private Integer maxSteps;
+        /** 是否空跑，空跑时不会真实调用模型、知识库和工具。 */
+        private Boolean dryRun;
 
         public String getAgentId() {
             return agentId;
@@ -679,6 +687,38 @@ public final class WorkflowDtos {
 
         public void setVariables(Map<String, Object> variables) {
             this.variables = variables;
+        }
+
+        public Boolean getDebugMode() {
+            return debugMode;
+        }
+
+        public void setDebugMode(Boolean debugMode) {
+            this.debugMode = debugMode;
+        }
+
+        public String getStartNodeKey() {
+            return startNodeKey;
+        }
+
+        public void setStartNodeKey(String startNodeKey) {
+            this.startNodeKey = startNodeKey;
+        }
+
+        public Integer getMaxSteps() {
+            return maxSteps;
+        }
+
+        public void setMaxSteps(Integer maxSteps) {
+            this.maxSteps = maxSteps;
+        }
+
+        public Boolean getDryRun() {
+            return dryRun;
+        }
+
+        public void setDryRun(Boolean dryRun) {
+            this.dryRun = dryRun;
         }
     }
 
@@ -704,6 +744,8 @@ public final class WorkflowDtos {
         private Integer latencyMs;
         /** 错误信息。 */
         private String errorMessage;
+        /** 节点尝试次数。 */
+        /** 节点尝试次数。 */
 
         public String getWorkflowRunId() {
             return workflowRunId;
@@ -776,6 +818,7 @@ public final class WorkflowDtos {
         public void setErrorMessage(String errorMessage) {
             this.errorMessage = errorMessage;
         }
+
     }
 
     /**
@@ -798,6 +841,9 @@ public final class WorkflowDtos {
         private Integer latencyMs;
         /** 错误信息。 */
         private String errorMessage;
+
+        /** 节点尝试次数。 */
+        private Integer attemptNo;
 
         public String getNodeKey() {
             return nodeKey;
@@ -861,6 +907,14 @@ public final class WorkflowDtos {
 
         public void setErrorMessage(String errorMessage) {
             this.errorMessage = errorMessage;
+        }
+
+        public Integer getAttemptNo() {
+            return attemptNo;
+        }
+
+        public void setAttemptNo(Integer attemptNo) {
+            this.attemptNo = attemptNo;
         }
     }
 

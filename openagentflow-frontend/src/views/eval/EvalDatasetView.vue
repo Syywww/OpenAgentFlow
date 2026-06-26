@@ -67,6 +67,9 @@ const runForm = reactive({
   temperature: 0.2,
   maxTokens: 512,
   maxSamples: 20,
+  judgeEnabled: true,
+  judgeModelId: '',
+  judgePrompt: '',
 });
 
 const latestTasks = computed(() => tasks.value);
@@ -249,6 +252,9 @@ async function runTask() {
       temperature: runForm.temperature,
       maxTokens: runForm.maxTokens,
       maxSamples: runForm.maxSamples,
+      judgeEnabled: runForm.judgeEnabled,
+      judgeModelId: runForm.judgeModelId || undefined,
+      judgePrompt: runForm.judgePrompt || undefined,
     });
     successMessage.value = '评测任务已完成';
     await router.push(`/eval/result/${detail.id}`);
@@ -373,6 +379,9 @@ onMounted(() => {
           <label>最大 Token<input v-model.number="runForm.maxTokens" type="number" min="1" /></label>
         </div>
         <label>最大样本数<input v-model.number="runForm.maxSamples" type="number" min="1" max="500" /></label>
+        <label class="checkbox-row"><input v-model="runForm.judgeEnabled" type="checkbox" /> 启用 LLM-as-Judge</label>
+        <label>Judge 模型<select v-model="runForm.judgeModelId"><option value="">复用当前评测模型</option><option v-for="model in models" :key="model.id" :value="model.id">{{ model.modelName }}</option></select></label>
+        <label>Judge Prompt<textarea v-model="runForm.judgePrompt" placeholder="不填使用内置 JSON 裁判模板，可自定义打分标准" /></label>
         <label>Prompt 策略<input v-model="runForm.promptStrategy" placeholder="默认策略 / 简洁回答 / 带引用回答" /></label>
         <label>Prompt 补充<textarea v-model="runForm.promptVariantText" placeholder="用于 Prompt A/B 对比的补充指令" /></label>
         <label>知识库切片策略<input v-model="runForm.knowledgeStrategy" placeholder="记录本次对比的切片策略名称" /></label>

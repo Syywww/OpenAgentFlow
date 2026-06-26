@@ -545,6 +545,15 @@ public final class EvaluationDtos {
         /** 最大样本数，避免误跑过大数据集。 */
         private Integer maxSamples;
 
+        /** 是否启用 LLM-as-Judge，默认启用。 */
+        private Boolean judgeEnabled;
+
+        /** Judge 模型 ID，不填时优先复用当前评测模型。 */
+        private String judgeModelId;
+
+        /** 自定义 Judge Prompt，不填时使用内置 JSON 打分模板。 */
+        private String judgePrompt;
+
         /** 额外评测配置。 */
         private Map<String, Object> evalConfig;
 
@@ -634,6 +643,30 @@ public final class EvaluationDtos {
 
         public void setMaxSamples(Integer maxSamples) {
             this.maxSamples = maxSamples;
+        }
+
+        public Boolean getJudgeEnabled() {
+            return judgeEnabled;
+        }
+
+        public void setJudgeEnabled(Boolean judgeEnabled) {
+            this.judgeEnabled = judgeEnabled;
+        }
+
+        public String getJudgeModelId() {
+            return judgeModelId;
+        }
+
+        public void setJudgeModelId(String judgeModelId) {
+            this.judgeModelId = judgeModelId;
+        }
+
+        public String getJudgePrompt() {
+            return judgePrompt;
+        }
+
+        public void setJudgePrompt(String judgePrompt) {
+            this.judgePrompt = judgePrompt;
         }
 
         public Map<String, Object> getEvalConfig() {

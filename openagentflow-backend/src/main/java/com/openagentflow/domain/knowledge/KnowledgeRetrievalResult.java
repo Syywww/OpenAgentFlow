@@ -46,6 +46,9 @@ public class KnowledgeRetrievalResult {
     /** 本次使用的低置信阈值。 */
     private Double lowConfidenceThreshold;
 
+    /** 生产级检索建议，例如阈值、切片或过滤条件调整。 */
+    private String qualityAdvice;
+
     public String getRetrievalLogId() {
         return retrievalLogId;
     }
@@ -148,5 +151,13 @@ public class KnowledgeRetrievalResult {
 
     public void setLowConfidenceThreshold(Double lowConfidenceThreshold) {
         this.lowConfidenceThreshold = lowConfidenceThreshold;
+    }
+
+    public String getQualityAdvice() {
+        return qualityAdvice;
+    }
+
+    public void setQualityAdvice(String qualityAdvice) {
+        this.qualityAdvice = qualityAdvice;
     }
 }

@@ -26,6 +26,7 @@ const router = useRouter();
 const { toast } = useOverlay();
 const detail = ref<KnowledgeBaseDetail | null>(null);
 const selectedDocumentId = ref('');
+const retrievalDocumentId = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
 const loading = ref(false);
 const uploading = ref(false);
@@ -47,6 +48,8 @@ const retrievalForm = reactive<KnowledgeRetrievalOptions>({
   rerankEnabled: true,
   vectorWeight: 0.72,
   keywordWeight: 0.28,
+  pageNo: undefined,
+  metadataKeyword: '',
   lowConfidenceThreshold: 0.62,
   rejectLowConfidence: true,
 });
@@ -121,6 +124,9 @@ async function handleRetrievalTest() {
     lowConfidenceThreshold: Number(retrievalForm.lowConfidenceThreshold ?? 0.62),
     vectorWeight: Number(retrievalForm.vectorWeight ?? 0.72),
     keywordWeight: Number(retrievalForm.keywordWeight ?? 0.28),
+    documentIds: retrievalDocumentId.value ? [retrievalDocumentId.value] : undefined,
+    pageNo: Number(retrievalForm.pageNo || 0) > 0 ? Number(retrievalForm.pageNo) : undefined,
+    metadataKeyword: retrievalForm.metadataKeyword?.trim() || undefined,
   });
   sources.value = result.sources;
   retrievalLatency.value = result.latencyMs;
@@ -223,6 +229,19 @@ function searchModeLabel(value?: string) {
   if (value === 'vector') return '向量检索';
   if (value === 'keyword') return '关键词检索';
   return '混合检索';
+}
+
+function sourceQuoteHtml(source: KnowledgeSource) {
+  return source.highlightedQuoteText || escapeHtml(source.quoteText || '');
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 </script>
 
@@ -327,10 +346,16 @@ function searchModeLabel(value?: string) {
             <option value="vector">向量检索</option>
             <option value="keyword">关键词检索</option>
           </select>
+          <select v-model="retrievalDocumentId" title="限定文档">
+            <option value="">全部文档</option>
+            <option v-for="doc in documents" :key="doc.id" :value="doc.id">{{ doc.docName }}</option>
+          </select>
           <label class="inline-field">TopK<input v-model.number="retrievalForm.topK" type="number" min="1" max="20" /></label>
           <label class="inline-field">候选<input v-model.number="retrievalForm.candidateK" type="number" min="1" max="100" /></label>
           <label class="inline-field">阈值<input v-model.number="retrievalForm.scoreThreshold" type="number" min="0" max="1" step="0.01" /></label>
           <label class="inline-field">低置信<input v-model.number="retrievalForm.lowConfidenceThreshold" type="number" min="0" max="1" step="0.01" /></label>
+          <label class="inline-field">页码<input v-model.number="retrievalForm.pageNo" type="number" min="1" placeholder="不限" /></label>
+          <label class="inline-field wide">元数据<input v-model.trim="retrievalForm.metadataKeyword" placeholder="来源/标签" /></label>
           <label class="checkbox-line"><input v-model="retrievalForm.rerankEnabled" type="checkbox" /> 重排</label>
           <label class="checkbox-line"><input v-model="retrievalForm.rejectLowConfidence" type="checkbox" /> 低置信拒答</label>
           <button class="primary-button" type="button" @click="handleRetrievalTest"><Search :size="16" /> 检索测试</button>
@@ -346,6 +371,7 @@ function searchModeLabel(value?: string) {
             阈值：{{ scoreText(retrievalQuality.scoreThreshold) }} / 低置信 {{ scoreText(retrievalQuality.lowConfidenceThreshold) }}。
           </p>
           <p v-if="retrievalQuality.rejectReason">{{ retrievalQuality.rejectReason }}</p>
+          <p v-if="retrievalQuality.qualityAdvice">{{ retrievalQuality.qualityAdvice }}</p>
         </div>
         <div v-else class="empty-state">配置参数后执行一次检索测试，命中结果会自动进入引用来源卡片。</div>
       </template>
@@ -357,7 +383,8 @@ function searchModeLabel(value?: string) {
             <StatusBadge :label="`最终 ${scoreText(source.score)}`" />
           </div>
           <span>{{ source.matchReason || '向量相似' }} · 向量 {{ scoreText(source.vectorScore) }} · 关键词 {{ scoreText(source.keywordScore) }} · 重排 {{ scoreText(source.rerankScore) }}</span>
-          <p>{{ source.quoteText }}</p>
+          <span v-if="source.rankReason" class="rank-reason">{{ source.rankReason }}</span>
+          <p class="highlighted-quote" v-html="sourceQuoteHtml(source)"></p>
         </article>
         <PaginationBar v-model:page="sourcePage" :total="sources.length" />
         <div v-if="sources.length === 0" class="empty-state">暂无引用来源，请先在检索测试卡片中执行查询。</div>

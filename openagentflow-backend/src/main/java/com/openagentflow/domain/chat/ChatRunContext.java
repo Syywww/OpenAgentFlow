@@ -4,6 +4,7 @@ import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.entity.ModelProviderEntity;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.memory.MemoryDtos;
 import com.openagentflow.domain.model.ModelRouteDecision;
 
 import java.util.List;
@@ -33,6 +34,9 @@ public class ChatRunContext {
 
     /** 本次 RAG 检索命中的引用来源。 */
     private List<KnowledgeSource> sources;
+
+    /** 本次 Memory 召回命中的记忆列表。 */
+    private List<MemoryDtos.RecallItem> memories;
 
     /** 当前 Agent 可用的工具定义。 */
     private List<ToolDefinitionForModel> tools;
@@ -94,6 +98,14 @@ public class ChatRunContext {
 
     public void setSources(List<KnowledgeSource> sources) {
         this.sources = sources;
+    }
+
+    public List<MemoryDtos.RecallItem> getMemories() {
+        return memories;
+    }
+
+    public void setMemories(List<MemoryDtos.RecallItem> memories) {
+        this.memories = memories;
     }
 
     public List<ToolDefinitionForModel> getTools() {

@@ -8,11 +8,13 @@ export interface KnowledgeSource {
   chunkId: string;
   chunkNo: number;
   quoteText: string;
+  highlightedQuoteText?: string;
   score: number;
   vectorScore?: number;
   keywordScore?: number;
   rerankScore?: number;
   matchReason?: string;
+  rankReason?: string;
   pageNo?: number;
   retrievalLogId?: string;
 }
@@ -114,6 +116,7 @@ export interface KnowledgeRetrievalResult {
   lowConfidence?: boolean;
   answerable?: boolean;
   rejectReason?: string;
+  qualityAdvice?: string;
   scoreThreshold?: number;
   lowConfidenceThreshold?: number;
 }
@@ -127,6 +130,9 @@ export interface KnowledgeRetrievalOptions {
   rerankEnabled?: boolean;
   vectorWeight?: number;
   keywordWeight?: number;
+  documentIds?: string[];
+  pageNo?: number;
+  metadataKeyword?: string;
   lowConfidenceThreshold?: number;
   rejectLowConfidence?: boolean;
 }

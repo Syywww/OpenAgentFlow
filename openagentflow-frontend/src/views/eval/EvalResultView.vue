@@ -20,7 +20,7 @@ const activePanel = ref<'compare' | 'runs' | 'lowScore'>('compare');
 const summary = computed(() => task.value?.summary ?? {});
 const runs = computed(() => task.value?.runs ?? []);
 const modelCompare = computed(() => task.value?.modelCompare ?? []);
-const lowScoreRuns = computed(() => runs.value.slice().sort((a, b) => metricScore(a, 'accuracy') - metricScore(b, 'accuracy')));
+const lowScoreRuns = computed(() => runs.value.slice().sort((a, b) => judgeScore(a) - judgeScore(b)));
 const { currentPage: comparePage, pagedItems: pagedModelCompare } = usePagination(modelCompare);
 const { currentPage: runPage, pagedItems: pagedRuns } = usePagination(runs);
 const { currentPage: lowScorePage, pagedItems: pagedLowScoreRuns } = usePagination(lowScoreRuns);
@@ -35,6 +35,34 @@ function percent(value: unknown) {
 
 function metricScore(run: EvaluationTaskDetail['runs'][number], code: string) {
   return run.scores.find((score) => score.metricCode === code)?.score ?? 0;
+}
+
+function judgeScore(run: EvaluationTaskDetail['runs'][number]) {
+  return metricScore(run, 'llm_judge_overall') || metricScore(run, 'accuracy');
+}
+
+function parseJudgeDetail(raw?: string) {
+  if (!raw) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function judgeReason(run: EvaluationTaskDetail['runs'][number]) {
+  const score = run.scores.find((item) => item.metricCode === 'llm_judge_overall')
+    || run.scores.find((item) => item.judgeType === 'llm_as_judge');
+  const detail = parseJudgeDetail(score?.judgeDetail);
+  const judgeDetail = detail.judgeDetail as Record<string, unknown> | undefined;
+  return String(judgeDetail?.reason || detail.judgeErrorMessage || detail.reason || '暂无 Judge 理由');
+}
+
+function judgeTypeLabel(run: EvaluationTaskDetail['runs'][number]) {
+  const score = run.scores.find((item) => item.metricCode === 'llm_judge_overall');
+  return score?.judgeType === 'llm_as_judge' ? 'LLM Judge' : '规则兜底';
 }
 
 function statusLabel(status?: string) {
@@ -101,8 +129,9 @@ watch(() => route.params.id, () => {
 
   <template v-if="task">
     <section class="metric-grid">
-      <StatCard label="综合得分" :value="String(summary.overallScore ?? task.overallScore ?? 0)" detail="规则评测均分" icon="ShieldCheck" tone="success" />
+      <StatCard label="综合得分" :value="String(summary.overallScore ?? task.overallScore ?? 0)" detail="优先采用 LLM-as-Judge" icon="ShieldCheck" tone="success" />
       <StatCard label="准确率" :value="percent(summary.accuracy)" detail="标准答案覆盖" icon="Activity" tone="info" />
+      <StatCard label="Judge 得分" :value="String(summary.judgeScore ?? 0)" detail="裁判模型综合分" icon="Sparkles" tone="success" />
       <StatCard label="幻觉率" :value="percent(summary.hallucinationRate)" detail="100 - 幻觉控制分" icon="ShieldAlert" tone="warning" />
       <StatCard label="Token 消耗" :value="String(summary.totalTokens ?? task.totalTokens ?? 0)" detail="本次评测累计" icon="Coins" tone="neutral" />
     </section>
@@ -137,12 +166,13 @@ watch(() => route.params.id, () => {
         <div class="section-title"><h2>模型 / Prompt / 知识库策略对比</h2><span>{{ modelCompare.length }} 组</span></div>
         <table class="data-table">
           <thead>
-            <tr><th>模型</th><th>综合</th><th>准确率</th><th>相关性</th><th>完整性</th><th>幻觉率</th><th>引用</th><th>工具</th><th>耗时</th><th>Token</th></tr>
+            <tr><th>模型</th><th>综合</th><th>Judge</th><th>准确率</th><th>相关性</th><th>完整性</th><th>幻觉率</th><th>引用</th><th>工具</th><th>耗时</th><th>Token</th></tr>
           </thead>
           <tbody>
             <tr v-for="row in pagedModelCompare" :key="String(row.modelId)">
               <td><b>{{ row.modelName }}</b><span class="block muted">{{ row.modelId }}</span></td>
               <td>{{ row.overallScore }}</td>
+              <td>{{ row.judgeScore ?? 0 }}</td>
               <td>{{ percent(row.accuracy) }}</td>
               <td>{{ percent(row.relevance) }}</td>
               <td>{{ percent(row.completeness) }}</td>
@@ -161,13 +191,14 @@ watch(() => route.params.id, () => {
         <div class="section-title"><h2>样本结果</h2><span>{{ runs.length }} 条</span></div>
         <table class="data-table">
           <thead>
-            <tr><th>样本</th><th>模型</th><th>状态</th><th>准确</th><th>完整</th><th>耗时</th><th>Trace</th></tr>
+            <tr><th>样本</th><th>模型</th><th>状态</th><th>Judge</th><th>准确</th><th>完整</th><th>耗时</th><th>Trace</th></tr>
           </thead>
           <tbody>
             <tr v-for="run in pagedRuns" :key="run.id">
               <td><b>#{{ run.sampleNo }}</b><span class="block muted">{{ run.question }}</span></td>
               <td>{{ run.modelName || run.modelId }}</td>
               <td><StatusBadge :label="statusLabel(run.status)" /></td>
+              <td><StatusBadge :label="`${judgeTypeLabel(run)} ${judgeScore(run).toFixed(2)}`" /></td>
               <td>{{ percent(metricScore(run, 'accuracy')) }}</td>
               <td>{{ percent(metricScore(run, 'completeness')) }}</td>
               <td>{{ run.latencyMs || 0 }}ms</td>
@@ -188,6 +219,7 @@ watch(() => route.params.id, () => {
             <b>{{ run.modelName || run.modelId }} / #{{ run.sampleNo }}</b>
             <span>{{ run.errorMessage || run.answerText || '无回答内容' }}</span>
             <small class="block muted">标准答案：{{ run.expectedAnswer || '-' }}</small>
+            <small class="block muted">Judge：{{ judgeScore(run).toFixed(2) }}，{{ judgeReason(run) }}</small>
           </div>
           <StatusBadge :label="statusLabel(run.status)" />
           <button class="secondary-button slim" type="button" :disabled="!run.runId" @click="router.push(`/logs/${run.runId}`)">Trace</button>

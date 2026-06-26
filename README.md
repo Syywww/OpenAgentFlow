@@ -14,16 +14,18 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限和调试运行。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
-- **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、检索测试、引用来源和 Agent 绑定。
+- **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、混合召回、重排、低置信度提示、引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
-- **可视化工作流**：Vue Flow 画布，支持开始、LLM、RAG、工具、条件、结束节点，支持发布、版本和执行 Trace。
+- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布弹出节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、结束节点，支持重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板和运行中节点动效。
 - **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
 - **运行观测 Trace**：统一串联 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误和引用来源。
 - **成本与用量中心**：按服务商、模型、Agent、用户、工作流、评测统计 Token、成本、耗时，支持明细导出、价格配置和配额拦截。
 - **组织空间治理**：组织、工作空间、空间成员、资源归属和空间级访问控制，支持 Agent、知识库、工具、工作流按空间隔离。
 - **运营监控告警**：统一展示平台健康、关键指标、告警规则、告警事件、通知渠道和一键巡检，支撑日常运营与交付验收。
-- **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、规则评分、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
+- **交付验收中心**：面向开源发布、客户交付和部署上线，提供环境检查、核心链路检查、风险提示、交付清单和报告生成。
+- **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话。
+- **Memory 记忆中心**：支持短期会话记忆、长期记忆、任务记忆、向量记忆、Prompt 同款管理布局、弹框维护、召回测试、过期清理、客服助手长期记忆模板和 Agent 调试链路自动沉淀。
 - **开源工程化**：Docker Compose、`.env.example`、CI、脚本、License、Issue/PR 模板和开源文档。
 
 ## 技术栈
@@ -159,6 +161,12 @@ V018__iam_admin_center.sql
 V019__seed_default_login_users.sql
 V020__multi_agent_collaboration.sql
 V021__runtime_trace_token_usage_default.sql
+V022__memory_center.sql
+V023__seed_customer_support_memory_template.sql
+V024__rag_production_retrieval_enhancement.sql
+V025__evaluation_llm_as_judge.sql
+V026__delivery_acceptance_center.sql
+V027__workflow_production_enhancement.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -189,6 +197,11 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | P19 Prompt 模板中心与版本治理 | 已完成 | Prompt 模板 CRUD、变量解析、版本发布、复制、回滚、Agent 绑定 |
 | P20 工作台 Dashboard 全量真实化 | 已完成 | 真实指标、运行趋势、最近运行、模型排行、任务队列、告警健康、知识库质量 |
 | P21 多 Agent 协作 | 已完成 | 协作团队 CRUD、成员分工、五种协作模式、真实 Agent 调用、协作执行、Trace 追踪 |
+| P24 Memory 记忆中心 | 已完成 | 短期记忆、长期记忆、任务记忆、向量记忆、客服助手长期记忆模板、召回测试、过期清理、调试链路自动沉淀 |
+| P26 评测增强 LLM-as-Judge | 已完成 | 裁判模型评分、Judge Prompt、质量维度 JSON、规则兜底、Judge 综合分和低分原因 |
+| P27 RAG 生产级召回增强 | 已完成 | 混合召回、候选扩召、向量/关键词权重、文档/页码/元数据过滤、重排、引用高亮、排序原因和低置信度建议 |
+| P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
+| P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |
 
 ## 演示建议
 
@@ -203,12 +216,15 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 9. 创建工作流并运行，查看工作流 Trace。
 10. 接入 MCP Server，发现并测试 MCP 工具。
 11. 创建评测集、导入样本、运行评测并跳转低分样本 Trace。
-12. 打开用量中心，查看模型成本趋势、调用明细、维度拆分和配额规则。
-13. 打开组织空间，创建团队空间、添加成员，并确认 Agent、知识库、工具、工作流归属到空间。
-14. 打开任务中心，查看知识库文档解析、切片、Embedding、Milvus 写入的实时进度和日志。
-15. 打开风险治理，查看审计日志、高风险工具、MCP 风险、护栏事件和待确认请求，并完成处置闭环。
-16. 使用 `.env.prod` 和 `docker-compose.prod.yml` 检查生产部署配置，确认默认密钥不能启动生产后端。
-17. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
+12. 打开 Memory 记忆中心，新增长期记忆或向量记忆，并使用召回测试确认 Agent 可参考相关上下文。
+13. 打开用量中心，查看模型成本趋势、调用明细、维度拆分和配额规则。
+14. 打开组织空间，创建团队空间、添加成员，并确认 Agent、知识库、工具、工作流归属到空间。
+15. 打开任务中心，查看知识库文档解析、切片、Embedding、Milvus 写入的实时进度和日志。
+16. 打开风险治理，查看审计日志、高风险工具、MCP 风险、护栏事件和待确认请求，并完成处置闭环。
+17. 使用 `.env.prod` 和 `docker-compose.prod.yml` 检查生产部署配置，确认默认密钥不能启动生产后端。
+18. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
+19. 打开交付验收中心，点击一键验收，查看环境、权限、核心链路、配置风险和交付清单。
+20. 打开工作流编排，使用模板创建流程，配置节点策略，在调试面板运行并查看 Trace。
 
 ## 开源发布清单
 

@@ -1,6 +1,7 @@
 package com.openagentflow.domain.chat;
 
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.memory.MemoryDtos;
 
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,9 @@ public class ChatCompletionResponse {
 
     /** RAG 引用来源列表。 */
     private List<KnowledgeSource> sources;
+
+    /** Memory 召回来源列表。 */
+    private List<MemoryDtos.RecallItem> memories;
 
     /** 工具调用结果列表。 */
     private List<Map<String, Object>> toolResults;
@@ -143,6 +147,14 @@ public class ChatCompletionResponse {
 
     public void setSources(List<KnowledgeSource> sources) {
         this.sources = sources;
+    }
+
+    public List<MemoryDtos.RecallItem> getMemories() {
+        return memories;
+    }
+
+    public void setMemories(List<MemoryDtos.RecallItem> memories) {
+        this.memories = memories;
     }
 
     public List<Map<String, Object>> getToolResults() {

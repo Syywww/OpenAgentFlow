@@ -1,6 +1,23 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
-import { Activity, Bot, Braces, Coins, Gauge, Library, Server, ShieldAlert, ShieldCheck, Timer, Workflow } from 'lucide-vue-next';
+import {
+  Activity,
+  Bot,
+  Braces,
+  BrainCircuit,
+  ClipboardList,
+  Coins,
+  Database,
+  Gauge,
+  Library,
+  MessageSquareText,
+  RefreshCw,
+  Server,
+  ShieldAlert,
+  ShieldCheck,
+  Timer,
+  Workflow,
+} from 'lucide-vue-next';
 import type { StatusTone } from '../types';
 
 const props = defineProps<{
@@ -15,9 +32,14 @@ const iconMap: Record<string, Component> = {
   Activity,
   Bot,
   Braces,
+  BrainCircuit,
+  ClipboardList,
   Coins,
+  Database,
   Gauge,
   Library,
+  MessageSquareText,
+  RefreshCw,
   Server,
   ShieldAlert,
   ShieldCheck,

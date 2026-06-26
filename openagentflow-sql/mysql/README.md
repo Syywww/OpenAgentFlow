@@ -41,6 +41,16 @@ Redis: cache, sessions, queue state
 - `V015__knowledge_governance_enhancement.sql`: knowledge-base governance policies, quality issues, permissions, and default governance policy.
 - `V016__ops_monitor_alert_center.sql`: platform operation monitoring, health checks, alert rules, alert events, notification channels, and monitoring permissions.
 - `V017__prompt_template_center.sql`: Prompt template center permissions, default Prompt versions, variable comments, and seed Prompt templates.
+- `V018__iam_admin_center.sql`: user, department, role, and permission administration support.
+- `V019__seed_default_login_users.sql`: default login user seed data.
+- `V020__multi_agent_collaboration.sql`: multi-Agent team, member, and collaboration runtime tables.
+- `V021__runtime_trace_token_usage_default.sql`: runtime trace token usage defaults.
+- `V022__memory_center.sql`: Agent memory center tables and indexes.
+- `V023__seed_customer_support_memory_template.sql`: customer-support Agent long-term memory template seed data.
+- `V024__rag_production_retrieval_enhancement.sql`: production RAG recall fields, confidence indexes, and metadata filter columns.
+- `V025__evaluation_llm_as_judge.sql`: LLM-as-Judge metric setup, judge detail comments, and default score configuration.
+- `V026__delivery_acceptance_center.sql`: delivery acceptance report table, permissions, and menu API access.
+- `V027__workflow_production_enhancement.sql`: workflow templates, API endpoints, strategy hit logs, input/output schema, execution policy, and advanced workflow permissions.
 
 Recommended execution order:
 
@@ -62,6 +72,16 @@ V014__model_gateway_governance.sql
 V015__knowledge_governance_enhancement.sql
 V016__ops_monitor_alert_center.sql
 V017__prompt_template_center.sql
+V018__iam_admin_center.sql
+V019__seed_default_login_users.sql
+V020__multi_agent_collaboration.sql
+V021__runtime_trace_token_usage_default.sql
+V022__memory_center.sql
+V023__seed_customer_support_memory_template.sql
+V024__rag_production_retrieval_enhancement.sql
+V025__evaluation_llm_as_judge.sql
+V026__delivery_acceptance_center.sql
+V027__workflow_production_enhancement.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -85,6 +105,8 @@ Coverage matches the PostgreSQL version at the feature level:
 - Knowledge vectors are written to Milvus first. The backend also stores `embedding_json` in MySQL so low-volume retrieval and development fallback can continue when a vector service or embedding endpoint is unavailable.
 - Milvus knowledge collections are separated by vector dimension, for example `oaf_knowledge_chunks_d2048`, so real 2048-dimensional vectors do not conflict with earlier local fallback vectors.
 - The backend now supports knowledge-base CRUD, upload, parsing, chunking, embedding, Milvus write, retrieval test, source citations, and Agent binding.
+- `V024__rag_production_retrieval_enhancement.sql` adds search mode, candidate size, metadata filter, confidence score, low-confidence flag, and quality advice fields for production recall analysis.
+- The backend supports hybrid recall, vector/keyword weights, candidate expansion, rerank, document/page/metadata filtering, highlighted citations, rank reasons, and low-confidence advice.
 
 ## Latest Governance Update
 
@@ -131,6 +153,27 @@ Coverage matches the PostgreSQL version at the feature level:
 - Existing default RAG and Tool Prompt rows get an initial `v1` version snapshot; the migration also seeds default Evaluation Judge and Workflow Summary Prompt templates.
 - The backend exposes `/prompt-templates/overview`, `/prompt-templates`, `/prompt-templates/{id}`, `/prompt-templates/{id}/publish`, `/prompt-templates/{id}/copy`, and `/prompt-templates/{id}/versions/{versionId}/rollback`.
 - The frontend now includes a Prompt Template Center page for template CRUD, variable preview, version publishing, copying, rollback, and Agent System Prompt binding.
+
+## Latest Evaluation Update
+
+- `V025__evaluation_llm_as_judge.sql` adds the `llm_judge_overall` metric and marks accuracy, relevance, completeness, and hallucination control as Judge-ready metrics.
+- Evaluation tasks can enable or disable LLM-as-Judge, choose a Judge model, and provide a custom Judge Prompt.
+- Judge output must be JSON and is stored in `eval_score.judge_detail` with model, latency, Token, reason, strengths, risks, and fallback information.
+- The frontend evaluation result page shows Judge score, Judge source type, and low-score reasons.
+
+## Latest Delivery Acceptance Update
+
+- `V026__delivery_acceptance_center.sql` creates `delivery_acceptance_report`, with Chinese comments for every table and column.
+- The migration adds `delivery:acceptance:view` and `delivery:acceptance:manage` permissions for the delivery acceptance menu and API.
+- The backend exposes `/delivery-acceptance/overview`, `/delivery-acceptance/checks`, `/delivery-acceptance/run`, and `/delivery-acceptance/reports`.
+- The frontend now includes a Delivery Acceptance page for environment checks, core-chain checks, risks, delivery manifest, and generated reports.
+
+## Latest Workflow Production Update
+
+- `V027__workflow_production_enhancement.sql` extends `workflow_definition` with input schema, output schema, execution policy, API enabled flag, and release strategy.
+- The migration creates `workflow_template`, `workflow_api_endpoint`, and `workflow_policy_hit_log`, with Chinese comments for every table and column.
+- The backend exposes advanced workflow overview, templates, API endpoint publishing, human task decisions, endpoint invocation, and version diff APIs.
+- The frontend workflow designer now includes production node types, retry and timeout policy, failure branch strategy, debug options, templates, API publishing, governance, human tasks, and version comparison.
 
 ## Milvus Mapping
 

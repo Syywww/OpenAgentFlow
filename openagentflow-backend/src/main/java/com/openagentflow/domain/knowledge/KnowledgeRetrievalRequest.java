@@ -2,6 +2,8 @@ package com.openagentflow.domain.knowledge;
 
 import jakarta.validation.constraints.NotBlank;
 
+import java.util.List;
+
 /**
  * 知识库检索请求。
  */
@@ -37,6 +39,15 @@ public class KnowledgeRetrievalRequest {
 
     /** 低置信时是否建议拒答。 */
     private Boolean rejectLowConfidence;
+
+    /** 指定文档 ID 列表，为空时检索整个知识库。 */
+    private List<String> documentIds;
+
+    /** 指定页码，为空时不按页过滤。 */
+    private Integer pageNo;
+
+    /** 元数据关键词，会匹配分片标题、正文和 metadata JSON。 */
+    private String metadataKeyword;
 
     public String getQuery() {
         return query;
@@ -116,5 +127,29 @@ public class KnowledgeRetrievalRequest {
 
     public void setRejectLowConfidence(Boolean rejectLowConfidence) {
         this.rejectLowConfidence = rejectLowConfidence;
+    }
+
+    public List<String> getDocumentIds() {
+        return documentIds;
+    }
+
+    public void setDocumentIds(List<String> documentIds) {
+        this.documentIds = documentIds;
+    }
+
+    public Integer getPageNo() {
+        return pageNo;
+    }
+
+    public void setPageNo(Integer pageNo) {
+        this.pageNo = pageNo;
+    }
+
+    public String getMetadataKeyword() {
+        return metadataKeyword;
+    }
+
+    public void setMetadataKeyword(String metadataKeyword) {
+        this.metadataKeyword = metadataKeyword;
     }
 }

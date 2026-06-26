@@ -555,14 +555,15 @@ public class KnowledgeBaseService {
         List<KnowledgeSource> sources = rankedCandidates.stream()
                 .filter(candidate -> candidate.finalScore >= options.scoreThreshold)
                 .limit(options.topK)
-                .map(candidate -> toSource(kb, candidate))
+                .map(candidate -> toSource(kb, candidate, query, terms))
                 .toList();
         Double confidenceScore = sources.isEmpty() ? 0D : sources.getFirst().getScore();
         boolean lowConfidence = sources.isEmpty() || confidenceScore < options.lowConfidenceThreshold;
         String rejectReason = lowConfidence
                 ? "未召回达到低置信阈值的可靠片段，建议拒答或引导用户补充问题"
                 : "";
-        String logId = saveRetrievalLog(kb, agentId, runId, query, queryVector, options, sources, rankedCandidates.size(), lowConfidence, rejectReason, startedAt);
+        String qualityAdvice = buildQualityAdvice(options, rankedCandidates.size(), sources.size(), lowConfidence);
+        String logId = saveRetrievalLog(kb, agentId, runId, query, queryVector, options, sources, rankedCandidates.size(), confidenceScore, lowConfidence, rejectReason, qualityAdvice, startedAt);
         sources.forEach(source -> source.setRetrievalLogId(logId));
 
         KnowledgeRetrievalResult result = new KnowledgeRetrievalResult();
@@ -579,6 +580,7 @@ public class KnowledgeBaseService {
         result.setRejectReason(rejectReason);
         result.setScoreThreshold(options.scoreThreshold);
         result.setLowConfidenceThreshold(options.lowConfidenceThreshold);
+        result.setQualityAdvice(qualityAdvice);
         return result;
     }
 
@@ -604,6 +606,9 @@ public class KnowledgeBaseService {
                     .eq(KnowledgeChunkEntity::getStatus, "active")
                     .last("limit 2000"));
             for (KnowledgeChunkEntity chunk : chunks) {
+                if (!matchesRetrievalFilters(chunk, options)) {
+                    continue;
+                }
                 candidates.add(buildCandidate(chunk, 0D, keywordScore(query, terms, chunk), options));
             }
             return candidates;
@@ -616,6 +621,9 @@ public class KnowledgeBaseService {
         for (KnowledgeEmbeddingEntity embedding : embeddings) {
             KnowledgeChunkEntity chunk = knowledgeChunkMapper.selectById(embedding.getChunkId());
             if (chunk == null || !"active".equalsIgnoreCase(chunk.getStatus())) {
+                continue;
+            }
+            if (!matchesRetrievalFilters(chunk, options)) {
                 continue;
             }
             double vectorScore = cosine(queryVector, parseVector(embedding.getEmbeddingJson()));
@@ -693,12 +701,14 @@ public class KnowledgeBaseService {
      * @param candidate 候选项
      * @return 引用来源
      */
-    private KnowledgeSource toSource(KnowledgeBaseEntity kb, RetrievalCandidate candidate) {
+    private KnowledgeSource toSource(KnowledgeBaseEntity kb, RetrievalCandidate candidate, String query, List<String> terms) {
         KnowledgeSource source = toSource(kb, candidate.chunk, candidate.finalScore);
         source.setVectorScore(candidate.vectorScore);
         source.setKeywordScore(candidate.keywordScore);
         source.setRerankScore(candidate.finalScore);
         source.setMatchReason(matchReason(candidate));
+        source.setRankReason(rankReason(candidate, terms));
+        source.setHighlightedQuoteText(highlightQuote(candidate.chunk.getContent(), query, terms));
         return source;
     }
 
@@ -716,6 +726,108 @@ public class KnowledgeBaseService {
             return "关键词命中";
         }
         return "向量相似";
+    }
+
+    /**
+     * 判断分片是否满足生产级过滤条件。
+     *
+     * @param chunk 分片实体
+     * @param options 检索参数
+     * @return 是否满足
+     */
+    private boolean matchesRetrievalFilters(KnowledgeChunkEntity chunk, RetrievalOptions options) {
+        if (chunk == null) {
+            return false;
+        }
+        if (!options.documentIds.isEmpty() && !options.documentIds.contains(chunk.getDocumentId())) {
+            return false;
+        }
+        if (options.pageNo != null && !options.pageNo.equals(chunk.getPageNo())) {
+            return false;
+        }
+        if (StringUtils.hasText(options.metadataKeyword)) {
+            String keyword = normalizeText(options.metadataKeyword);
+            String target = normalizeText(safeText(chunk.getTitle()) + " " + safeText(chunk.getContent()) + " " + safeText(chunk.getMetadata()));
+            return target.contains(keyword);
+        }
+        return true;
+    }
+
+    /**
+     * 生成重排原因说明。
+     *
+     * @param candidate 候选项
+     * @return 重排说明
+     */
+    private String rankReason(RetrievalCandidate candidate, List<String> terms) {
+        List<String> reasons = new ArrayList<>();
+        if (candidate.keywordScore > 0.25D) {
+            reasons.add("关键词覆盖较高");
+        }
+        if (candidate.vectorScore > 0.25D) {
+            reasons.add("语义相似度较高");
+        }
+        if (containsAny(candidate.chunk.getTitle(), terms)) {
+            reasons.add("标题字段参与排序");
+        }
+        if (candidate.chunk.getTokenCount() != null && candidate.chunk.getTokenCount() < 20) {
+            reasons.add("短分片已轻微降权");
+        }
+        return reasons.isEmpty() ? "按综合得分排序" : String.join("，", reasons);
+    }
+
+    /**
+     * 构建引用高亮文本。
+     *
+     * @param content 原始分片文本
+     * @param query 查询文本
+     * @param terms 查询关键词
+     * @return HTML 安全的高亮文本
+     */
+    private String highlightQuote(String content, String query, List<String> terms) {
+        String highlighted = escapeHtml(content);
+        List<String> highlightTerms = new ArrayList<>();
+        if (StringUtils.hasText(query) && query.trim().length() >= 2 && query.trim().length() <= 30) {
+            highlightTerms.add(query.trim());
+        }
+        terms.stream()
+                .filter(StringUtils::hasText)
+                .filter(term -> term.length() >= 2 && term.length() <= 18)
+                .limit(8)
+                .forEach(highlightTerms::add);
+        for (String term : highlightTerms) {
+            highlighted = highlighted.replaceAll("(?i)(" + java.util.regex.Pattern.quote(escapeHtml(term)) + ")", "<mark>$1</mark>");
+        }
+        return highlighted;
+    }
+
+    /**
+     * 构建生产级检索质量建议。
+     *
+     * @param options 检索参数
+     * @param candidateCount 候选数量
+     * @param resultCount 结果数量
+     * @param lowConfidence 是否低置信
+     * @return 质量建议
+     */
+    private String buildQualityAdvice(RetrievalOptions options, int candidateCount, int resultCount, boolean lowConfidence) {
+        List<String> advice = new ArrayList<>();
+        if (candidateCount == 0) {
+            advice.add("未召回候选分片，可放宽文档/页码/元数据过滤条件，或检查文档是否完成向量化");
+        }
+        if (resultCount == 0) {
+            advice.add("最终结果为空，可降低得分阈值、增大候选数或补充知识库内容");
+        }
+        if (lowConfidence) {
+            advice.add("最佳结果低于低置信阈值，建议开启拒答或引导用户补充更具体的问题");
+        }
+        if ("vector".equals(options.searchMode) && options.keywordWeight <= 0.01D) {
+            advice.add("纯向量检索适合语义问答；若专业名词较多，建议切换混合检索");
+        }
+        if ("keyword".equals(options.searchMode)) {
+            advice.add("关键词检索适合精确术语；若表达方式多样，建议切换混合检索");
+        }
+        return advice.isEmpty() ? "检索质量正常，可在引用来源中查看分数明细和高亮片段" : String.join("；", advice);
     }
 
     /**
@@ -968,8 +1080,10 @@ public class KnowledgeBaseService {
                                     RetrievalOptions options,
                                     List<KnowledgeSource> sources,
                                     int candidateCount,
+                                    Double confidenceScore,
                                     boolean lowConfidence,
                                     String rejectReason,
+                                    String qualityAdvice,
                                     Instant startedAt) {
         KnowledgeRetrievalLogEntity log = new KnowledgeRetrievalLogEntity();
         log.setId(newId());
@@ -980,18 +1094,32 @@ public class KnowledgeBaseService {
         log.setMilvusCollectionName(kb.getMilvusCollectionName());
         log.setQueryText(query);
         log.setQueryEmbeddingJson(toJson(queryVector));
-        log.setMilvusSearchParams(toJson(Map.of(
-                "mode", options.searchMode,
-                "candidateK", options.candidateK,
-                "candidateCount", candidateCount,
-                "vectorWeight", options.vectorWeight,
-                "keywordWeight", options.keywordWeight,
-                "lowConfidence", lowConfidence,
-                "lowConfidenceThreshold", options.lowConfidenceThreshold,
-                "rejectLowConfidence", options.rejectLowConfidence,
-                "rejectReason", rejectReason,
-                "engine", "mysql_hybrid_fallback"
+        Map<String, Object> searchParams = new LinkedHashMap<>();
+        searchParams.put("mode", options.searchMode);
+        searchParams.put("candidateK", options.candidateK);
+        searchParams.put("candidateCount", candidateCount);
+        searchParams.put("vectorWeight", options.vectorWeight);
+        searchParams.put("keywordWeight", options.keywordWeight);
+        searchParams.put("documentIds", options.documentIds);
+        searchParams.put("pageNo", options.pageNo);
+        searchParams.put("metadataKeyword", options.metadataKeyword);
+        searchParams.put("lowConfidence", lowConfidence);
+        searchParams.put("lowConfidenceThreshold", options.lowConfidenceThreshold);
+        searchParams.put("rejectLowConfidence", options.rejectLowConfidence);
+        searchParams.put("rejectReason", rejectReason);
+        searchParams.put("qualityAdvice", qualityAdvice);
+        searchParams.put("engine", "mysql_hybrid_fallback");
+        log.setMilvusSearchParams(toJson(searchParams));
+        log.setSearchMode(options.searchMode);
+        log.setCandidateK(options.candidateK);
+        log.setMetadataFilter(toJson(Map.of(
+                "documentIds", options.documentIds,
+                "pageNo", options.pageNo == null ? "" : options.pageNo,
+                "metadataKeyword", options.metadataKeyword
         )));
+        log.setConfidenceScore(BigDecimal.valueOf(confidenceScore == null ? 0D : confidenceScore));
+        log.setLowConfidence(lowConfidence);
+        log.setQualityAdvice(qualityAdvice);
         log.setTopK(options.topK);
         log.setScoreThreshold(BigDecimal.valueOf(options.scoreThreshold));
         log.setRerankEnabled(options.rerankEnabled);
@@ -1235,6 +1363,9 @@ public class KnowledgeBaseService {
         options.keywordWeight = clamp(request.getKeywordWeight() == null ? 0.28D : request.getKeywordWeight(), 0D, 1D);
         options.lowConfidenceThreshold = clampScore(request.getLowConfidenceThreshold(), Math.max(options.scoreThreshold, 0.62D));
         options.rejectLowConfidence = request.getRejectLowConfidence() == null || Boolean.TRUE.equals(request.getRejectLowConfidence());
+        options.documentIds = normalizeDocumentIds(request.getDocumentIds());
+        options.pageNo = request.getPageNo() != null && request.getPageNo() > 0 ? request.getPageNo() : null;
+        options.metadataKeyword = safeText(request.getMetadataKeyword()).trim();
         return options;
     }
 
@@ -1255,6 +1386,9 @@ public class KnowledgeBaseService {
         options.keywordWeight = clamp(doubleValue(config.get("keywordWeight"), 0.28D), 0D, 1D);
         options.lowConfidenceThreshold = clampScore(doubleValue(config.get("lowConfidenceThreshold"), Math.max(options.scoreThreshold, 0.62D)), Math.max(options.scoreThreshold, 0.62D));
         options.rejectLowConfidence = booleanValue(config.get("rejectLowConfidence"), true);
+        options.documentIds = normalizeDocumentIds(readStringList(config.get("documentIds")));
+        options.pageNo = intValue(config.get("pageNo"), 0) > 0 ? intValue(config.get("pageNo"), 0) : null;
+        options.metadataKeyword = safeText(asString(config.get("metadataKeyword"))).trim();
         return options;
     }
 
@@ -1399,6 +1533,63 @@ public class KnowledgeBaseService {
      */
     private String normalizeText(String text) {
         return text == null ? "" : text.toLowerCase(Locale.ROOT).replaceAll("[\\p{Punct}\\s]+", "");
+    }
+
+    /**
+     * 清洗文档 ID 列表。
+     *
+     * @param values 原始文档 ID
+     * @return 去重后的文档 ID
+     */
+    private Set<String> normalizeDocumentIds(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return Set.of();
+        }
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * 从配置对象读取字符串列表。
+     *
+     * @param value 配置值
+     * @return 字符串列表
+     */
+    private List<String> readStringList(Object value) {
+        if (value instanceof List<?> list) {
+            return list.stream().map(String::valueOf).toList();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            return List.of(text.split(","));
+        }
+        return List.of();
+    }
+
+    /**
+     * HTML 转义，用于安全输出高亮片段。
+     *
+     * @param text 原始文本
+     * @return 转义文本
+     */
+    private String escapeHtml(String text) {
+        return safeText(text)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    /**
+     * 文本空值兜底。
+     *
+     * @param text 原始文本
+     * @return 非空文本
+     */
+    private String safeText(String text) {
+        return text == null ? "" : text;
     }
 
     /**
@@ -1783,6 +1974,12 @@ public class KnowledgeBaseService {
         private double vectorWeight;
         /** 关键词权重。 */
         private double keywordWeight;
+        /** 指定文档过滤。 */
+        private Set<String> documentIds = Set.of();
+        /** 指定页码过滤。 */
+        private Integer pageNo;
+        /** 元数据关键词过滤。 */
+        private String metadataKeyword = "";
     }
 
     /**

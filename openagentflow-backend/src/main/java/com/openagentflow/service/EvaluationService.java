@@ -2,9 +2,13 @@ package com.openagentflow.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.domain.chat.ChatCompletionRequest;
 import com.openagentflow.domain.chat.ChatCompletionResponse;
+import com.openagentflow.domain.chat.ChatMessage;
+import com.openagentflow.domain.chat.ChatRunContext;
+import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.eval.EvaluationDtos;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.entity.AgentEntity;
@@ -16,6 +20,7 @@ import com.openagentflow.entity.EvalScoreEntity;
 import com.openagentflow.entity.EvalTaskEntity;
 import com.openagentflow.entity.EvalTaskRunEntity;
 import com.openagentflow.entity.ModelConfigEntity;
+import com.openagentflow.entity.ModelProviderEntity;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.AgentMapper;
 import com.openagentflow.mapper.EvalDatasetMapper;
@@ -92,6 +97,12 @@ public class EvaluationService {
     /** Agent 运行服务，评测时通过它调用真实 Agent 并写入运行 Trace。 */
     private final AgentService agentService;
 
+    /** 模型服务，用于加载 Judge 模型、服务商和 API Key。 */
+    private final ModelProviderService modelProviderService;
+
+    /** OpenAI-compatible 客户端，用于真实执行 LLM-as-Judge 评分。 */
+    private final OpenAiCompatibleClient openAiCompatibleClient;
+
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
@@ -106,6 +117,8 @@ public class EvaluationService {
                              ModelConfigMapper modelConfigMapper,
                              AgentAccessService agentAccessService,
                              AgentService agentService,
+                             ModelProviderService modelProviderService,
+                             OpenAiCompatibleClient openAiCompatibleClient,
                              ObjectMapper objectMapper) {
         this.evalDatasetMapper = evalDatasetMapper;
         this.evalSampleMapper = evalSampleMapper;
@@ -118,6 +131,8 @@ public class EvaluationService {
         this.modelConfigMapper = modelConfigMapper;
         this.agentAccessService = agentAccessService;
         this.agentService = agentService;
+        this.modelProviderService = modelProviderService;
+        this.openAiCompatibleClient = openAiCompatibleClient;
         this.objectMapper = objectMapper;
     }
 
@@ -360,7 +375,12 @@ public class EvaluationService {
             run.setStatus("success".equalsIgnoreCase(response.getStatus()) ? "success" : "failed");
             run.setErrorMessage(response.getErrorMessage());
             evalTaskRunMapper.updateById(run);
-            saveScores(run, sample, response);
+            int judgeTokens = saveScores(run, sample, response, request);
+            if (judgeTokens > 0) {
+                run.setTokenCount((run.getTokenCount() == null ? 0 : run.getTokenCount()) + judgeTokens);
+                run.setUpdatedAt(LocalDateTime.now());
+                evalTaskRunMapper.updateById(run);
+            }
         } catch (Exception ex) {
             // 单条样本失败不阻断整个批次，失败原因会进入评测结果和 Trace 列表。
             run.setStatus("failed");
@@ -378,7 +398,10 @@ public class EvaluationService {
      * @param sample 评测样本
      * @param response Agent 响应
      */
-    private void saveScores(EvalTaskRunEntity run, EvalSampleEntity sample, ChatCompletionResponse response) {
+    private int saveScores(EvalTaskRunEntity run,
+                           EvalSampleEntity sample,
+                           ChatCompletionResponse response,
+                           EvaluationDtos.RunTaskRequest request) {
         Map<String, EvalMetricEntity> metrics = metricsByCode();
         String answer = response.getContent() == null ? "" : response.getContent();
         List<String> points = scoringPoints(sample);
@@ -388,23 +411,32 @@ public class EvaluationService {
         double citation = citationCorrectness(answer, sample, response.getSources());
         double toolSuccess = toolSuccessRate(response.getToolResults());
         double hallucinationControl = hallucinationControl(answer, sample, response.getSources(), accuracy, citation);
+        JudgeResult judge = judgeEnabled(request) ? runLlmJudge(run, sample, response, request) : JudgeResult.disabled();
 
-        insertScore(run.getId(), metrics.get("accuracy"), accuracy, mapOf(
+        insertScore(run.getId(), metrics.get("llm_judge_overall"), judge.scoreOr("overallScore", overallRuleScore(accuracy, relevance, completeness, hallucinationControl)), judge.detailWithFallback(
+                "metric", "overallScore",
+                "fallbackScore", overallRuleScore(accuracy, relevance, completeness, hallucinationControl)));
+        insertScore(run.getId(), metrics.get("accuracy"), judge.scoreOr("accuracy", accuracy), judge.detailWithFallback(
+                "metric", "accuracy",
                 "scoringPoints", points,
                 "expectedAnswer", sample.getExpectedAnswer()));
-        insertScore(run.getId(), metrics.get("relevance"), relevance, mapOf(
+        insertScore(run.getId(), metrics.get("relevance"), judge.scoreOr("relevance", relevance), judge.detailWithFallback(
+                "metric", "relevance",
                 "question", sample.getQuestion(),
                 "referenceContext", sample.getReferenceContext()));
-        insertScore(run.getId(), metrics.get("completeness"), completeness, mapOf(
+        insertScore(run.getId(), metrics.get("completeness"), judge.scoreOr("completeness", completeness), judge.detailWithFallback(
+                "metric", "completeness",
                 "expectedAnswer", sample.getExpectedAnswer(),
                 "coveredPoints", coveredPoints(answer, points)));
-        insertScore(run.getId(), metrics.get("hallucination_control"), hallucinationControl, mapOf(
+        insertScore(run.getId(), metrics.get("hallucination_control"), judge.scoreOr("hallucinationControl", hallucinationControl), judge.detailWithFallback(
+                "metric", "hallucinationControl",
                 "referenceAvailable", StringUtils.hasText(sample.getReferenceContext()),
                 "citationCount", response.getSources() == null ? 0 : response.getSources().size()));
         insertScore(run.getId(), metrics.get("citation_correctness"), citation, mapOf(
                 "sourceCount", response.getSources() == null ? 0 : response.getSources().size()));
         insertScore(run.getId(), metrics.get("tool_success"), toolSuccess, mapOf(
                 "toolCallCount", response.getToolResults() == null ? 0 : response.getToolResults().size()));
+        return judge.totalTokens();
     }
 
     /**
@@ -438,10 +470,231 @@ public class EvaluationService {
         entity.setMetricId(metric.getId());
         entity.setScore(score(score));
         entity.setPassed(entity.getScore().compareTo(PASS_SCORE) >= 0);
-        entity.setJudgeType("rule");
+        entity.setJudgeType(String.valueOf(detail.getOrDefault("judgeType", "rule")));
         entity.setJudgeDetail(toJson(detail));
-        entity.setJudgedBy("system-rule");
+        entity.setJudgedBy(String.valueOf(detail.getOrDefault("judgedBy", "system-rule")));
         evalScoreMapper.insert(entity);
+    }
+
+    /**
+     * 调用真实模型执行 LLM-as-Judge 打分。
+     *
+     * @param run 样本运行结果
+     * @param sample 评测样本
+     * @param response Agent 回答
+     * @param request 评测任务请求
+     * @return Judge 结果，失败时返回可兜底对象
+     */
+    private JudgeResult runLlmJudge(EvalTaskRunEntity run,
+                                    EvalSampleEntity sample,
+                                    ChatCompletionResponse response,
+                                    EvaluationDtos.RunTaskRequest request) {
+        String judgeModelId = resolveJudgeModelId(request, run.getModelId());
+        if (!StringUtils.hasText(judgeModelId)) {
+            return JudgeResult.failed("未找到可用 Judge 模型", "", "", 0, 0, "");
+        }
+        try {
+            ModelConfigEntity model = modelProviderService.requireModel(judgeModelId);
+            ModelProviderEntity provider = modelProviderService.requireProviderByModel(model);
+            ChatRunContext context = new ChatRunContext();
+            context.setModel(model);
+            context.setProvider(provider);
+            context.setApiKey(modelProviderService.findApiKeyValue(provider.getId()));
+            context.setMessages(List.of(
+                    new ChatMessage("system", judgeSystemPrompt(request)),
+                    new ChatMessage("user", judgeUserPrompt(sample, response))
+            ));
+            LlmCallResult result = openAiCompatibleClient.complete(context, 0D, 900);
+            JudgeResult judge = parseJudgeResult(result.getContent(), model);
+            judge.setLatencyMs(result.getLatencyMs() == null ? 0 : result.getLatencyMs());
+            judge.setTotalTokens(result.getTotalTokens() == null ? 0 : result.getTotalTokens());
+            judge.setRawOutput(result.getContent());
+            return judge;
+        } catch (Exception exception) {
+            return JudgeResult.failed(exception.getMessage(), judgeModelId, modelName(judgeModelId), 0, 0, "");
+        }
+    }
+
+    /**
+     * 解析 Judge 模型返回的 JSON，兼容模型包裹 markdown 代码块的情况。
+     *
+     * @param raw 模型原始输出
+     * @param model Judge 模型
+     * @return Judge 结构化结果
+     */
+    private JudgeResult parseJudgeResult(String raw, ModelConfigEntity model) {
+        String json = extractJsonObject(raw);
+        Map<String, Double> scores = new LinkedHashMap<>();
+        Map<String, Object> detail = new LinkedHashMap<>();
+        try {
+            JsonNode node = objectMapper.readTree(json);
+            scores.put("overallScore", clampJudgeScore(node.path("overallScore").asDouble(node.path("overall").asDouble(0))));
+            scores.put("accuracy", clampJudgeScore(node.path("accuracy").asDouble(0)));
+            scores.put("relevance", clampJudgeScore(node.path("relevance").asDouble(0)));
+            scores.put("completeness", clampJudgeScore(node.path("completeness").asDouble(0)));
+            scores.put("hallucinationControl", clampJudgeScore(node.path("hallucinationControl").asDouble(node.path("faithfulness").asDouble(0))));
+            detail.put("reason", node.path("reason").asText(""));
+            detail.put("strengths", node.path("strengths").isMissingNode() ? List.of() : node.path("strengths"));
+            detail.put("risks", node.path("risks").isMissingNode() ? List.of() : node.path("risks"));
+            detail.put("dimensions", node);
+        } catch (Exception exception) {
+            return JudgeResult.failed("Judge 返回不是合法 JSON：" + exception.getMessage(),
+                    model.getId(), model.getModelName(), 0, 0, raw);
+        }
+        return JudgeResult.success(model.getId(), model.getModelName(), scores, detail);
+    }
+
+    /**
+     * 组装 Judge 系统提示词，要求模型只输出 JSON。
+     *
+     * @param request 评测任务请求
+     * @return 系统提示词
+     */
+    private String judgeSystemPrompt(EvaluationDtos.RunTaskRequest request) {
+        if (StringUtils.hasText(request.getJudgePrompt())) {
+            return request.getJudgePrompt();
+        }
+        return """
+                你是严格、稳定、可复核的 AI 评测裁判。请根据用户问题、标准答案、评分点、参考上下文、模型回答、引用来源和工具调用结果进行打分。
+                输出必须是一个 JSON 对象，不要输出 markdown，不要输出解释性前后缀。
+                字段要求：
+                overallScore: 0到100的综合分。
+                accuracy: 0到100，答案是否符合标准答案和评分点。
+                relevance: 0到100，答案是否紧扣问题和参考上下文。
+                completeness: 0到100，答案是否完整覆盖关键要点。
+                hallucinationControl: 0到100，100表示没有幻觉，0表示严重编造。
+                reason: 简短中文评分理由。
+                strengths: 字符串数组，列出优点。
+                risks: 字符串数组，列出风险或扣分原因。
+                """;
+    }
+
+    /**
+     * 组装 Judge 用户输入，提供足够上下文让裁判模型做稳定评分。
+     *
+     * @param sample 评测样本
+     * @param response Agent 回答
+     * @return 用户消息
+     */
+    private String judgeUserPrompt(EvalSampleEntity sample, ChatCompletionResponse response) {
+        return """
+                【用户问题】
+                %s
+
+                【标准答案】
+                %s
+
+                【评分点】
+                %s
+
+                【参考上下文】
+                %s
+
+                【模型回答】
+                %s
+
+                【引用来源】
+                %s
+
+                【工具调用结果】
+                %s
+                """.formatted(
+                nullToBlank(sample.getQuestion()),
+                nullToBlank(sample.getExpectedAnswer()),
+                toJson(scoringPoints(sample)),
+                nullToBlank(sample.getReferenceContext()),
+                nullToBlank(response.getContent()),
+                sourceSummary(response.getSources()),
+                toJson(response.getToolResults() == null ? List.of() : response.getToolResults()));
+    }
+
+    /**
+     * 选择 Judge 模型，不显式配置时复用当前被评测模型。
+     *
+     * @param request 评测请求
+     * @param runModelId 当前样本运行模型
+     * @return Judge 模型 ID
+     */
+    private String resolveJudgeModelId(EvaluationDtos.RunTaskRequest request, String runModelId) {
+        if (StringUtils.hasText(request.getJudgeModelId())) {
+            return request.getJudgeModelId().trim();
+        }
+        if (StringUtils.hasText(runModelId)) {
+            return runModelId;
+        }
+        AgentEntity agent = agentMapper.selectById(request.getAgentId());
+        return agent == null ? "" : agent.getModelId();
+    }
+
+    /**
+     * 判断本次评测是否启用 Judge。
+     *
+     * @param request 评测请求
+     * @return 是否启用
+     */
+    private boolean judgeEnabled(EvaluationDtos.RunTaskRequest request) {
+        return request.getJudgeEnabled() == null || Boolean.TRUE.equals(request.getJudgeEnabled());
+    }
+
+    /**
+     * 将引用来源压缩成适合 Judge 阅读的文本。
+     *
+     * @param sources 引用来源
+     * @return 引用摘要
+     */
+    private String sourceSummary(List<KnowledgeSource> sources) {
+        if (sources == null || sources.isEmpty()) {
+            return "[]";
+        }
+        return toJson(sources.stream()
+                .limit(6)
+                .map(source -> mapOf(
+                        "documentName", source.getDocumentName(),
+                        "chunkNo", source.getChunkNo(),
+                        "score", source.getScore(),
+                        "quoteText", source.getQuoteText()))
+                .toList());
+    }
+
+    /**
+     * 从模型输出中抽取第一个 JSON 对象。
+     *
+     * @param raw 原始输出
+     * @return JSON 文本
+     */
+    private String extractJsonObject(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return "{}";
+        }
+        int start = raw.indexOf('{');
+        int end = raw.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return raw.substring(start, end + 1);
+        }
+        return raw.trim();
+    }
+
+    /**
+     * 限制 Judge 分数范围。
+     *
+     * @param value 原始分
+     * @return 0 到 100 的分数
+     */
+    private double clampJudgeScore(double value) {
+        return Math.max(0, Math.min(100, value));
+    }
+
+    /**
+     * 规则评分综合分，用于 Judge 关闭或失败时兜底。
+     *
+     * @param accuracy 准确率
+     * @param relevance 相关性
+     * @param completeness 完整性
+     * @param hallucinationControl 幻觉控制
+     * @return 综合分
+     */
+    private double overallRuleScore(double accuracy, double relevance, double completeness, double hallucinationControl) {
+        return (accuracy + relevance + completeness + hallucinationControl) / 4D;
     }
 
     /**
@@ -526,6 +779,7 @@ public class EvaluationService {
         Map<String, BigDecimal> metricScores = averageScoresByMetric(scores);
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("overallScore", overallScore(metricScores));
+        summary.put("judgeScore", metricScores.getOrDefault("llm_judge_overall", BigDecimal.ZERO));
         summary.put("accuracy", metricScores.getOrDefault("accuracy", BigDecimal.ZERO));
         summary.put("relevance", metricScores.getOrDefault("relevance", BigDecimal.ZERO));
         summary.put("completeness", metricScores.getOrDefault("completeness", BigDecimal.ZERO));
@@ -557,6 +811,7 @@ public class EvaluationService {
                     row.put("modelId", entry.getKey());
                     row.put("modelName", modelName(entry.getKey()));
                     row.put("overallScore", overallScore(metricScores));
+                    row.put("judgeScore", metricScores.getOrDefault("llm_judge_overall", BigDecimal.ZERO));
                     row.put("accuracy", metricScores.getOrDefault("accuracy", BigDecimal.ZERO));
                     row.put("relevance", metricScores.getOrDefault("relevance", BigDecimal.ZERO));
                     row.put("completeness", metricScores.getOrDefault("completeness", BigDecimal.ZERO));
@@ -578,6 +833,9 @@ public class EvaluationService {
      * @return 综合分
      */
     private BigDecimal overallScore(Map<String, BigDecimal> metricScores) {
+        if (metricScores.containsKey("llm_judge_overall")) {
+            return metricScores.get("llm_judge_overall");
+        }
         List<String> keys = List.of("accuracy", "relevance", "completeness", "hallucination_control", "citation_correctness", "tool_success");
         List<BigDecimal> values = keys.stream()
                 .map(metricScores::get)
@@ -628,6 +886,9 @@ public class EvaluationService {
         config.put("temperature", request.getTemperature());
         config.put("maxTokens", request.getMaxTokens());
         config.put("maxSamples", request.getMaxSamples());
+        config.put("judgeEnabled", judgeEnabled(request));
+        config.put("judgeModelId", request.getJudgeModelId());
+        config.put("judgePrompt", request.getJudgePrompt());
         config.put("extra", request.getEvalConfig() == null ? Map.of() : request.getEvalConfig());
         return config;
     }
@@ -640,6 +901,7 @@ public class EvaluationService {
         addMetricIfAbsent("relevance", "相关性", "quality", "回答与问题及参考上下文的相关程度");
         addMetricIfAbsent("completeness", "完整性", "quality", "回答是否覆盖关键评分点");
         addMetricIfAbsent("hallucination_control", "幻觉控制", "risk", "回答相对标准答案和引用来源的可信程度");
+        addMetricIfAbsent("llm_judge_overall", "LLM Judge 综合分", "llm_as_judge", "裁判模型给出的综合质量分");
         addMetricIfAbsent("citation_correctness", "引用正确率", "rag", "回答是否具备可追溯知识库引用");
         addMetricIfAbsent("tool_success", "工具调用成功率", "tool", "工具调用是否成功完成");
     }
@@ -1540,5 +1802,106 @@ public class EvaluationService {
      */
     private String newId() {
         return UUID.randomUUID().toString();
+    }
+
+    /**
+     * LLM-as-Judge 结构化结果。
+     */
+    private static class JudgeResult {
+
+        /** Judge 是否真实成功返回评分。 */
+        private final boolean success;
+
+        /** Judge 模型 ID。 */
+        private final String modelId;
+
+        /** Judge 模型名称。 */
+        private final String modelName;
+
+        /** 各维度得分。 */
+        private final Map<String, Double> scores;
+
+        /** 评分理由和维度详情。 */
+        private final Map<String, Object> detail;
+
+        /** 失败原因。 */
+        private final String errorMessage;
+
+        /** Judge 耗时。 */
+        private int latencyMs;
+
+        /** Judge 消耗 Token。 */
+        private int totalTokens;
+
+        /** Judge 原始输出。 */
+        private String rawOutput;
+
+        private JudgeResult(boolean success,
+                            String modelId,
+                            String modelName,
+                            Map<String, Double> scores,
+                            Map<String, Object> detail,
+                            String errorMessage) {
+            this.success = success;
+            this.modelId = modelId;
+            this.modelName = modelName;
+            this.scores = scores == null ? Map.of() : scores;
+            this.detail = detail == null ? Map.of() : detail;
+            this.errorMessage = errorMessage;
+        }
+
+        private static JudgeResult success(String modelId, String modelName, Map<String, Double> scores, Map<String, Object> detail) {
+            return new JudgeResult(true, modelId, modelName, scores, detail, "");
+        }
+
+        private static JudgeResult failed(String errorMessage, String modelId, String modelName, int latencyMs, int totalTokens, String rawOutput) {
+            JudgeResult result = new JudgeResult(false, modelId, modelName, Map.of(), Map.of(), errorMessage);
+            result.setLatencyMs(latencyMs);
+            result.setTotalTokens(totalTokens);
+            result.setRawOutput(rawOutput);
+            return result;
+        }
+
+        private static JudgeResult disabled() {
+            return failed("Judge 已关闭，使用规则评分", "", "", 0, 0, "");
+        }
+
+        private double scoreOr(String key, double fallback) {
+            return success && scores.containsKey(key) ? scores.get(key) : fallback;
+        }
+
+        private Map<String, Object> detailWithFallback(Object... values) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("judgeType", success ? "llm_as_judge" : "rule");
+            map.put("judgedBy", success ? modelId : "system-rule");
+            map.put("judgeSuccess", success);
+            map.put("judgeModelId", modelId);
+            map.put("judgeModelName", modelName);
+            map.put("judgeLatencyMs", latencyMs);
+            map.put("judgeTotalTokens", totalTokens);
+            map.put("judgeRawOutput", rawOutput);
+            map.put("judgeErrorMessage", errorMessage);
+            map.put("judgeDetail", detail);
+            for (int index = 0; index + 1 < values.length; index += 2) {
+                map.put(String.valueOf(values[index]), values[index + 1]);
+            }
+            return map;
+        }
+
+        private int totalTokens() {
+            return totalTokens;
+        }
+
+        private void setLatencyMs(int latencyMs) {
+            this.latencyMs = latencyMs;
+        }
+
+        private void setTotalTokens(int totalTokens) {
+            this.totalTokens = totalTokens;
+        }
+
+        private void setRawOutput(String rawOutput) {
+            this.rawOutput = rawOutput;
+        }
     }
 }

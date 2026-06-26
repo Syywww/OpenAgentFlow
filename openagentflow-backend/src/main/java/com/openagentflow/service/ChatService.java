@@ -10,6 +10,7 @@ import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.memory.MemoryDtos;
 import com.openagentflow.domain.model.ModelRouteDecision;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentSessionEntity;
@@ -92,6 +93,9 @@ public class ChatService {
     /** 模型网关服务。 */
     private final ModelGatewayService modelGatewayService;
 
+    /** Memory 记忆中心服务。 */
+    private final MemoryService memoryService;
+
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
@@ -108,6 +112,7 @@ public class ChatService {
                        AgentSessionService agentSessionService,
                        UsageCostService usageCostService,
                        ModelGatewayService modelGatewayService,
+                       MemoryService memoryService,
                        ObjectMapper objectMapper) {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
@@ -122,6 +127,7 @@ public class ChatService {
         this.agentSessionService = agentSessionService;
         this.usageCostService = usageCostService;
         this.modelGatewayService = modelGatewayService;
+        this.memoryService = memoryService;
         this.objectMapper = objectMapper;
     }
 
@@ -136,6 +142,7 @@ public class ChatService {
         ChatRunContext context = buildRunContext(request);
         attachSession(request, context);
         RuntimeRunEntity run = createRun(request, context);
+        enrichContextWithMemory(context, request);
         enrichContextWithRag(context, request, run.getId());
         if (context.getTools() != null && !context.getTools().isEmpty()) {
             return completeWithToolCalling(request, context, run);
@@ -165,6 +172,7 @@ public class ChatService {
         ChatRunContext context = buildRunContext(request);
         attachSession(request, context);
         RuntimeRunEntity run = createRun(request, context);
+        enrichContextWithMemory(context, request);
         enrichContextWithRag(context, request, run.getId());
         if (context.getTools() != null && !context.getTools().isEmpty()) {
             completeStreamWithToolCalling(emitter, request, context, run);
@@ -178,6 +186,7 @@ public class ChatService {
                         "sessionId", safeText(context.getSessionId()),
                         "providerName", context.getProvider().getProviderName(),
                         "modelName", context.getModel().getModelName(),
+                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                         "sources", context.getSources() == null ? List.of() : context.getSources()
                 ));
                 LlmCallResult result = invokeWithGatewayFallback(context,
@@ -197,6 +206,7 @@ public class ChatService {
                         "promptTokens", nullToZero(result.getPromptTokens()),
                         "completionTokens", nullToZero(result.getCompletionTokens()),
                         "totalTokens", nullToZero(result.getTotalTokens()),
+                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                         "sources", context.getSources() == null ? List.of() : context.getSources()
                 ));
                 emitter.complete();
@@ -304,6 +314,7 @@ public class ChatService {
                         "sessionId", safeText(context.getSessionId()),
                         "providerName", context.getProvider().getProviderName(),
                         "modelName", context.getModel().getModelName(),
+                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                         "sources", context.getSources() == null ? List.of() : context.getSources(),
                         "tools", context.getTools() == null ? List.of() : context.getTools()
                 ));
@@ -383,6 +394,28 @@ public class ChatService {
         messages.add(new ChatMessage("system", "以上是工具执行结果。请结合用户问题、知识库资料和工具结果生成最终回答；如果工具未执行或失败，请明确说明原因。"));
         context.setMessages(messages);
         return results;
+    }
+
+    /**
+     * 执行 Memory 召回并把记忆上下文注入模型消息。
+     *
+     * @param context 聊天上下文
+     * @param request 聊天请求
+     */
+    private void enrichContextWithMemory(ChatRunContext context, ChatCompletionRequest request) {
+        if (context.getAgent() == null || !StringUtils.hasText(request.getInput())) {
+            context.setMemories(List.of());
+            return;
+        }
+        List<MemoryDtos.RecallItem> memories = memoryService.recallForChat(context.getAgent(), context.getSessionId(), request.getInput(), 5);
+        context.setMemories(memories);
+        String memoryPrompt = memoryService.buildMemoryPrompt(memories);
+        if (!StringUtils.hasText(memoryPrompt)) {
+            return;
+        }
+        List<ChatMessage> messages = new ArrayList<>(context.getMessages());
+        messages.add(1, new ChatMessage("system", memoryPrompt));
+        context.setMessages(messages);
     }
 
     /**
@@ -659,6 +692,7 @@ public class ChatService {
         run.setOutputText(result.getContent());
         run.setOutputPayload(toJson(Map.of(
                 "content", safeText(result.getContent()),
+                "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                 "sources", context.getSources() == null ? List.of() : context.getSources()
         )));
         run.setStatus("SUCCESS");
@@ -675,6 +709,7 @@ public class ChatService {
         step.setModelId(context.getModel().getId());
         step.setOutputPayload(toJson(Map.of(
                 "content", safeText(result.getContent()),
+                "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                 "sources", context.getSources() == null ? List.of() : context.getSources()
         )));
         step.setTokenUsage(toJson(Map.of(
@@ -692,8 +727,10 @@ public class ChatService {
                 "runId", run.getId(),
                 "status", "SUCCESS",
                 "stream", stream,
+                "memoryCount", context.getMemories() == null ? 0 : context.getMemories().size(),
                 "sourceCount", context.getSources() == null ? 0 : context.getSources().size()
         ));
+        memoryService.captureConversationMemory(context.getAgent(), context.getSessionId(), lastUserInput(context), result.getContent(), run.getId());
     }
 
     /**
@@ -848,6 +885,7 @@ public class ChatService {
         response.setTotalTokens(nullToZero(result.getTotalTokens()));
         response.setLatencyMs(nullToZero(result.getLatencyMs()));
         response.setErrorMessage(errorMessage);
+        response.setMemories(context.getMemories() == null ? List.of() : context.getMemories());
         response.setSources(context.getSources() == null ? List.of() : context.getSources());
         return response;
     }
@@ -891,6 +929,7 @@ public class ChatService {
                 "promptTokens", nullToZero(result.getPromptTokens()),
                 "completionTokens", nullToZero(result.getCompletionTokens()),
                 "totalTokens", nullToZero(result.getTotalTokens()),
+                "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                 "sources", context.getSources() == null ? List.of() : context.getSources(),
                 "toolResults", toolResults == null ? List.of() : toolResults
         ));
@@ -908,6 +947,25 @@ public class ChatService {
             return request.getMaxTokens();
         }
         return context.getModel().getMaxOutputTokens();
+    }
+
+    /**
+     * 获取本轮最后一条用户输入。
+     *
+     * @param context 聊天上下文
+     * @return 用户输入
+     */
+    private String lastUserInput(ChatRunContext context) {
+        if (context == null || context.getMessages() == null) {
+            return "";
+        }
+        for (int index = context.getMessages().size() - 1; index >= 0; index--) {
+            ChatMessage message = context.getMessages().get(index);
+            if ("user".equals(message.getRole())) {
+                return safeText(message.getContent());
+            }
+        }
+        return "";
     }
 
     /**

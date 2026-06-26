@@ -6,8 +6,10 @@ const props = withDefaults(defineProps<{
   page: number;
   total: number;
   pageSize?: number;
+  compact?: boolean;
 }>(), {
   pageSize: 10,
+  compact: false,
 });
 
 const emit = defineEmits<{
@@ -25,7 +27,7 @@ function go(page: number) {
 </script>
 
 <template>
-  <div class="pagination-bar">
+  <div class="pagination-bar" :class="{ compact }">
     <span>共 {{ total }} 条，每页 {{ pageSize }} 条，当前 {{ start }}-{{ end }}</span>
     <div class="pagination-actions">
       <button class="secondary-button slim" type="button" :disabled="page <= 1" @click="go(page - 1)">
