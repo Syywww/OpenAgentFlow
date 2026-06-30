@@ -19,8 +19,11 @@ import {
   fetchWorkflowTemplates,
   fetchWorkflowVersionDiff,
   fetchWorkflows,
+  fetchWorkflowRun,
   publishWorkflow,
   publishWorkflowApiEndpoint,
+  resumeWorkflowRun,
+  retryWorkflowRun,
   runWorkflow,
   updateWorkflow,
   type WorkflowAdvancedOverview,
@@ -30,6 +33,7 @@ import {
   type WorkflowHumanTaskSummary,
   type WorkflowNodeDto,
   type WorkflowRequest,
+  type WorkflowRunResult,
   type WorkflowSummary,
   type WorkflowTemplateSummary,
   type WorkflowVersionDiff,
@@ -69,6 +73,8 @@ type WorkflowRunStepView = {
   tokenCount?: number;
   latencyMs?: number;
   attemptNo?: number;
+  nextNodeKey?: string;
+  recoverable?: boolean;
 };
 
 const { toast } = useOverlay();
@@ -91,8 +97,14 @@ const runInput = ref('请基于工作流回答：OpenAgentFlow 现在支持哪�
 const selectedAgentId = ref('');
 const runResult = ref('');
 const traceRunId = ref('');
+const workflowRunId = ref('');
+const lastRunStatus = ref('');
+const lastRunRecoverable = ref(false);
+const lastRunNodeKey = ref('');
+const nextRunNodeKey = ref('');
 const runSteps = ref<WorkflowRunStepView[]>([]);
 const runningNodeId = ref('');
+const nodeSaving = ref(false);
 const createModalOpen = ref(false);
 const nodePickerOpen = ref(false);
 const nodePickerPosition = ref({ x: 24, y: 80 });
@@ -514,6 +526,20 @@ function openNodePicker(payload: MouseEvent | { event?: MouseEvent }) {
   nodePickerOpen.value = true;
 }
 
+function openNodePickerAtCenter() {
+  if (!currentWorkflow.value) {
+    openCreateModal();
+    toast('请先新建工作流基础信息');
+    return;
+  }
+  nodePickerPosition.value = { x: 24, y: 72 };
+  pendingNodePosition.value = {
+    x: 120 + nodes.value.length * 32,
+    y: 120 + nodes.value.length * 24,
+  };
+  nodePickerOpen.value = true;
+}
+
 function closeNodePicker() {
   nodePickerOpen.value = false;
 }
@@ -526,7 +552,7 @@ function addNode(type: string, label: string) {
   }
   const id = `${type.toLowerCase()}_${Date.now()}`;
   const position = pendingNodePosition.value;
-  nodes.value.push(buildNode(id, label, type, position.x, position.y, defaultConfig(type), defaultRetryPolicy(type)));
+  nodes.value = [...nodes.value, buildNode(id, label, type, position.x, position.y, defaultConfig(type), defaultRetryPolicy(type))];
   selectedNodeId.value = id;
   activePanel.value = 'node';
   nodePickerOpen.value = false;
@@ -582,7 +608,7 @@ function fillNodeForm() {
   nodeForm.joinStrategy = String(config.joinStrategy || 'all');
 }
 
-function applyNodeForm() {
+function applyNodeForm(event?: Event) {
   nodes.value = nodes.value.map((node) => {
     if (node.id !== selectedNodeId.value) return node;
     const config = buildNodeConfig();
@@ -599,6 +625,9 @@ function applyNodeForm() {
       data: { ...node.data, label: nodeForm.nodeName, nodeType: nodeForm.nodeType, config, retryPolicy },
     };
   });
+  if (event?.type === 'click') {
+    void handleSaveNodeConfig(true);
+  }
 }
 
 function buildNodeConfig() {
@@ -638,6 +667,33 @@ async function handleSave() {
   toast('工作流已保存');
 }
 
+async function handleSaveNodeConfig(applied = false) {
+  if (nodeSaving.value) return;
+  if (!selectedNode.value) {
+    toast('请先选择一个节点');
+    return;
+  }
+  if (!currentWorkflow.value) {
+    openCreateModal();
+    toast('请先新建工作流基础信息');
+    return;
+  }
+  const selectedId = selectedNodeId.value;
+  nodeSaving.value = true;
+  try {
+    if (!applied) applyNodeForm();
+    currentWorkflow.value = await updateWorkflow(currentWorkflow.value.id, toWorkflowRequest());
+    workflows.value = await fetchWorkflows();
+    selectedNodeId.value = nodes.value.some((node) => node.id === selectedId) ? selectedId : nodes.value[0]?.id || '';
+    fillNodeForm();
+    toast('节点配置已保存');
+  } catch (error) {
+    toast(error instanceof Error ? error.message : '节点配置保存失败');
+  } finally {
+    nodeSaving.value = false;
+  }
+}
+
 async function handlePublish() {
   if (!currentWorkflow.value) await handleSave();
   if (!currentWorkflow.value) return;
@@ -660,20 +716,76 @@ async function handleRun() {
   runSteps.value = [];
   startRunAnimation();
   try {
-  const result = await runWorkflow(currentWorkflow.value.id, selectedAgentId.value || undefined, runInput.value, {
-    debugMode: debugForm.debugMode,
-    dryRun: debugForm.dryRun,
-    startNodeKey: debugForm.startNodeKey || undefined,
-    maxSteps: debugForm.maxSteps,
-  });
+    const result = await runWorkflow(currentWorkflow.value.id, selectedAgentId.value || undefined, runInput.value, {
+      debugMode: debugForm.debugMode,
+      dryRun: debugForm.dryRun,
+      startNodeKey: debugForm.startNodeKey || undefined,
+      maxSteps: debugForm.maxSteps,
+      idempotencyKey: `wf-${currentWorkflow.value.id}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    });
+    applyRunResult(result);
+    toast(result.status === 'SUCCESS' ? '工作流运行成功' : result.status === 'WAITING' ? '工作流等待人工确认' : '工作流运行失败');
+    await loadAdvancedData();
+  } finally {
+    stopRunAnimation(1200);
+  }
+}
+
+function applyRunResult(result: WorkflowRunResult) {
   runSteps.value = normalizeRunSteps(result.steps);
   const lastStep = runSteps.value[runSteps.value.length - 1];
   if (lastStep?.nodeKey) runningNodeId.value = lastStep.nodeKey;
   runResult.value = result.outputText || result.errorMessage || '';
   traceRunId.value = result.runtimeRunId;
-  toast(result.status === 'SUCCESS' ? '工作流运行成功' : result.status === 'WAITING' ? '工作流等待人工确认' : '工作流运行失败');
-  await loadAdvancedData();
+  workflowRunId.value = result.workflowRunId;
+  lastRunStatus.value = result.status || '';
+  lastRunRecoverable.value = Boolean(result.recoverable);
+  lastRunNodeKey.value = result.lastNodeKey || lastStep?.nodeKey || '';
+  nextRunNodeKey.value = result.nextNodeKey || lastStep?.nextNodeKey || '';
+}
+
+async function refreshWorkflowRun() {
+  if (!workflowRunId.value) {
+    return;
+  }
+  applyRunResult(await fetchWorkflowRun(workflowRunId.value));
+  toast('运行状态已刷新');
+}
+
+async function handleRetryRun() {
+  if (!workflowRunId.value) {
+    return;
+  }
+  loading.value = true;
+  startRunAnimation();
+  try {
+    applyRunResult(await retryWorkflowRun(workflowRunId.value));
+    toast('工作流已重新运行');
+    await loadAdvancedData();
   } finally {
+    loading.value = false;
+    stopRunAnimation(1200);
+  }
+}
+
+async function handleResumeRun() {
+  if (!workflowRunId.value) {
+    return;
+  }
+  loading.value = true;
+  startRunAnimation();
+  try {
+    applyRunResult(await resumeWorkflowRun(workflowRunId.value, {
+      input: runInput.value,
+      startNodeKey: lastRunNodeKey.value || undefined,
+      maxSteps: debugForm.maxSteps,
+      debugMode: true,
+      dryRun: debugForm.dryRun,
+    }));
+    toast('工作流已从失败节点恢复运行');
+    await loadAdvancedData();
+  } finally {
+    loading.value = false;
     stopRunAnimation(1200);
   }
 }
@@ -689,6 +801,8 @@ function normalizeRunSteps(steps?: Array<Record<string, unknown>>): WorkflowRunS
     tokenCount: Number(step.tokenCount || 0),
     latencyMs: Number(step.latencyMs || 0),
     attemptNo: Number(step.attemptNo || 1),
+    nextNodeKey: step.nextNodeKey ? String(step.nextNodeKey) : '',
+    recoverable: Boolean(step.recoverable),
   })).filter((step) => step.nodeKey);
 }
 
@@ -897,11 +1011,12 @@ function resetDiffForm() {
       </div>
     </aside>
 
-    <div class="flow-shell" @dblclick="handleFlowShellDblClick">
+    <div class="flow-shell" @dblclick.capture="handleFlowShellDblClick">
       <div class="workflow-toolbar">
         <label>名称<input v-model="workflowForm.workflowName" /></label>
         <label>编码<input v-model="workflowForm.workflowCode" placeholder="不填自动生成" /></label>
         <label>状态<select v-model="workflowForm.status"><option value="draft">草稿</option><option value="published">已发布</option><option value="disabled">停用</option></select></label>
+        <button class="secondary-button slim" type="button" @click="openNodePickerAtCenter"><Plus :size="14" /> 添加节点</button>
         <span>{{ currentStatus }}</span>
       </div>
       <VueFlow
@@ -1037,6 +1152,18 @@ function resetDiffForm() {
         <label class="check-line"><input v-model="debugForm.dryRun" type="checkbox" /> 空跑外部调用</label>
         <label>输入<textarea v-model="runInput" /></label>
         <button class="primary-button full" type="button" @click="handleRun"><Play :size="16" /> 运行工作流</button>
+        <div v-if="workflowRunId" class="trace-meta workflow-reliability-meta">
+          <span>运行ID</span><b class="mono">{{ workflowRunId }}</b>
+          <span>状态</span><b>{{ lastRunStatus || '-' }}</b>
+          <span>最近节点</span><b>{{ lastRunNodeKey || '-' }}</b>
+          <span>下一节点</span><b>{{ nextRunNodeKey || '-' }}</b>
+          <span>可恢复</span><b>{{ lastRunRecoverable ? '是' : '否' }}</b>
+        </div>
+        <div v-if="workflowRunId" class="table-actions reliability-actions">
+          <button class="secondary-button slim" type="button" :disabled="loading" @click="refreshWorkflowRun">刷新状态</button>
+          <button class="secondary-button slim" type="button" :disabled="loading" @click="handleRetryRun">重跑</button>
+          <button class="secondary-button slim" type="button" :disabled="loading || !lastRunRecoverable" @click="handleResumeRun">从失败节点恢复</button>
+        </div>
         <div v-if="runResult" class="run-result">{{ runResult }}</div>
       </div>
 

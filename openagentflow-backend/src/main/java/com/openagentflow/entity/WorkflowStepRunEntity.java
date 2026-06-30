@@ -69,6 +69,18 @@ public class WorkflowStepRunEntity {
     @TableField("error_message")
     private String errorMessage;
 
+    /** 下一节点Key，用于展示步骤流向和恢复定位。 */
+    @TableField("next_node_key")
+    private String nextNodeKey;
+
+    /** 是否可恢复，失败步骤可据此从当前节点重跑。 */
+    @TableField("recoverable")
+    private Boolean recoverable;
+
+    /** 节点执行策略快照。 */
+    @TableField("policy_snapshot")
+    private String policySnapshot;
+
     /** 开始时间。 */
     @TableField("started_at")
     private LocalDateTime startedAt;
@@ -191,6 +203,30 @@ public class WorkflowStepRunEntity {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public String getNextNodeKey() {
+        return nextNodeKey;
+    }
+
+    public void setNextNodeKey(String nextNodeKey) {
+        this.nextNodeKey = nextNodeKey;
+    }
+
+    public Boolean getRecoverable() {
+        return recoverable;
+    }
+
+    public void setRecoverable(Boolean recoverable) {
+        this.recoverable = recoverable;
+    }
+
+    public String getPolicySnapshot() {
+        return policySnapshot;
+    }
+
+    public void setPolicySnapshot(String policySnapshot) {
+        this.policySnapshot = policySnapshot;
     }
 
     public LocalDateTime getStartedAt() {

@@ -180,6 +180,10 @@ public class WorkflowExecutionService {
         if (!workflowService.canView(workflow)) {
             throw new BusinessException("WORKFLOW_FORBIDDEN", "没有运行该工作流的权限");
         }
+        WorkflowDtos.RunResult idempotentResult = findIdempotentRun(workflowId, request);
+        if (idempotentResult != null) {
+            return idempotentResult;
+        }
         AgentEntity agent = resolveAgent(request == null ? null : request.getAgentId());
         WorkflowVersionEntity version = resolveVersion(workflow);
         List<WorkflowNodeEntity> nodes = listNodes(workflowId);
@@ -212,7 +216,9 @@ public class WorkflowExecutionService {
         try {
             WorkflowNodeEntity current = findStartNode(nodes, request == null ? null : request.getStartNodeKey());
             int maxSteps = request == null || request.getMaxSteps() == null ? 100 : Math.max(1, Math.min(request.getMaxSteps(), 500));
+            int executedSteps = 0;
             for (int guard = 0; current != null && guard < maxSteps; guard++) {
+                executedSteps++;
                 NodeExecutionResult nodeResult = executeNode(current, agent, runtimeRun, context, request);
                 stepResults.add(nodeResult.stepResult());
                 totalPromptTokens += nodeResult.promptTokens();
@@ -223,6 +229,8 @@ public class WorkflowExecutionService {
                     context.put("lastOutput", nodeResult.output());
                     finalOutput = String.valueOf(nodeResult.output());
                 }
+                WorkflowNodeEntity next = "END".equalsIgnoreCase(current.getNodeType()) ? null : nextNode(current, nodes, edges, context);
+                updateWorkflowProgress(workflowRun, current, next, context);
                 if ("WAITING".equalsIgnoreCase(nodeResult.status())) {
                     finishWaiting(workflowRun, runtimeRun, context, finalOutput, totalPromptTokens, totalCompletionTokens, totalTokens, startedAt);
                     return toRunResult(workflowRun, runtimeRun, context, finalOutput, stepResults, totalTokens, "等待人工确认");
@@ -230,7 +238,10 @@ public class WorkflowExecutionService {
                 if ("END".equalsIgnoreCase(current.getNodeType())) {
                     break;
                 }
-                current = nextNode(current, nodes, edges, context);
+                current = next;
+            }
+            if (current != null && executedSteps >= maxSteps && !"END".equalsIgnoreCase(current.getNodeType())) {
+                throw new BusinessException("WORKFLOW_MAX_STEPS_EXCEEDED", "工作流超过最大执行步数，已自动中止");
             }
             finishSuccess(workflowRun, runtimeRun, context, finalOutput, totalPromptTokens, totalCompletionTokens, totalTokens, startedAt);
             return toRunResult(workflowRun, runtimeRun, context, finalOutput, stepResults, totalTokens, null);
@@ -238,6 +249,65 @@ public class WorkflowExecutionService {
             finishFailure(workflowRun, runtimeRun, context, exception, startedAt);
             return toRunResult(workflowRun, runtimeRun, context, finalOutput, stepResults, totalTokens, exception.getMessage());
         }
+    }
+
+    /**
+     * 查询工作流运行详情。
+     *
+     * @param workflowRunId 工作流运行ID
+     * @return 工作流运行结果快照
+     */
+    public WorkflowDtos.RunResult getWorkflowRun(String workflowRunId) {
+        WorkflowRunEntity workflowRun = requireWorkflowRun(workflowRunId);
+        RuntimeRunEntity runtimeRun = findRuntimeRun(workflowRunId);
+        return toPersistedRunResult(workflowRun, runtimeRun);
+    }
+
+    /**
+     * 对失败或等待中的工作流重新发起一次完整运行。
+     *
+     * @param workflowRunId 来源工作流运行ID
+     * @return 新运行结果
+     */
+    public WorkflowDtos.RunResult retryWorkflowRun(String workflowRunId) {
+        WorkflowRunEntity source = requireWorkflowRun(workflowRunId);
+        WorkflowDtos.RunRequest retryRequest = buildRunRequestFromSource(source);
+        retryRequest.setParentRunId(source.getId());
+        retryRequest.setIdempotencyKey(null);
+        incrementRetryCount(source);
+        return runWorkflow(source.getWorkflowId(), retryRequest, "retry");
+    }
+
+    /**
+     * 从失败节点或指定节点恢复运行。
+     *
+     * @param workflowRunId 来源工作流运行ID
+     * @param request 恢复请求
+     * @return 新运行结果
+     */
+    public WorkflowDtos.RunResult resumeWorkflowRun(String workflowRunId, WorkflowDtos.RunRequest request) {
+        WorkflowRunEntity source = requireWorkflowRun(workflowRunId);
+        if (!Boolean.TRUE.equals(source.getRecoverable()) && !StringUtils.hasText(source.getLastNodeKey())) {
+            throw new BusinessException("WORKFLOW_RUN_NOT_RECOVERABLE", "该工作流运行不可恢复");
+        }
+        WorkflowDtos.RunRequest resumeRequest = buildRunRequestFromSource(source);
+        if (request != null && StringUtils.hasText(request.getInput())) {
+            resumeRequest.setInput(request.getInput());
+        }
+        if (request != null && request.getVariables() != null) {
+            Map<String, Object> variables = new LinkedHashMap<>(resumeRequest.getVariables() == null ? Map.of() : resumeRequest.getVariables());
+            variables.putAll(request.getVariables());
+            resumeRequest.setVariables(variables);
+        }
+        String startNodeKey = request != null && StringUtils.hasText(request.getStartNodeKey())
+                ? request.getStartNodeKey()
+                : firstText(source.getResumeFromNodeKey(), source.getLastNodeKey());
+        resumeRequest.setStartNodeKey(startNodeKey);
+        resumeRequest.setParentRunId(source.getId());
+        resumeRequest.setIdempotencyKey(null);
+        resumeRequest.setDebugMode(true);
+        incrementRetryCount(source);
+        return runWorkflow(source.getWorkflowId(), resumeRequest, "resume");
     }
 
     /**
@@ -642,6 +712,172 @@ public class WorkflowExecutionService {
     }
 
     /**
+     * 查询幂等运行结果，避免同一请求被重复执行。
+     */
+    private WorkflowDtos.RunResult findIdempotentRun(String workflowId, WorkflowDtos.RunRequest request) {
+        if (request == null || !StringUtils.hasText(request.getIdempotencyKey())) {
+            return null;
+        }
+        WorkflowRunEntity existing = workflowRunMapper.selectOne(new LambdaQueryWrapper<WorkflowRunEntity>()
+                .eq(WorkflowRunEntity::getWorkflowId, workflowId)
+                .eq(WorkflowRunEntity::getTriggerUserId, agentAccessService.currentUserId())
+                .eq(WorkflowRunEntity::getIdempotencyKey, request.getIdempotencyKey())
+                .orderByDesc(WorkflowRunEntity::getCreatedAt)
+                .last("limit 1"));
+        if (existing == null) {
+            return null;
+        }
+        return toPersistedRunResult(existing, findRuntimeRun(existing.getId()));
+    }
+
+    /**
+     * 更新工作流运行心跳、最近节点和下一节点。
+     */
+    private void updateWorkflowProgress(WorkflowRunEntity workflowRun,
+                                        WorkflowNodeEntity current,
+                                        WorkflowNodeEntity next,
+                                        Map<String, Object> context) {
+        workflowRun.setLastNodeKey(current == null ? null : current.getNodeKey());
+        workflowRun.setNextNodeKey(next == null ? null : next.getNodeKey());
+        workflowRun.setHeartbeatAt(LocalDateTime.now());
+        workflowRun.setContextJson(toJson(context));
+        workflowRun.setSnapshotJson(toJson(Map.of(
+                "context", context,
+                "lastNodeKey", workflowRun.getLastNodeKey() == null ? "" : workflowRun.getLastNodeKey(),
+                "nextNodeKey", workflowRun.getNextNodeKey() == null ? "" : workflowRun.getNextNodeKey()
+        )));
+        workflowRunMapper.updateById(workflowRun);
+        updateLastStepNextNode(workflowRun.getId(), workflowRun.getLastNodeKey(), workflowRun.getNextNodeKey());
+    }
+
+    /**
+     * 给最近一次步骤运行补充下一节点Key，便于前端展示流向。
+     */
+    private void updateLastStepNextNode(String workflowRunId, String nodeKey, String nextNodeKey) {
+        if (!StringUtils.hasText(workflowRunId) || !StringUtils.hasText(nodeKey)) {
+            return;
+        }
+        WorkflowStepRunEntity latestStep = workflowStepRunMapper.selectOne(new LambdaQueryWrapper<WorkflowStepRunEntity>()
+                .eq(WorkflowStepRunEntity::getWorkflowRunId, workflowRunId)
+                .eq(WorkflowStepRunEntity::getNodeKey, nodeKey)
+                .orderByDesc(WorkflowStepRunEntity::getCreatedAt)
+                .last("limit 1"));
+        if (latestStep != null) {
+            latestStep.setNextNodeKey(nextNodeKey);
+            workflowStepRunMapper.updateById(latestStep);
+        }
+    }
+
+    /**
+     * 按ID读取工作流运行，并校验当前用户是否有查看权限。
+     */
+    private WorkflowRunEntity requireWorkflowRun(String workflowRunId) {
+        WorkflowRunEntity workflowRun = workflowRunMapper.selectById(workflowRunId);
+        if (workflowRun == null) {
+            throw new BusinessException("WORKFLOW_RUN_NOT_FOUND", "工作流运行不存在");
+        }
+        WorkflowDefinitionEntity workflow = workflowService.requireWorkflow(workflowRun.getWorkflowId());
+        if (!workflowService.canView(workflow)) {
+            throw new BusinessException("WORKFLOW_FORBIDDEN", "没有查看该工作流运行的权限");
+        }
+        return workflowRun;
+    }
+
+    /**
+     * 查找工作流对应的 Runtime Trace 运行。
+     */
+    private RuntimeRunEntity findRuntimeRun(String workflowRunId) {
+        if (!StringUtils.hasText(workflowRunId)) {
+            return null;
+        }
+        return runtimeRunMapper.selectOne(new LambdaQueryWrapper<RuntimeRunEntity>()
+                .eq(RuntimeRunEntity::getWorkflowRunId, workflowRunId)
+                .orderByDesc(RuntimeRunEntity::getCreatedAt)
+                .last("limit 1"));
+    }
+
+    /**
+     * 将已有运行快照转换成前端可用的运行结果。
+     */
+    private WorkflowDtos.RunResult toPersistedRunResult(WorkflowRunEntity workflowRun, RuntimeRunEntity runtimeRun) {
+        Map<String, Object> context = parseMap(workflowRun.getContextJson());
+        Map<String, Object> outputPayload = parseMap(workflowRun.getOutputPayload());
+        List<WorkflowDtos.StepResult> steps = workflowStepRunMapper.selectList(new LambdaQueryWrapper<WorkflowStepRunEntity>()
+                        .eq(WorkflowStepRunEntity::getWorkflowRunId, workflowRun.getId())
+                        .orderByAsc(WorkflowStepRunEntity::getCreatedAt))
+                .stream()
+                .map(this::toStepResult)
+                .toList();
+        WorkflowDtos.RunResult result = new WorkflowDtos.RunResult();
+        result.setWorkflowRunId(workflowRun.getId());
+        result.setRuntimeRunId(runtimeRun == null ? null : runtimeRun.getId());
+        result.setWorkflowId(workflowRun.getWorkflowId());
+        result.setWorkflowVersionId(workflowRun.getWorkflowVersionId());
+        result.setAgentId(workflowRun.getAgentId());
+        result.setTriggerType(workflowRun.getTriggerType());
+        result.setStatus(workflowRun.getStatus());
+        result.setOutputText(stringValue(outputPayload.get("output"), runtimeRun == null ? "" : runtimeRun.getOutputText()));
+        result.setContext(context);
+        result.setSteps(steps);
+        result.setTotalTokens(runtimeRun == null ? 0 : nullToZero(runtimeRun.getTotalTokens()));
+        result.setLatencyMs(runtimeRun == null ? null : runtimeRun.getLatencyMs());
+        result.setErrorMessage(firstText(workflowRun.getErrorMessage(), runtimeRun == null ? null : runtimeRun.getErrorMessage()));
+        result.setIdempotencyKey(workflowRun.getIdempotencyKey());
+        result.setParentRunId(workflowRun.getParentRunId());
+        result.setResumeFromNodeKey(workflowRun.getResumeFromNodeKey());
+        result.setLastNodeKey(workflowRun.getLastNodeKey());
+        result.setNextNodeKey(workflowRun.getNextNodeKey());
+        result.setRecoverable(workflowRun.getRecoverable());
+        result.setRetryCount(nullToZero(workflowRun.getRetryCount()));
+        result.setStartedAt(workflowRun.getStartedAt());
+        result.setFinishedAt(workflowRun.getFinishedAt());
+        return result;
+    }
+
+    /**
+     * 转换步骤运行快照。
+     */
+    private WorkflowDtos.StepResult toStepResult(WorkflowStepRunEntity stepRun) {
+        WorkflowDtos.StepResult step = new WorkflowDtos.StepResult();
+        step.setNodeKey(stepRun.getNodeKey());
+        step.setNodeName(stepRun.getNodeName());
+        step.setNodeType(stepRun.getNodeType());
+        step.setStatus(stepRun.getStatus());
+        step.setOutput(parseJsonValue(stepRun.getOutputPayload()));
+        step.setTokenCount(nullToZero(stepRun.getTokenCount()));
+        step.setLatencyMs(stepRun.getLatencyMs());
+        step.setErrorMessage(stepRun.getErrorMessage());
+        step.setAttemptNo(nullToZero(stepRun.getAttemptNo()));
+        step.setNextNodeKey(stepRun.getNextNodeKey());
+        step.setRecoverable(stepRun.getRecoverable());
+        step.setStartedAt(stepRun.getStartedAt());
+        step.setFinishedAt(stepRun.getFinishedAt());
+        return step;
+    }
+
+    /**
+     * 从历史运行中还原输入参数。
+     */
+    private WorkflowDtos.RunRequest buildRunRequestFromSource(WorkflowRunEntity source) {
+        Map<String, Object> inputPayload = parseMap(source.getInputPayload());
+        WorkflowDtos.RunRequest request = new WorkflowDtos.RunRequest();
+        request.setAgentId(source.getAgentId());
+        request.setInput(stringValue(inputPayload.get("input"), ""));
+        request.setVariables(parseMap(inputPayload.get("variables")));
+        request.setDebugMode(true);
+        request.setMaxSteps(100);
+        return request;
+    }
+
+    /**
+     * 增加来源运行的重跑次数。
+     */
+    private void incrementRetryCount(WorkflowRunEntity source) {
+        source.setRetryCount(nullToZero(source.getRetryCount()) + 1);
+        workflowRunMapper.updateById(source);
+    }
+
+    /**
      * 创建工作流运行记录。
      */
     private WorkflowRunEntity createWorkflowRun(WorkflowDefinitionEntity workflow,
@@ -657,12 +893,21 @@ public class WorkflowExecutionService {
         run.setAgentId(agent == null ? null : agent.getId());
         run.setTriggerType(StringUtils.hasText(triggerType) ? triggerType : "manual");
         run.setTriggerUserId(agentAccessService.currentUserId());
+        run.setIdempotencyKey(request == null ? null : request.getIdempotencyKey());
+        run.setParentRunId(request == null ? null : request.getParentRunId());
+        run.setResumeFromNodeKey(request == null ? null : request.getStartNodeKey());
         run.setInputPayload(toJson(Map.of(
                 "input", request == null ? "" : safeText(request.getInput()),
                 "variables", request == null || request.getVariables() == null ? Map.of() : request.getVariables()
         )));
         run.setContextJson(toJson(context));
         run.setStatus("RUNNING");
+        run.setLockedBy(agentAccessService.currentUserId());
+        run.setLockedAt(LocalDateTime.now());
+        run.setHeartbeatAt(LocalDateTime.now());
+        run.setRetryCount(0);
+        run.setRecoverable(false);
+        run.setSnapshotJson(toJson(Map.of("context", context, "status", "RUNNING")));
         run.setStartedAt(LocalDateTime.now());
         workflowRunMapper.insert(run);
         return run;
@@ -719,6 +964,11 @@ public class WorkflowExecutionService {
         step.setAttemptNo(1);
         step.setTokenCount(0);
         step.setCostAmount(BigDecimal.ZERO);
+        step.setRecoverable(false);
+        step.setPolicySnapshot(toJson(Map.of(
+                "config", parseMap(node.getConfigJson()),
+                "retryPolicy", parseMap(node.getRetryPolicy())
+        )));
         step.setStartedAt(LocalDateTime.now());
         workflowStepRunMapper.insert(step);
         return step;
@@ -757,6 +1007,7 @@ public class WorkflowExecutionService {
         stepRun.setCostAmount(result.costAmount());
         stepRun.setErrorMessage(result.errorMessage());
         stepRun.setLatencyMs(latencyMs);
+        stepRun.setRecoverable(false);
         stepRun.setFinishedAt(LocalDateTime.now());
         workflowStepRunMapper.updateById(stepRun);
 
@@ -786,6 +1037,7 @@ public class WorkflowExecutionService {
         stepRun.setStatus("FAILED");
         stepRun.setErrorMessage(exception.getMessage());
         stepRun.setLatencyMs(latencyMs);
+        stepRun.setRecoverable(true);
         stepRun.setFinishedAt(LocalDateTime.now());
         workflowStepRunMapper.updateById(stepRun);
 
@@ -811,6 +1063,10 @@ public class WorkflowExecutionService {
         workflowRun.setStatus("SUCCESS");
         workflowRun.setContextJson(toJson(context));
         workflowRun.setOutputPayload(toJson(Map.of("output", safeText(output))));
+        workflowRun.setNextNodeKey(null);
+        workflowRun.setHeartbeatAt(LocalDateTime.now());
+        workflowRun.setRecoverable(false);
+        workflowRun.setSnapshotJson(toJson(Map.of("context", context, "output", safeText(output), "status", "SUCCESS")));
         workflowRun.setFinishedAt(LocalDateTime.now());
         workflowRunMapper.updateById(workflowRun);
 
@@ -841,6 +1097,9 @@ public class WorkflowExecutionService {
         workflowRun.setStatus("WAITING");
         workflowRun.setContextJson(toJson(context));
         workflowRun.setOutputPayload(toJson(Map.of("output", safeText(output), "waiting", true)));
+        workflowRun.setHeartbeatAt(LocalDateTime.now());
+        workflowRun.setRecoverable(true);
+        workflowRun.setSnapshotJson(toJson(Map.of("context", context, "output", safeText(output), "status", "WAITING")));
         workflowRun.setFinishedAt(null);
         workflowRunMapper.updateById(workflowRun);
 
@@ -867,6 +1126,9 @@ public class WorkflowExecutionService {
         workflowRun.setStatus("FAILED");
         workflowRun.setContextJson(toJson(context));
         workflowRun.setErrorMessage(exception.getMessage());
+        workflowRun.setHeartbeatAt(LocalDateTime.now());
+        workflowRun.setRecoverable(true);
+        workflowRun.setSnapshotJson(toJson(Map.of("context", context, "error", exception.getMessage(), "status", "FAILED")));
         workflowRun.setFinishedAt(LocalDateTime.now());
         workflowRunMapper.updateById(workflowRun);
 
@@ -1208,6 +1470,10 @@ public class WorkflowExecutionService {
         WorkflowDtos.RunResult result = new WorkflowDtos.RunResult();
         result.setWorkflowRunId(workflowRun.getId());
         result.setRuntimeRunId(runtimeRun.getId());
+        result.setWorkflowId(workflowRun.getWorkflowId());
+        result.setWorkflowVersionId(workflowRun.getWorkflowVersionId());
+        result.setAgentId(workflowRun.getAgentId());
+        result.setTriggerType(workflowRun.getTriggerType());
         result.setStatus(StringUtils.hasText(workflowRun.getStatus()) ? workflowRun.getStatus() : (errorMessage == null ? "SUCCESS" : "FAILED"));
         result.setOutputText(safeText(output));
         result.setContext(context);
@@ -1215,6 +1481,15 @@ public class WorkflowExecutionService {
         result.setTotalTokens(totalTokens);
         result.setLatencyMs(runtimeRun.getLatencyMs());
         result.setErrorMessage(errorMessage);
+        result.setIdempotencyKey(workflowRun.getIdempotencyKey());
+        result.setParentRunId(workflowRun.getParentRunId());
+        result.setResumeFromNodeKey(workflowRun.getResumeFromNodeKey());
+        result.setLastNodeKey(workflowRun.getLastNodeKey());
+        result.setNextNodeKey(workflowRun.getNextNodeKey());
+        result.setRecoverable(workflowRun.getRecoverable());
+        result.setRetryCount(nullToZero(workflowRun.getRetryCount()));
+        result.setStartedAt(workflowRun.getStartedAt());
+        result.setFinishedAt(workflowRun.getFinishedAt());
         return result;
     }
 
@@ -1438,6 +1713,27 @@ public class WorkflowExecutionService {
         } catch (Exception exception) {
             return "{}";
         }
+    }
+
+    /**
+     * 解析任意 JSON 值，解析失败时返回原文本。
+     */
+    private Object parseJsonValue(String json) {
+        try {
+            if (!StringUtils.hasText(json)) {
+                return null;
+            }
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception exception) {
+            return json;
+        }
+    }
+
+    /**
+     * 返回第一个有文本的字符串。
+     */
+    private String firstText(String first, String second) {
+        return StringUtils.hasText(first) ? first : second;
     }
 
     /**

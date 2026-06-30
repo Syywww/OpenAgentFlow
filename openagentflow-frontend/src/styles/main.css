@@ -1591,6 +1591,34 @@ label.wide {
   flex-direction: column;
   gap: 14px;
   min-height: min(650px, calc(100vh - 158px));
+  height: min(650px, calc(100vh - 158px));
+  max-height: calc(100vh - 174px);
+  overflow: hidden;
+}
+
+.chat-messages {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #cbd5e1;
 }
 
 .empty-state {
@@ -1666,24 +1694,48 @@ label.wide {
   min-height: 74px;
 }
 
+.chat-input-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-self: stretch;
+}
+
+.chat-input-actions button {
+  justify-content: center;
+  min-width: 112px;
+}
+
+.supplement-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .trace-panel {
   display: grid;
-  align-content: start;
-  grid-template-rows: repeat(6, auto) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-content: stretch;
+  grid-template-rows: repeat(7, auto) minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 10px;
+  height: min(650px, calc(100vh - 158px));
   max-height: calc(100vh - 174px);
+  min-height: 0;
   overflow: hidden;
 }
 
 .trace-scroll-section {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 
 .source-scroll-box,
 .tool-scroll-box {
-  height: auto;
+  height: 100%;
+  min-height: 0;
 }
 
 .trace-step {
@@ -1693,7 +1745,12 @@ label.wide {
 }
 
 .trace-step span {
+  min-width: 0;
   color: var(--muted);
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .code-block {
@@ -1712,6 +1769,11 @@ label.wide {
   border: 1px solid var(--line);
   background: #f8fafc;
   color: #334155;
+}
+
+.trace-panel .code-block.light {
+  max-height: 104px;
+  margin-top: 0;
 }
 
 .knowledge-detail,
@@ -1988,7 +2050,7 @@ label.wide {
 
 .workflow-toolbar {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(130px, 180px) minmax(110px, 140px) auto;
+  grid-template-columns: minmax(150px, 1fr) minmax(130px, 180px) minmax(110px, 140px) auto auto;
   align-items: end;
   gap: 10px;
   padding: 10px;
@@ -2317,6 +2379,28 @@ label.wide {
   padding: 3px 7px;
   font-size: 11px;
   font-weight: 800;
+}
+
+.workflow-reliability-meta {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workflow-reliability-meta b {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reliability-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.reliability-actions button {
+  justify-content: center;
+  min-width: 0;
 }
 
 .workflow-create-modal .form-stack {

@@ -99,7 +99,12 @@ export async function runAgent(id: string, payload: ChatCompletionRequest) {
   });
 }
 
-export async function streamAgent(id: string, payload: ChatCompletionRequest, handlers: StreamHandlers): Promise<StreamResult> {
+export async function streamAgent(
+  id: string,
+  payload: ChatCompletionRequest,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<StreamResult> {
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
   const token = getAccessToken();
@@ -111,11 +116,12 @@ export async function streamAgent(id: string, payload: ChatCompletionRequest, ha
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok || !response.body) {
     throw new Error('Agent 流式调试请求失败');
   }
 
-  return readSseStream(response.body, handlers);
+  return readSseStream(response.body, handlers, signal);
 }

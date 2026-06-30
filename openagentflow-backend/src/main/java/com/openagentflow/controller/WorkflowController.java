@@ -117,6 +117,41 @@ public class WorkflowController {
     }
 
     /**
+     * 查询工作流运行详情。
+     *
+     * @param runId 工作流运行ID
+     * @return 运行详情
+     */
+    @GetMapping("/workflows/runs/{runId}")
+    public ApiResponse<WorkflowDtos.RunResult> getWorkflowRun(@PathVariable String runId) {
+        return ApiResponse.ok(workflowExecutionService.getWorkflowRun(runId));
+    }
+
+    /**
+     * 重跑工作流运行。
+     *
+     * @param runId 来源工作流运行ID
+     * @return 新运行结果
+     */
+    @PostMapping("/workflows/runs/{runId}/retry")
+    public ApiResponse<WorkflowDtos.RunResult> retryWorkflowRun(@PathVariable String runId) {
+        return ApiResponse.ok(workflowExecutionService.retryWorkflowRun(runId));
+    }
+
+    /**
+     * 从失败节点或指定节点恢复工作流运行。
+     *
+     * @param runId 来源工作流运行ID
+     * @param request 恢复请求
+     * @return 新运行结果
+     */
+    @PostMapping("/workflows/runs/{runId}/resume")
+    public ApiResponse<WorkflowDtos.RunResult> resumeWorkflowRun(@PathVariable String runId,
+                                                                 @RequestBody WorkflowDtos.RunRequest request) {
+        return ApiResponse.ok(workflowExecutionService.resumeWorkflowRun(runId, request));
+    }
+
+    /**
      * 查询 Agent 绑定的工作流。
      *
      * @param agentId Agent ID

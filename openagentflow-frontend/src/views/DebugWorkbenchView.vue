@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { AlertCircle, FileSearch, History, MessageSquarePlus, Send, Sparkles, Trash2 } from 'lucide-vue-next';
+import { AlertCircle, CornerDownRight, FileSearch, History, MessageSquarePlus, Send, Sparkles, Square, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { fetchAgents, streamAgent, type AgentSummary } from '../api/agents';
@@ -37,6 +37,9 @@ const messages = ref<UiMessage[]>([]);
 const sessions = ref<AgentSessionSummary[]>([]);
 const sessionsLoading = ref(false);
 const loading = ref(false);
+const streamAbortController = ref<AbortController | null>(null);
+const activeAssistantMessage = ref<UiMessage | null>(null);
+const generationPaused = ref(false);
 const errorMessage = ref('');
 const runMeta = ref<Record<string, unknown>>({});
 const runDone = ref<Record<string, unknown>>({});
@@ -46,6 +49,7 @@ const toolResults = ref<Record<string, unknown>[]>([]);
 
 const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value));
 const selectedModel = computed(() => models.value.find((model) => model.id === selectedModelId.value));
+const canIntroduceSupplement = computed(() => generationPaused.value && !loading.value && Boolean(inputText.value.trim()) && Boolean(selectedModelId.value));
 
 async function loadOptions() {
   errorMessage.value = '';
@@ -109,6 +113,7 @@ async function openSession(sessionId: string) {
   retrievalSources.value = [];
   memoryResults.value = [];
   toolResults.value = [];
+  generationPaused.value = false;
 }
 
 function startNewSession() {
@@ -120,6 +125,7 @@ function startNewSession() {
   memoryResults.value = [];
   toolResults.value = [];
   errorMessage.value = '';
+  generationPaused.value = false;
 }
 
 async function removeSession(sessionId: string) {
@@ -139,8 +145,39 @@ async function selectAgent(agentId: string) {
   await loadSessions(true);
 }
 
+function stopGeneration() {
+  if (!loading.value || !streamAbortController.value) {
+    return;
+  }
+  streamAbortController.value.abort();
+  generationPaused.value = true;
+  loading.value = false;
+  if (activeAssistantMessage.value) {
+    activeAssistantMessage.value.status = '已暂停';
+    if (!activeAssistantMessage.value.content) {
+      activeAssistantMessage.value.content = '已停止接收模型输出，可输入补充说明后继续。';
+    }
+  }
+}
+
+async function introduceSupplement() {
+  const supplement = inputText.value.trim();
+  if (!canIntroduceSupplement.value) {
+    return;
+  }
+  const question = `补充说明：${supplement}\n\n请结合上一轮已生成的内容继续回答，不需要从头重复。`;
+  await sendMessageWithText(question, `补充说明：${supplement}`);
+}
+
 async function sendMessage() {
-  const question = inputText.value.trim();
+  if (loading.value) {
+    stopGeneration();
+    return;
+  }
+  await sendMessageWithText(inputText.value.trim());
+}
+
+async function sendMessageWithText(question: string, displayQuestion = question) {
   if (!question || loading.value) {
     return;
   }
@@ -149,11 +186,15 @@ async function sendMessage() {
     role: message.role,
     content: message.content,
   }));
-  messages.value.push({ role: 'user', content: question });
+  messages.value.push({ role: 'user', content: displayQuestion });
   const assistantMessage: UiMessage = { role: 'assistant', content: '', status: '生成中' };
   messages.value.push(assistantMessage);
   inputText.value = '';
+  generationPaused.value = false;
   loading.value = true;
+  const controller = new AbortController();
+  streamAbortController.value = controller;
+  activeAssistantMessage.value = assistantMessage;
   errorMessage.value = '';
   runMeta.value = {};
   runDone.value = {};
@@ -173,12 +214,22 @@ async function sendMessage() {
 
   try {
     const streamResult = selectedAgentId.value
-      ? await streamAgent(selectedAgentId.value, payload, streamHandlers(assistantMessage))
-      : await streamChat(payload, streamHandlers(assistantMessage));
+      ? await streamAgent(selectedAgentId.value, payload, streamHandlers(assistantMessage), controller.signal)
+      : await streamChat(payload, streamHandlers(assistantMessage), controller.signal);
+    if (streamResult.aborted) {
+      assistantMessage.status = '已暂停';
+      generationPaused.value = true;
+      return;
+    }
     if (!streamResult.doneReceived && !streamResult.errorReceived) {
       assistantMessage.status = assistantMessage.content ? '已完成' : '未收到完成事件';
     }
   } catch (error) {
+    if (controller.signal.aborted) {
+      assistantMessage.status = '已暂停';
+      generationPaused.value = true;
+      return;
+    }
     if (String(runDone.value.status ?? '').toUpperCase() === 'SUCCESS') {
       assistantMessage.status = '已完成';
       return;
@@ -187,6 +238,12 @@ async function sendMessage() {
     errorMessage.value = error instanceof Error ? error.message : '模型调用失败';
   } finally {
     loading.value = false;
+    if (streamAbortController.value === controller) {
+      streamAbortController.value = null;
+    }
+    if (activeAssistantMessage.value === assistantMessage) {
+      activeAssistantMessage.value = null;
+    }
   }
 }
 
@@ -235,7 +292,9 @@ function normalizeToolResults(value: unknown): Record<string, unknown>[] {
 function onInputKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    void sendMessage();
+    if (!loading.value) {
+      void sendMessage();
+    }
   }
 }
 
@@ -327,26 +386,43 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
     </aside>
 
     <div class="chat-panel">
-      <div v-if="!messages.length" class="empty-state">
-        <Sparkles :size="22" />
-        <b>真实模型调试已就绪</b>
-        <span>选择一个 Agent 和模型，发送消息后会通过后端 SSE 接收流式输出。</span>
-      </div>
-      <div v-for="(message, index) in messages" :key="`${message.role}-${index}`" class="message" :class="message.role">
-        <p v-if="message.role === 'user'">{{ message.content }}</p>
-        <span v-else>AI</span>
-        <div v-if="message.role === 'assistant'">
-          <StatusBadge :label="message.status || '生成中'" :tone="message.status === '失败' ? 'danger' : 'success'" />
-          <p class="markdown-text">{{ message.content || '正在等待模型返回...' }}</p>
+      <div class="chat-messages">
+        <div v-if="!messages.length" class="empty-state">
+          <Sparkles :size="22" />
+          <b>真实模型调试已就绪</b>
+          <span>选择一个 Agent 和模型，发送消息后会通过后端 SSE 接收流式输出。</span>
+        </div>
+        <div v-for="(message, index) in messages" :key="`${message.role}-${index}`" class="message" :class="message.role">
+          <p v-if="message.role === 'user'">{{ message.content }}</p>
+          <span v-else>AI</span>
+          <div v-if="message.role === 'assistant'">
+            <StatusBadge :label="message.status || '生成中'" :tone="message.status === '失败' ? 'danger' : 'success'" />
+            <p class="markdown-text">{{ message.content || '正在等待模型返回...' }}</p>
+          </div>
         </div>
       </div>
       <p v-if="errorMessage" class="form-error"><AlertCircle :size="15" /> {{ errorMessage }}</p>
       <div class="chat-input">
         <textarea v-model="inputText" placeholder="请输入你的问题，Enter 发送，Shift + Enter 换行" @keydown="onInputKeydown" />
-        <button class="primary-button" type="button" :disabled="loading || !selectedModelId" @click="sendMessage">
-          <Send :size="16" /> {{ loading ? '生成中' : '发送' }}
-        </button>
+        <div class="chat-input-actions">
+          <button
+            :class="loading ? 'danger-button' : 'primary-button'"
+            type="button"
+            :disabled="!loading && !selectedModelId"
+            @click="sendMessage"
+          >
+            <Square v-if="loading" :size="15" />
+            <Send v-else :size="16" />
+            {{ loading ? '暂停' : '发送' }}
+          </button>
+          <button class="secondary-button" type="button" :disabled="!canIntroduceSupplement" @click="introduceSupplement">
+            <CornerDownRight :size="16" /> 引入补充
+          </button>
+        </div>
       </div>
+      <p v-if="generationPaused" class="supplement-hint">
+        已暂停生成，可输入补充说明后点击“引入补充”继续当前会话。
+      </p>
     </div>
 
     <aside class="trace-panel">

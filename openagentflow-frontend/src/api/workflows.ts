@@ -76,6 +76,10 @@ export interface WorkflowRequest {
 export interface WorkflowRunResult {
   workflowRunId: string;
   runtimeRunId: string;
+  workflowId?: string;
+  workflowVersionId?: string;
+  agentId?: string;
+  triggerType?: string;
   status: string;
   outputText: string;
   context?: Record<string, unknown>;
@@ -83,6 +87,15 @@ export interface WorkflowRunResult {
   totalTokens?: number;
   latencyMs?: number;
   errorMessage?: string;
+  idempotencyKey?: string;
+  parentRunId?: string;
+  resumeFromNodeKey?: string;
+  lastNodeKey?: string;
+  nextNodeKey?: string;
+  recoverable?: boolean;
+  retryCount?: number;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface AgentWorkflowBindingSummary {
@@ -198,6 +211,21 @@ export async function runWorkflow(id: string, agentId: string | undefined, input
   return request<WorkflowRunResult>(`/workflows/${id}/run`, {
     method: 'POST',
     body: JSON.stringify({ agentId, input, variables: {}, ...options }),
+  });
+}
+
+export async function fetchWorkflowRun(runId: string) {
+  return request<WorkflowRunResult>(`/workflows/runs/${runId}`);
+}
+
+export async function retryWorkflowRun(runId: string) {
+  return request<WorkflowRunResult>(`/workflows/runs/${runId}/retry`, { method: 'POST' });
+}
+
+export async function resumeWorkflowRun(runId: string, payload: Record<string, unknown> = {}) {
+  return request<WorkflowRunResult>(`/workflows/runs/${runId}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 

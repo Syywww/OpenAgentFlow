@@ -45,6 +45,7 @@ export interface StreamHandlers {
 export interface StreamResult {
   doneReceived: boolean;
   errorReceived: boolean;
+  aborted?: boolean;
 }
 
 export async function completeChat(payload: ChatCompletionRequest) {
@@ -54,7 +55,11 @@ export async function completeChat(payload: ChatCompletionRequest) {
   });
 }
 
-export async function streamChat(payload: ChatCompletionRequest, handlers: StreamHandlers): Promise<StreamResult> {
+export async function streamChat(
+  payload: ChatCompletionRequest,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<StreamResult> {
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
   const token = getAccessToken();
@@ -66,24 +71,39 @@ export async function streamChat(payload: ChatCompletionRequest, handlers: Strea
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok || !response.body) {
     throw new Error('流式对话请求失败');
   }
 
-  return readSseStream(response.body, handlers);
+  return readSseStream(response.body, handlers, signal);
 }
 
-export async function readSseStream(body: ReadableStream<Uint8Array>, handlers: StreamHandlers): Promise<StreamResult> {
+export async function readSseStream(
+  body: ReadableStream<Uint8Array>,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let doneReceived = false;
   let errorReceived = false;
+  let aborted = false;
+  const abortReader = () => {
+    aborted = true;
+    void reader.cancel();
+  };
+  signal?.addEventListener('abort', abortReader, { once: true });
 
   try {
     while (true) {
+      if (signal?.aborted) {
+        aborted = true;
+        break;
+      }
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -98,19 +118,25 @@ export async function readSseStream(body: ReadableStream<Uint8Array>, handlers: 
       }
     }
   } catch (error) {
+    if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      aborted = true;
+      return { doneReceived, errorReceived, aborted };
+    }
     // 已收到 done 说明业务调用成功，忽略 SSE 连接收尾阶段的读流异常。
     if (!doneReceived) {
       throw error;
     }
+  } finally {
+    signal?.removeEventListener('abort', abortReader);
   }
 
-  if (buffer.trim()) {
+  if (!aborted && buffer.trim()) {
     const eventName = dispatchSseEvent(buffer, handlers);
     doneReceived ||= eventName === 'done';
     errorReceived ||= eventName === 'error';
   }
 
-  return { doneReceived, errorReceived };
+  return { doneReceived, errorReceived, aborted };
 }
 
 function dispatchSseEvent(eventText: string, handlers: StreamHandlers): string | undefined {

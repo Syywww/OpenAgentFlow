@@ -664,6 +664,10 @@ public final class WorkflowDtos {
         private Integer maxSteps;
         /** 是否空跑，空跑时不会真实调用模型、知识库和工具。 */
         private Boolean dryRun;
+        /** 幂等键，用于防止重复提交。 */
+        private String idempotencyKey;
+        /** 恢复或重跑来源运行ID。 */
+        private String parentRunId;
 
         public String getAgentId() {
             return agentId;
@@ -720,6 +724,22 @@ public final class WorkflowDtos {
         public void setDryRun(Boolean dryRun) {
             this.dryRun = dryRun;
         }
+
+        public String getIdempotencyKey() {
+            return idempotencyKey;
+        }
+
+        public void setIdempotencyKey(String idempotencyKey) {
+            this.idempotencyKey = idempotencyKey;
+        }
+
+        public String getParentRunId() {
+            return parentRunId;
+        }
+
+        public void setParentRunId(String parentRunId) {
+            this.parentRunId = parentRunId;
+        }
     }
 
     /**
@@ -744,8 +764,32 @@ public final class WorkflowDtos {
         private Integer latencyMs;
         /** 错误信息。 */
         private String errorMessage;
-        /** 节点尝试次数。 */
-        /** 节点尝试次数。 */
+        /** 工作流ID。 */
+        private String workflowId;
+        /** 工作流版本ID。 */
+        private String workflowVersionId;
+        /** Agent ID。 */
+        private String agentId;
+        /** 触发类型。 */
+        private String triggerType;
+        /** 幂等键。 */
+        private String idempotencyKey;
+        /** 父运行ID。 */
+        private String parentRunId;
+        /** 恢复起始节点Key。 */
+        private String resumeFromNodeKey;
+        /** 最近节点Key。 */
+        private String lastNodeKey;
+        /** 下一节点Key。 */
+        private String nextNodeKey;
+        /** 是否可恢复。 */
+        private Boolean recoverable;
+        /** 重跑次数。 */
+        private Integer retryCount;
+        /** 开始时间。 */
+        private LocalDateTime startedAt;
+        /** 完成时间。 */
+        private LocalDateTime finishedAt;
 
         public String getWorkflowRunId() {
             return workflowRunId;
@@ -819,6 +863,110 @@ public final class WorkflowDtos {
             this.errorMessage = errorMessage;
         }
 
+        public String getWorkflowId() {
+            return workflowId;
+        }
+
+        public void setWorkflowId(String workflowId) {
+            this.workflowId = workflowId;
+        }
+
+        public String getWorkflowVersionId() {
+            return workflowVersionId;
+        }
+
+        public void setWorkflowVersionId(String workflowVersionId) {
+            this.workflowVersionId = workflowVersionId;
+        }
+
+        public String getAgentId() {
+            return agentId;
+        }
+
+        public void setAgentId(String agentId) {
+            this.agentId = agentId;
+        }
+
+        public String getTriggerType() {
+            return triggerType;
+        }
+
+        public void setTriggerType(String triggerType) {
+            this.triggerType = triggerType;
+        }
+
+        public String getIdempotencyKey() {
+            return idempotencyKey;
+        }
+
+        public void setIdempotencyKey(String idempotencyKey) {
+            this.idempotencyKey = idempotencyKey;
+        }
+
+        public String getParentRunId() {
+            return parentRunId;
+        }
+
+        public void setParentRunId(String parentRunId) {
+            this.parentRunId = parentRunId;
+        }
+
+        public String getResumeFromNodeKey() {
+            return resumeFromNodeKey;
+        }
+
+        public void setResumeFromNodeKey(String resumeFromNodeKey) {
+            this.resumeFromNodeKey = resumeFromNodeKey;
+        }
+
+        public String getLastNodeKey() {
+            return lastNodeKey;
+        }
+
+        public void setLastNodeKey(String lastNodeKey) {
+            this.lastNodeKey = lastNodeKey;
+        }
+
+        public String getNextNodeKey() {
+            return nextNodeKey;
+        }
+
+        public void setNextNodeKey(String nextNodeKey) {
+            this.nextNodeKey = nextNodeKey;
+        }
+
+        public Boolean getRecoverable() {
+            return recoverable;
+        }
+
+        public void setRecoverable(Boolean recoverable) {
+            this.recoverable = recoverable;
+        }
+
+        public Integer getRetryCount() {
+            return retryCount;
+        }
+
+        public void setRetryCount(Integer retryCount) {
+            this.retryCount = retryCount;
+        }
+
+        public LocalDateTime getStartedAt() {
+            return startedAt;
+        }
+
+        public void setStartedAt(LocalDateTime startedAt) {
+            this.startedAt = startedAt;
+        }
+
+        public LocalDateTime getFinishedAt() {
+            return finishedAt;
+        }
+
+        public void setFinishedAt(LocalDateTime finishedAt) {
+            this.finishedAt = finishedAt;
+        }
+
     }
 
     /**
@@ -841,9 +989,16 @@ public final class WorkflowDtos {
         private Integer latencyMs;
         /** 错误信息。 */
         private String errorMessage;
-
         /** 节点尝试次数。 */
         private Integer attemptNo;
+        /** 下一节点Key。 */
+        private String nextNodeKey;
+        /** 是否可恢复。 */
+        private Boolean recoverable;
+        /** 开始时间。 */
+        private LocalDateTime startedAt;
+        /** 完成时间。 */
+        private LocalDateTime finishedAt;
 
         public String getNodeKey() {
             return nodeKey;
@@ -915,6 +1070,38 @@ public final class WorkflowDtos {
 
         public void setAttemptNo(Integer attemptNo) {
             this.attemptNo = attemptNo;
+        }
+
+        public String getNextNodeKey() {
+            return nextNodeKey;
+        }
+
+        public void setNextNodeKey(String nextNodeKey) {
+            this.nextNodeKey = nextNodeKey;
+        }
+
+        public Boolean getRecoverable() {
+            return recoverable;
+        }
+
+        public void setRecoverable(Boolean recoverable) {
+            this.recoverable = recoverable;
+        }
+
+        public LocalDateTime getStartedAt() {
+            return startedAt;
+        }
+
+        public void setStartedAt(LocalDateTime startedAt) {
+            this.startedAt = startedAt;
+        }
+
+        public LocalDateTime getFinishedAt() {
+            return finishedAt;
+        }
+
+        public void setFinishedAt(LocalDateTime finishedAt) {
+            this.finishedAt = finishedAt;
         }
     }
 

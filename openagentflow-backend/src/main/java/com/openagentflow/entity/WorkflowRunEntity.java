@@ -56,6 +56,50 @@ public class WorkflowRunEntity {
     @TableField("error_message")
     private String errorMessage;
 
+    /** 幂等键，用于防止前端重复点击或外部接口重复投递。 */
+    @TableField("idempotency_key")
+    private String idempotencyKey;
+
+    /** 父运行ID，用于重跑或恢复运行时追溯来源。 */
+    @TableField("parent_run_id")
+    private String parentRunId;
+
+    /** 从哪个节点恢复执行。 */
+    @TableField("resume_from_node_key")
+    private String resumeFromNodeKey;
+
+    /** 最近完成或失败的节点Key。 */
+    @TableField("last_node_key")
+    private String lastNodeKey;
+
+    /** 下一步预计执行的节点Key。 */
+    @TableField("next_node_key")
+    private String nextNodeKey;
+
+    /** 当前运行锁持有者，便于后续多实例执行时做抢占保护。 */
+    @TableField("locked_by")
+    private String lockedBy;
+
+    /** 当前运行锁定时间。 */
+    @TableField("locked_at")
+    private LocalDateTime lockedAt;
+
+    /** 最近心跳时间，用于识别卡住或失联的运行。 */
+    @TableField("heartbeat_at")
+    private LocalDateTime heartbeatAt;
+
+    /** 已重跑次数。 */
+    @TableField("retry_count")
+    private Integer retryCount;
+
+    /** 是否可从失败节点恢复。 */
+    @TableField("recoverable")
+    private Boolean recoverable;
+
+    /** 运行快照JSON，保存恢复所需的关键上下文。 */
+    @TableField("snapshot_json")
+    private String snapshotJson;
+
     /** 开始时间。 */
     @TableField("started_at")
     private LocalDateTime startedAt;
@@ -154,6 +198,94 @@ public class WorkflowRunEntity {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
+    }
+
+    public String getParentRunId() {
+        return parentRunId;
+    }
+
+    public void setParentRunId(String parentRunId) {
+        this.parentRunId = parentRunId;
+    }
+
+    public String getResumeFromNodeKey() {
+        return resumeFromNodeKey;
+    }
+
+    public void setResumeFromNodeKey(String resumeFromNodeKey) {
+        this.resumeFromNodeKey = resumeFromNodeKey;
+    }
+
+    public String getLastNodeKey() {
+        return lastNodeKey;
+    }
+
+    public void setLastNodeKey(String lastNodeKey) {
+        this.lastNodeKey = lastNodeKey;
+    }
+
+    public String getNextNodeKey() {
+        return nextNodeKey;
+    }
+
+    public void setNextNodeKey(String nextNodeKey) {
+        this.nextNodeKey = nextNodeKey;
+    }
+
+    public String getLockedBy() {
+        return lockedBy;
+    }
+
+    public void setLockedBy(String lockedBy) {
+        this.lockedBy = lockedBy;
+    }
+
+    public LocalDateTime getLockedAt() {
+        return lockedAt;
+    }
+
+    public void setLockedAt(LocalDateTime lockedAt) {
+        this.lockedAt = lockedAt;
+    }
+
+    public LocalDateTime getHeartbeatAt() {
+        return heartbeatAt;
+    }
+
+    public void setHeartbeatAt(LocalDateTime heartbeatAt) {
+        this.heartbeatAt = heartbeatAt;
+    }
+
+    public Integer getRetryCount() {
+        return retryCount;
+    }
+
+    public void setRetryCount(Integer retryCount) {
+        this.retryCount = retryCount;
+    }
+
+    public Boolean getRecoverable() {
+        return recoverable;
+    }
+
+    public void setRecoverable(Boolean recoverable) {
+        this.recoverable = recoverable;
+    }
+
+    public String getSnapshotJson() {
+        return snapshotJson;
+    }
+
+    public void setSnapshotJson(String snapshotJson) {
+        this.snapshotJson = snapshotJson;
     }
 
     public LocalDateTime getStartedAt() {
