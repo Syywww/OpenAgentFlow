@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { AlertCircle, CornerDownRight, FileSearch, History, MessageSquarePlus, Send, Sparkles, Square, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
+import RuntimeInterpreter from '../components/RuntimeInterpreter.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { fetchAgents, streamAgent, type AgentSummary } from '../api/agents';
 import { streamChat, type ChatMessage, type TrustedAnswerStatus } from '../api/chat';
@@ -51,6 +52,74 @@ const trustedAnswer = ref<TrustedAnswerStatus | null>(null);
 const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value));
 const selectedModel = computed(() => models.value.find((model) => model.id === selectedModelId.value));
 const canIntroduceSupplement = computed(() => generationPaused.value && !loading.value && Boolean(inputText.value.trim()) && Boolean(selectedModelId.value));
+const runtimePhases = computed(() => {
+  const hasRun = Boolean(runMeta.value.runId || runDone.value.runId);
+  const done = String(runDone.value.status || '').toUpperCase() === 'SUCCESS';
+  const failed = Boolean(errorMessage.value);
+  const hasUserMessage = messages.value.some((message) => message.role === 'user');
+  const hasAssistantOutput = messages.value.some((message) => message.role === 'assistant' && Boolean(message.content));
+  const trustedBlocked = trustedAnswer.value?.enabled && trustedAnswer.value.answerable === false;
+  return [
+    {
+      id: 'input',
+      label: '输入接收',
+      status: hasUserMessage ? 'success' : inputText.value.trim() ? 'running' : 'pending',
+      summary: hasUserMessage ? '已进入会话' : '等待输入',
+      reason: hasUserMessage ? '用户问题已进入 Runtime，上下文开始装配。' : '输入后 Runtime 会创建一次新的运行链路。',
+      metric: selectedSessionId.value ? `Session ${selectedSessionId.value}` : '新会话',
+    },
+    {
+      id: 'context',
+      label: '上下文装配',
+      status: hasRun ? 'success' : loading.value ? 'running' : 'pending',
+      summary: selectedAgent.value ? selectedAgent.value.agentName : '默认 Agent',
+      reason: `模型 ${selectedModel.value?.modelName || '-'}，Agent ${selectedAgent.value?.agentName || '默认 Agent'}，记忆召回 ${memoryResults.value.length} 条。`,
+      metric: runMeta.value.runId ? `Run ${runMeta.value.runId}` : '未生成 Run',
+      evidence: memoryResults.value.slice(0, 3).map((item) => item.memoryText),
+    },
+    {
+      id: 'rag',
+      label: 'RAG 证据',
+      status: trustedBlocked ? 'warning' : retrievalSources.value.length > 0 ? 'success' : hasRun ? 'neutral' : 'pending',
+      summary: retrievalSources.value.length > 0 ? `${retrievalSources.value.length} 条来源` : trustedBlocked ? '证据不足' : '未命中',
+      reason: trustedBlocked ? trustedAnswer.value?.rejectReason || '可信回答模式拦截' : `引用来源 ${retrievalSources.value.length} 条，最佳置信 ${(trustedAnswer.value?.confidenceScore || 0).toFixed(4)}。`,
+      metric: trustedAnswer.value?.enabled ? `可信模式 · 最少 ${trustedAnswer.value.minCitationCount || 0} 条` : '普通 RAG',
+      evidence: retrievalSources.value.slice(0, 3).map((source) => `${source.documentName || source.kbName} #${source.chunkNo || '-'}`),
+    },
+    {
+      id: 'tool',
+      label: '工具动作',
+      status: toolResults.value.length > 0 ? 'success' : hasRun ? 'neutral' : 'pending',
+      summary: toolResults.value.length > 0 ? `${toolResults.value.length} 次调用` : '未触发',
+      reason: toolResults.value.length > 0 ? '模型选择了工具并将结果回填到最终回答链路。' : '本轮没有工具调用，直接进入模型生成或可信拒答。',
+      evidence: toolResults.value.slice(0, 3).map((tool) => String(tool.toolName || tool.toolCode || 'tool')),
+    },
+    {
+      id: 'llm',
+      label: '模型生成',
+      status: failed ? 'danger' : loading.value ? 'running' : done || hasAssistantOutput ? 'success' : hasRun ? 'pending' : 'pending',
+      summary: loading.value ? '流式输出中' : done || hasAssistantOutput ? '已有输出' : '待生成',
+      reason: failed ? errorMessage.value : `Token ${runDone.value.totalTokens || 0}，耗时 ${runDone.value.latencyMs || 0}ms。`,
+      metric: `${runMeta.value.providerName || selectedModel.value?.providerName || '-'} / ${runMeta.value.modelName || selectedModel.value?.modelName || '-'}`,
+    },
+    {
+      id: 'governance',
+      label: '治理判定',
+      status: trustedBlocked ? 'warning' : failed ? 'danger' : done ? 'success' : hasRun ? 'running' : 'pending',
+      summary: trustedBlocked ? '可信拒答' : trustedAnswer.value?.enabled ? '可信通过' : '常规通过',
+      reason: trustedBlocked ? trustedAnswer.value?.rejectReason || '证据未达到可信回答条件。' : trustedAnswer.value?.qualityAdvice || '当前运行未触发阻断策略。',
+      metric: trustedAnswer.value?.citationRequired ? '要求引用' : '不强制引用',
+    },
+    {
+      id: 'output',
+      label: '结果交付',
+      status: failed ? 'danger' : done ? 'success' : loading.value ? 'running' : 'pending',
+      summary: done ? '已完成' : loading.value ? '生成中' : '待完成',
+      reason: done ? '最终回复、引用来源、工具结果和 Token 用量已回传到前端。' : '等待 Runtime 完成输出。',
+      metric: runDone.value.runId ? `Trace ${runDone.value.runId}` : '',
+    },
+  ] as const;
+});
 
 async function loadOptions() {
   errorMessage.value = '';
@@ -470,6 +539,7 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
         </p>
         <small v-if="trustedAnswer?.rejectReason">{{ trustedAnswer.rejectReason }}</small>
       </div>
+      <RuntimeInterpreter title="Runtime 解释器" :phases="runtimePhases" compact />
       <section class="trace-scroll-section">
         <div class="section-title"><h2>引用来源</h2><span>{{ retrievalSources.length }} 条</span></div>
         <div class="debug-scroll-box source-scroll-box">

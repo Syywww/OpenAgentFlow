@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { Copy, Eye, Rocket, Save, TestTube2, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
 import PaginationBar from '../../components/PaginationBar.vue';
+import RuntimeInterpreter from '../../components/RuntimeInterpreter.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {
   copyAgent,
@@ -93,6 +94,77 @@ const isNew = computed(() => route.params.id === 'new');
 const pageTitle = computed(() => (isNew.value ? '新建智能体' : form.agentName || '智能体详情'));
 const pageDescription = computed(() => form.description || '配置 Prompt、模型参数、知识库、工具、工作流与运行权限');
 const statusLabel = computed(() => currentAgent.value?.statusLabel || statusText(form.status));
+const agentRuntimePhases = computed(() => [
+  {
+    id: 'entry',
+    label: '入口识别',
+    status: form.agentName ? 'success' : 'warning',
+    summary: form.agentName || '待命名',
+    reason: form.agentName ? 'Agent 已具备可运行身份，调试台会按该 Agent 创建运行链路。' : '请先填写智能体名称。',
+    metric: form.agentType,
+  },
+  {
+    id: 'model',
+    label: '模型路由',
+    status: form.modelId ? 'success' : 'warning',
+    summary: models.value.find((model) => model.id === form.modelId)?.modelName || '未绑定',
+    reason: form.modelId ? '运行时会优先使用当前绑定模型，并受模型网关策略影响。' : '未选择模型时无法进行真实生成。',
+    metric: `Temperature ${Number(form.temperature).toFixed(2)} · Max ${form.maxTokens}`,
+  },
+  {
+    id: 'prompt',
+    label: 'Prompt 装配',
+    status: form.systemPrompt.trim() ? 'success' : 'warning',
+    summary: form.systemPromptTemplateId ? '模板驱动' : '手动维护',
+    reason: form.systemPrompt.trim() ? 'System Prompt 会作为 Runtime 首个系统指令进入模型上下文。' : '缺少 System Prompt 时回答风格和边界会不稳定。',
+    metric: `${form.systemPrompt.length} 字符`,
+  },
+  {
+    id: 'memory',
+    label: 'Memory',
+    status: form.memoryStrategy === 'none' ? 'neutral' : 'success',
+    summary: form.memoryStrategy === 'none' ? '未启用' : form.memoryStrategy,
+    reason: form.memoryStrategy === 'none' ? '本 Agent 不会自动召回记忆。' : '运行时会召回相关记忆并注入上下文。',
+  },
+  {
+    id: 'rag',
+    label: 'RAG 证据',
+    status: selectedKnowledgeBaseIds.value.length > 0 ? 'success' : 'neutral',
+    summary: `${selectedKnowledgeBaseIds.value.length} 个知识库`,
+    reason: selectedKnowledgeBaseIds.value.length > 0
+      ? '运行时会先检索绑定知识库，再将可靠来源注入模型上下文。'
+      : '未绑定知识库时不会触发企业知识检索。',
+    metric: knowledgePolicy.trustedAnswerMode ? `可信模式 · 最少 ${knowledgePolicy.minCitationCount} 条引用` : '普通模式',
+    evidence: knowledgeBases.value
+      .filter((kb) => selectedKnowledgeBaseIds.value.includes(kb.id))
+      .slice(0, 3)
+      .map((kb) => kb.kbName),
+  },
+  {
+    id: 'tool',
+    label: '工具动作',
+    status: selectedToolIds.value.length > 0 ? 'success' : 'neutral',
+    summary: `${selectedToolIds.value.length} 个工具`,
+    reason: selectedToolIds.value.length > 0 ? '模型可在需要外部动作时选择绑定工具。' : '未绑定工具时只执行对话和知识检索。',
+    evidence: tools.value.filter((tool) => selectedToolIds.value.includes(tool.id)).slice(0, 3).map((tool) => tool.toolName),
+  },
+  {
+    id: 'workflow',
+    label: '工作流',
+    status: selectedWorkflowIds.value.length > 0 ? 'success' : 'neutral',
+    summary: `${selectedWorkflowIds.value.length} 个工作流`,
+    reason: selectedWorkflowIds.value.length > 0 ? '调试或运行时可优先进入绑定工作流。' : '未绑定工作流时按 Agent 对话链路运行。',
+    evidence: workflows.value.filter((workflow) => selectedWorkflowIds.value.includes(workflow.id)).slice(0, 3).map((workflow) => workflow.workflowName),
+  },
+  {
+    id: 'governance',
+    label: '治理边界',
+    status: form.status === 'disabled' ? 'warning' : 'success',
+    summary: `${statusText(form.status)} · ${form.visibility}`,
+    reason: form.status === 'disabled' ? '当前 Agent 已暂停，运行入口应被限制。' : '运行权限、可见范围和资源绑定共同决定谁能调用该 Agent。',
+    metric: knowledgePolicy.citationRequired ? 'RAG 要求引用' : 'RAG 不强制引用',
+  },
+] as const);
 
 onMounted(async () => {
   await Promise.all([loadModels(), loadPromptTemplates(), loadKnowledgeBases(), loadTools(), loadWorkflows(), loadAgent()]);
@@ -318,6 +390,7 @@ function statusText(status: string) {
   </div>
 
   <section v-if="activeTab === '基础信息'" class="form-layout">
+    <RuntimeInterpreter title="Agent Runtime 策略解释器" :phases="agentRuntimePhases" compact />
     <div class="section-block">
       <div class="section-title"><h2>基础信息</h2><StatusBadge :label="statusLabel" /></div>
       <div class="form-grid">

@@ -187,8 +187,11 @@ public class ChatService {
             return emitter;
         }
         RuntimeTraceStepEntity step = createLlmStep(run, context);
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         CompletableFuture.runAsync(() -> {
             try {
+                // SSE 真正调用模型在异步线程执行，需要恢复登录上下文，避免 Memory 自动沉淀等后置动作误判未登录。
+                SecurityContextHolder.getContext().setAuthentication(authentication);
                 sendSse(emitter, "meta", Map.of(
                         "runId", run.getId(),
                         "sessionId", safeText(context.getSessionId()),
@@ -224,6 +227,9 @@ public class ChatService {
                 finishFailure(run, step, context, exception, true);
                 sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
                 emitter.complete();
+            } finally {
+                // 清理线程上下文，避免线程池复用时串到其他用户。
+                SecurityContextHolder.clearContext();
             }
         });
         return emitter;
@@ -316,7 +322,10 @@ public class ChatService {
                                                ChatCompletionRequest request,
                                                ChatRunContext context,
                                                RuntimeRunEntity run) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         CompletableFuture.runAsync(() -> {
+            // 带工具调用的流式链路同样需要登录上下文，工具权限、Memory 和 Trace 后置动作会读取当前用户。
+            SecurityContextHolder.getContext().setAuthentication(authentication);
             RuntimeTraceStepEntity decisionStep = createLlmStep(run, context);
             try {
                 sendSse(emitter, "meta", Map.of(
@@ -359,6 +368,9 @@ public class ChatService {
                 finishFailure(run, decisionStep, context, exception, false);
                 sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
                 emitter.complete();
+            } finally {
+                // 清理线程上下文，避免线程池复用时串到其他用户。
+                SecurityContextHolder.clearContext();
             }
         });
     }
@@ -628,8 +640,11 @@ public class ChatService {
      * @param context 聊天上下文
      */
     private void completeStreamTrustedAnswerRejected(SseEmitter emitter, RuntimeRunEntity run, ChatRunContext context) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         CompletableFuture.runAsync(() -> {
             try {
+                // 可信拒答也会写入历史会话，保持登录上下文便于后续扩展审计字段。
+                SecurityContextHolder.getContext().setAuthentication(authentication);
                 ChatCompletionResponse response = completeTrustedAnswerRejected(run, context, true);
                 sendSse(emitter, "meta", Map.of(
                         "runId", run.getId(),
@@ -657,6 +672,9 @@ public class ChatService {
             } catch (Exception exception) {
                 sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
                 emitter.complete();
+            } finally {
+                // 清理线程上下文，避免线程池复用时串到其他用户。
+                SecurityContextHolder.clearContext();
             }
         });
     }

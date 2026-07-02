@@ -19,6 +19,8 @@ import com.openagentflow.mapper.IamUserMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -363,8 +365,11 @@ public class AgentService {
                                          ChatCompletionRequest request,
                                          String sessionId) {
         SseEmitter emitter = new SseEmitter(180_000L);
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         CompletableFuture.runAsync(() -> {
             try {
+                // 工作流流式运行会切换到异步线程，手动恢复登录上下文，避免运行引擎读取当前用户时误判未登录。
+                SecurityContextHolder.getContext().setAuthentication(authentication);
                 WorkflowDtos.RunResult result = workflowExecutionService.runWorkflow(workflow.getId(), toWorkflowRunRequest(agent, request), "agent_run_stream");
                 agentSessionService.appendAssistantMessage(sessionId, safeText(result.getOutputText()), result.getTotalTokens(), Map.of(
                         "runId", safeText(result.getRuntimeRunId()),
@@ -402,6 +407,9 @@ public class AgentService {
                 ));
                 sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
                 emitter.complete();
+            } finally {
+                // 清理异步线程上下文，避免线程复用时串到其他用户。
+                SecurityContextHolder.clearContext();
             }
         });
         return emitter;

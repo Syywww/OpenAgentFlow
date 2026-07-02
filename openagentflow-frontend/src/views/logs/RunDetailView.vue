@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, RefreshCw, Share2 } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
 import PaginationBar from '../../components/PaginationBar.vue';
+import RuntimeInterpreter from '../../components/RuntimeInterpreter.vue';
 import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { fetchRunDetail, type RunDetail, type TraceStepDetail } from '../../api/traces';
@@ -20,6 +21,77 @@ const { currentPage: stepPage, pagedItems: pagedSteps, pageSize: stepPageSize, r
 
 const selectedStep = computed(() => run.value?.steps.find((step) => step.id === selectedStepId.value) || run.value?.steps[0]);
 const successStepCount = computed(() => run.value?.steps.filter((step) => step.status === 'SUCCESS').length ?? 0);
+const runtimePhases = computed(() => {
+  const currentRun = run.value;
+  const currentSteps = currentRun?.steps || [];
+  const ragStep = currentSteps.find((step) => step.stepType === 'RAG');
+  const toolSteps = currentSteps.filter((step) => step.stepType === 'TOOL');
+  const llmSteps = currentSteps.filter((step) => step.stepType === 'LLM');
+  const trusted = findTrustedAnswer(currentRun?.outputPayload) || findTrustedAnswer(ragStep?.outputPayload);
+  const runFailed = currentRun?.status === 'FAILED';
+  return [
+    {
+      id: 'input',
+      label: '输入接收',
+      status: currentRun?.inputText ? 'success' : 'neutral',
+      summary: currentRun?.inputText ? '已接收' : '无文本输入',
+      reason: currentRun?.inputText || '本次运行没有可展示的输入文本。',
+      metric: currentRun?.runNo || '',
+    },
+    {
+      id: 'context',
+      label: '上下文装配',
+      status: currentRun ? 'success' : 'pending',
+      summary: currentRun?.agentName || '默认 Agent',
+      reason: `Runtime 将 Agent、模型、历史会话、Memory 与用户输入装配成模型上下文。`,
+      metric: `步骤 ${currentSteps.length}`,
+    },
+    {
+      id: 'rag',
+      label: 'RAG 证据',
+      status: trusted?.enabled && trusted.answerable === false ? 'warning' : ragStep ? 'success' : 'neutral',
+      summary: ragStep ? `${ragStep.retrievalLogs?.length || currentRun?.retrievalLogs?.length || 0} 条检索` : '未触发',
+      reason: trusted?.enabled && trusted.answerable === false
+        ? trusted.rejectReason || '可信回答模式拦截'
+        : ragStep
+          ? '已执行知识库检索，引用来源可在步骤详情中展开。'
+          : '本次运行没有进入 RAG 检索步骤。',
+      metric: trusted?.enabled ? `可信模式 · 置信 ${(trusted.confidenceScore || 0).toFixed(4)}` : '普通模式',
+    },
+    {
+      id: 'tool',
+      label: '工具动作',
+      status: toolSteps.length || currentRun?.toolInvocations?.length ? 'success' : 'neutral',
+      summary: `${toolSteps.length || currentRun?.toolInvocations?.length || 0} 次调用`,
+      reason: toolSteps.length || currentRun?.toolInvocations?.length ? 'Runtime 执行了外部工具并把结果回填给模型。' : '本次运行未触发工具。',
+      evidence: (currentRun?.toolInvocations || []).slice(0, 3).map((tool) => String(tool.toolName || tool.toolCode || tool.id || 'tool')),
+    },
+    {
+      id: 'llm',
+      label: '模型生成',
+      status: runFailed ? 'danger' : llmSteps.length ? 'success' : 'neutral',
+      summary: `${llmSteps.length || currentRun?.llmCalls?.length || 0} 次 LLM`,
+      reason: runFailed ? currentRun?.errorMessage || '模型或运行步骤失败。' : '模型调用、Prompt 与 Token 明细可在步骤详情中查看。',
+      metric: `Token ${currentRun?.totalTokens || 0} · ${formatMs(currentRun?.latencyMs)}`,
+    },
+    {
+      id: 'governance',
+      label: '治理判定',
+      status: trusted?.enabled && trusted.answerable === false ? 'warning' : runFailed ? 'danger' : 'success',
+      summary: trusted?.enabled ? (trusted.answerable === false ? '可信拒答' : '可信通过') : '常规通过',
+      reason: trusted?.rejectReason || currentRun?.errorMessage || '未发现阻断策略。',
+      metric: trusted?.citationRequired ? '要求引用' : '不强制引用',
+    },
+    {
+      id: 'output',
+      label: '结果交付',
+      status: runFailed ? 'danger' : currentRun?.outputText ? 'success' : 'pending',
+      summary: currentRun?.statusLabel || '待完成',
+      reason: currentRun?.outputText || currentRun?.errorMessage || '等待最终输出。',
+      metric: formatCost(currentRun?.totalCost),
+    },
+  ] as const;
+});
 
 onMounted(() => {
   void loadRun();
@@ -54,6 +126,35 @@ function toJson(value: unknown) {
     return value;
   }
   return JSON.stringify(value, null, 2);
+}
+
+function parsePayload(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === 'object') return value as Record<string, unknown>;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function findTrustedAnswer(value: unknown) {
+  const payload = parsePayload(value);
+  const trusted = payload.trustedAnswer;
+  if (!trusted || typeof trusted !== 'object') {
+    return undefined;
+  }
+  const item = trusted as Record<string, unknown>;
+  return {
+    enabled: item.enabled === true,
+    answerable: item.answerable !== false,
+    citationRequired: item.citationRequired === true,
+    confidenceScore: Number(item.confidenceScore || 0),
+    rejectReason: String(item.rejectReason || ''),
+  };
 }
 
 function stepBadge(step?: TraceStepDetail) {
@@ -92,7 +193,14 @@ function stepBadge(step?: TraceStepDetail) {
     <div class="empty-state">正在加载 Trace...</div>
   </section>
 
-  <section v-else-if="run" class="run-detail-layout">
+  <RuntimeInterpreter
+    v-if="!loading && run"
+    title="Agent Runtime 可视化解释器"
+    :subtitle="`${run.runType} · ${run.statusLabel}`"
+    :phases="runtimePhases"
+  />
+
+  <section v-if="!loading && run" class="run-detail-layout">
     <div class="section-block">
       <div class="section-title"><h2>步骤时间线</h2><StatusBadge :label="run.statusLabel" /></div>
       <div class="timeline-list">
