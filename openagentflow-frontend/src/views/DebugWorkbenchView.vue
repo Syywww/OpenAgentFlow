@@ -5,7 +5,7 @@ import { AlertCircle, CornerDownRight, FileSearch, History, MessageSquarePlus, S
 import PageHeader from '../components/PageHeader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { fetchAgents, streamAgent, type AgentSummary } from '../api/agents';
-import { streamChat, type ChatMessage } from '../api/chat';
+import { streamChat, type ChatMessage, type TrustedAnswerStatus } from '../api/chat';
 import type { KnowledgeSource } from '../api/knowledge';
 import type { MemoryRecallItem } from '../api/memories';
 import { fetchChatModels, type ModelConfigSummary } from '../api/models';
@@ -46,6 +46,7 @@ const runDone = ref<Record<string, unknown>>({});
 const retrievalSources = ref<KnowledgeSource[]>([]);
 const memoryResults = ref<MemoryRecallItem[]>([]);
 const toolResults = ref<Record<string, unknown>[]>([]);
+const trustedAnswer = ref<TrustedAnswerStatus | null>(null);
 
 const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value));
 const selectedModel = computed(() => models.value.find((model) => model.id === selectedModelId.value));
@@ -113,6 +114,7 @@ async function openSession(sessionId: string) {
   retrievalSources.value = [];
   memoryResults.value = [];
   toolResults.value = [];
+  trustedAnswer.value = null;
   generationPaused.value = false;
 }
 
@@ -124,6 +126,7 @@ function startNewSession() {
   retrievalSources.value = [];
   memoryResults.value = [];
   toolResults.value = [];
+  trustedAnswer.value = null;
   errorMessage.value = '';
   generationPaused.value = false;
 }
@@ -201,6 +204,7 @@ async function sendMessageWithText(question: string, displayQuestion = question)
   retrievalSources.value = [];
   memoryResults.value = [];
   toolResults.value = [];
+  trustedAnswer.value = null;
 
   const payload = {
     agentId: selectedAgentId.value || undefined,
@@ -254,6 +258,7 @@ function streamHandlers(assistantMessage: UiMessage) {
       selectedSessionId.value = String(data.sessionId || selectedSessionId.value || '');
       memoryResults.value = normalizeMemories(data.memories);
       retrievalSources.value = normalizeSources(data.sources);
+      trustedAnswer.value = normalizeTrustedAnswer(data.trustedAnswer);
     },
     onDelta: (content: string) => {
       assistantMessage.content += content;
@@ -267,6 +272,7 @@ function streamHandlers(assistantMessage: UiMessage) {
       memoryResults.value = normalizeMemories(data.memories);
       retrievalSources.value = normalizeSources(data.sources);
       toolResults.value = normalizeToolResults(data.toolResults);
+      trustedAnswer.value = normalizeTrustedAnswer(data.trustedAnswer);
       assistantMessage.status = '已完成';
       void loadSessions(false);
     },
@@ -287,6 +293,22 @@ function normalizeMemories(value: unknown): MemoryRecallItem[] {
 
 function normalizeToolResults(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+}
+
+function normalizeTrustedAnswer(value: unknown): TrustedAnswerStatus | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const payload = value as Record<string, unknown>;
+  return {
+    enabled: payload.enabled === true,
+    answerable: payload.answerable !== false,
+    citationRequired: payload.citationRequired === true,
+    minCitationCount: Number(payload.minCitationCount || 0),
+    confidenceScore: Number(payload.confidenceScore || 0),
+    rejectReason: String(payload.rejectReason || ''),
+    qualityAdvice: String(payload.qualityAdvice || ''),
+  };
 }
 
 function onInputKeydown(event: KeyboardEvent) {
@@ -433,6 +455,21 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
       <div class="trace-step"><b>Session ID</b><span class="mono">{{ selectedSessionId || '-' }}</span></div>
       <div class="trace-step"><b>Run ID</b><span class="mono">{{ runMeta.runId || '-' }}</span></div>
       <div class="trace-step"><b>记忆召回</b><span :title="memoryResults.map((item) => item.memoryText).join('\n\n')">{{ memoryResults.length }} 条</span></div>
+      <div class="trusted-answer-card" :class="{ blocked: trustedAnswer?.enabled && trustedAnswer.answerable === false }">
+        <div>
+          <b>可信回答</b>
+          <StatusBadge
+            :label="trustedAnswer?.enabled ? (trustedAnswer.answerable === false ? '已拒答' : '已启用') : '未启用'"
+            :tone="trustedAnswer?.enabled && trustedAnswer.answerable === false ? 'warning' : trustedAnswer?.enabled ? 'success' : 'neutral'"
+          />
+        </div>
+        <p>
+          最佳置信 {{ (trustedAnswer?.confidenceScore || 0).toFixed(4) }} ·
+          最少引用 {{ trustedAnswer?.minCitationCount || 0 }} ·
+          {{ trustedAnswer?.citationRequired ? '要求引用' : '不强制引用' }}
+        </p>
+        <small v-if="trustedAnswer?.rejectReason">{{ trustedAnswer.rejectReason }}</small>
+      </div>
       <section class="trace-scroll-section">
         <div class="section-title"><h2>引用来源</h2><span>{{ retrievalSources.length }} 条</span></div>
         <div class="debug-scroll-box source-scroll-box">

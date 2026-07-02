@@ -35,6 +35,27 @@ public class ChatRunContext {
     /** 本次 RAG 检索命中的引用来源。 */
     private List<KnowledgeSource> sources;
 
+    /** 是否启用 RAG 可信回答模式。 */
+    private Boolean ragTrustedAnswerMode;
+
+    /** 本次 RAG 检索是否满足可信回答条件。 */
+    private Boolean ragAnswerable;
+
+    /** RAG 可信回答拒答原因。 */
+    private String ragRejectReason;
+
+    /** RAG 最佳置信得分。 */
+    private Double ragConfidenceScore;
+
+    /** RAG 最低引用数量。 */
+    private Integer ragMinCitationCount;
+
+    /** RAG 是否要求答案带引用。 */
+    private Boolean ragCitationRequired;
+
+    /** RAG 质量建议。 */
+    private String ragQualityAdvice;
+
     /** 本次 Memory 召回命中的记忆列表。 */
     private List<MemoryDtos.RecallItem> memories;
 
@@ -98,6 +119,62 @@ public class ChatRunContext {
 
     public void setSources(List<KnowledgeSource> sources) {
         this.sources = sources;
+    }
+
+    public Boolean getRagTrustedAnswerMode() {
+        return ragTrustedAnswerMode;
+    }
+
+    public void setRagTrustedAnswerMode(Boolean ragTrustedAnswerMode) {
+        this.ragTrustedAnswerMode = ragTrustedAnswerMode;
+    }
+
+    public Boolean getRagAnswerable() {
+        return ragAnswerable;
+    }
+
+    public void setRagAnswerable(Boolean ragAnswerable) {
+        this.ragAnswerable = ragAnswerable;
+    }
+
+    public String getRagRejectReason() {
+        return ragRejectReason;
+    }
+
+    public void setRagRejectReason(String ragRejectReason) {
+        this.ragRejectReason = ragRejectReason;
+    }
+
+    public Double getRagConfidenceScore() {
+        return ragConfidenceScore;
+    }
+
+    public void setRagConfidenceScore(Double ragConfidenceScore) {
+        this.ragConfidenceScore = ragConfidenceScore;
+    }
+
+    public Integer getRagMinCitationCount() {
+        return ragMinCitationCount;
+    }
+
+    public void setRagMinCitationCount(Integer ragMinCitationCount) {
+        this.ragMinCitationCount = ragMinCitationCount;
+    }
+
+    public Boolean getRagCitationRequired() {
+        return ragCitationRequired;
+    }
+
+    public void setRagCitationRequired(Boolean ragCitationRequired) {
+        this.ragCitationRequired = ragCitationRequired;
+    }
+
+    public String getRagQualityAdvice() {
+        return ragQualityAdvice;
+    }
+
+    public void setRagQualityAdvice(String ragQualityAdvice) {
+        this.ragQualityAdvice = ragQualityAdvice;
     }
 
     public List<MemoryDtos.RecallItem> getMemories() {

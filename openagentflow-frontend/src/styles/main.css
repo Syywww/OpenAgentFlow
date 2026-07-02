@@ -1141,6 +1141,26 @@ a {
   padding-right: 4px;
 }
 
+.trusted-rag-policy {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(96px, 1fr));
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.trusted-rag-policy .inline-field {
+  min-width: 0;
+}
+
+.trusted-rag-policy .inline-field input {
+  width: 100%;
+}
+
 .agent-binding-row {
   grid-template-columns: minmax(220px, 1fr) minmax(160px, auto) auto;
 }
@@ -1715,7 +1735,7 @@ label.wide {
 .trace-panel {
   display: grid;
   align-content: stretch;
-  grid-template-rows: repeat(7, auto) minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-rows: repeat(8, auto) minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 10px;
   height: min(650px, calc(100vh - 158px));
   max-height: calc(100vh - 174px);
@@ -1751,6 +1771,41 @@ label.wide {
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.trusted-answer-card {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.trusted-answer-card.blocked {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.trusted-answer-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trusted-answer-card p,
+.trusted-answer-card small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.trusted-answer-card small {
+  display: block;
+  max-height: 34px;
+  overflow: auto;
 }
 
 .code-block {
@@ -2145,6 +2200,11 @@ label.wide {
   border-color: #fbbf24;
 }
 
+.vue-flow__node.output {
+  border-color: #14b8a6;
+  background: #f0fdfa;
+}
+
 .production-workflow-layout {
   grid-template-columns: 250px minmax(0, 1fr) 430px;
 }
@@ -2260,34 +2320,21 @@ label.wide {
   font-weight: 700;
 }
 
-.node-picker-grid {
+.node-picker-form {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.node-picker-form label {
+  display: grid;
   gap: 6px;
-}
-
-.node-picker-grid button {
-  display: grid;
-  gap: 2px;
-  min-height: 48px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #f8fafc;
-  color: var(--text);
-  padding: 7px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.node-picker-grid button:hover {
-  border-color: var(--primary);
-  background: #eff6ff;
-}
-
-.node-picker-grid small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 800;
+}
+
+.node-picker-form select {
+  width: 100%;
 }
 
 .node-dialog-toggle {
@@ -2351,6 +2398,13 @@ label.wide {
   font-weight: 800;
 }
 
+.node-dialog-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
 .workflow-node-dialog-panel pre {
   min-height: 96px;
   max-height: 260px;
@@ -2361,6 +2415,44 @@ label.wide {
   background: #f8fafc;
   color: var(--text);
   padding: 9px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.workflow-output-chat-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 6;
+  display: grid;
+  gap: 10px;
+  width: min(390px, calc(100% - 36px));
+  max-height: min(430px, calc(100% - 104px));
+  overflow: hidden;
+  border: 1px solid rgba(20, 184, 166, 0.3);
+  border-left: 4px solid #14b8a6;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+  padding: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.workflow-output-chat-panel textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.workflow-output-chat-panel pre {
+  min-height: 96px;
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+  color: var(--text);
+  padding: 10px;
   white-space: pre-wrap;
   word-break: break-word;
 }

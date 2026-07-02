@@ -57,7 +57,7 @@ import java.util.regex.Pattern;
 /**
  * 工作流执行引擎。
  *
- * <p>当前实现面向 MVP：按照连线从开始节点顺序推进，支持 START、LLM、RAG、TOOL、CONDITION、END。</p>
+ * <p>当前实现面向 MVP：按照连线从开始节点顺序推进，支持 START、LLM、RAG、TOOL、CONDITION、OUTPUT、END。</p>
  */
 @Service
 public class WorkflowExecutionService {
@@ -229,18 +229,18 @@ public class WorkflowExecutionService {
                     context.put("lastOutput", nodeResult.output());
                     finalOutput = String.valueOf(nodeResult.output());
                 }
-                WorkflowNodeEntity next = "END".equalsIgnoreCase(current.getNodeType()) ? null : nextNode(current, nodes, edges, context);
+                WorkflowNodeEntity next = isTerminalNode(current.getNodeType()) ? null : nextNode(current, nodes, edges, context);
                 updateWorkflowProgress(workflowRun, current, next, context);
                 if ("WAITING".equalsIgnoreCase(nodeResult.status())) {
                     finishWaiting(workflowRun, runtimeRun, context, finalOutput, totalPromptTokens, totalCompletionTokens, totalTokens, startedAt);
                     return toRunResult(workflowRun, runtimeRun, context, finalOutput, stepResults, totalTokens, "等待人工确认");
                 }
-                if ("END".equalsIgnoreCase(current.getNodeType())) {
+                if (isTerminalNode(current.getNodeType())) {
                     break;
                 }
                 current = next;
             }
-            if (current != null && executedSteps >= maxSteps && !"END".equalsIgnoreCase(current.getNodeType())) {
+            if (current != null && executedSteps >= maxSteps && !isTerminalNode(current.getNodeType())) {
                 throw new BusinessException("WORKFLOW_MAX_STEPS_EXCEEDED", "工作流超过最大执行步数，已自动中止");
             }
             finishSuccess(workflowRun, runtimeRun, context, finalOutput, totalPromptTokens, totalCompletionTokens, totalTokens, startedAt);
@@ -401,6 +401,7 @@ public class WorkflowExecutionService {
             case "PARALLEL" -> executeParallel(node, context, config);
             case "JOIN" -> executeJoin(node, context);
             case "API", "WEBHOOK", "NOTIFY" -> executePlugin(node, agent, runtimeRun, traceStep, context, config);
+            case "OUTPUT" -> executeOutput(node, context, config);
             case "END" -> executeEnd(node, context);
             default -> executeLlm(node, agent, runtimeRun, traceStep, context, config);
         };
@@ -526,6 +527,19 @@ public class WorkflowExecutionService {
      */
     private NodeExecutionResult executeEnd(WorkflowNodeEntity node, Map<String, Object> context) {
         Object output = context.getOrDefault("lastOutput", context.getOrDefault("answer", ""));
+        return NodeExecutionResult.success(node, output, 0, 0, 0);
+    }
+
+    /**
+     * 执行输出节点，按模板整理最终对话输出。
+     */
+    private NodeExecutionResult executeOutput(WorkflowNodeEntity node,
+                                              Map<String, Object> context,
+                                              Map<String, Object> config) {
+        String outputTemplate = stringValue(config.get("outputTemplate"), "{{lastOutput}}");
+        String output = renderTemplate(outputTemplate, context);
+        context.put("answer", output);
+        context.put("lastOutput", output);
         return NodeExecutionResult.success(node, output, 0, 0, 0);
     }
 
@@ -1670,6 +1684,13 @@ public class WorkflowExecutionService {
      */
     private boolean isExternalNode(String nodeType) {
         return List.of("LLM", "RAG", "TOOL", "PLUGIN", "API", "WEBHOOK", "NOTIFY").contains(safeText(nodeType).toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * 判断节点是否为工作流终止节点。
+     */
+    private boolean isTerminalNode(String nodeType) {
+        return List.of("END", "OUTPUT").contains(safeText(nodeType).toUpperCase(Locale.ROOT));
     }
 
     private String stringValue(Object value, String fallback) {

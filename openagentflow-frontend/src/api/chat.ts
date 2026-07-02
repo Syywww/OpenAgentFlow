@@ -31,7 +31,18 @@ export interface ChatCompletionResponse {
   errorMessage?: string;
   memories?: MemoryRecallItem[];
   sources?: KnowledgeSource[];
+  trustedAnswer?: TrustedAnswerStatus;
   toolResults?: Record<string, unknown>[];
+}
+
+export interface TrustedAnswerStatus {
+  enabled: boolean;
+  answerable: boolean;
+  citationRequired?: boolean;
+  minCitationCount?: number;
+  confidenceScore?: number;
+  rejectReason?: string;
+  qualityAdvice?: string;
 }
 
 export interface StreamHandlers {

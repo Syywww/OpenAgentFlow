@@ -155,6 +155,15 @@ export interface AgentKnowledgeBindingSummary {
   createdAt?: string;
 }
 
+export interface AgentKnowledgeBindingOptions {
+  topK?: number;
+  scoreThreshold?: number;
+  lowConfidenceThreshold?: number;
+  trustedAnswerMode?: boolean;
+  citationRequired?: boolean;
+  minCitationCount?: number;
+}
+
 export interface KnowledgeGovernanceOverview {
   knowledgeBaseCount: number;
   documentCount: number;
@@ -306,10 +315,18 @@ export async function fetchAgentKnowledgeBindings(agentId: string) {
   return request<AgentKnowledgeBindingSummary[]>(`/agents/${agentId}/knowledge-bases`);
 }
 
-export async function saveAgentKnowledgeBindings(agentId: string, knowledgeBaseIds: string[], topK = 5, scoreThreshold = 0.65) {
+export async function saveAgentKnowledgeBindings(
+  agentId: string,
+  knowledgeBaseIds: string[],
+  options: AgentKnowledgeBindingOptions | number = {},
+  legacyScoreThreshold = 0.65,
+) {
+  const body = typeof options === 'number'
+    ? { knowledgeBaseIds, topK: options, scoreThreshold: legacyScoreThreshold }
+    : { knowledgeBaseIds, ...options };
   return request<AgentKnowledgeBindingSummary[]>(`/agents/${agentId}/knowledge-bases`, {
     method: 'PUT',
-    body: JSON.stringify({ knowledgeBaseIds, topK, scoreThreshold }),
+    body: JSON.stringify(body),
   });
 }
 

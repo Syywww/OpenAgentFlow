@@ -14,9 +14,9 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限和调试运行。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
-- **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、混合召回、重排、低置信度提示、引用来源和 Agent 绑定。
+- **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、混合召回、重排、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
-- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、结束节点，支持节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑和从失败节点恢复。
+- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑和从失败节点恢复。
 - **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
 - **运行观测 Trace**：统一串联 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误和引用来源。
 - **成本与用量中心**：按服务商、模型、Agent、用户、工作流、评测统计 Token、成本、耗时，支持明细导出、价格配置和配额拦截。
@@ -167,6 +167,7 @@ V024__rag_production_retrieval_enhancement.sql
 V025__evaluation_llm_as_judge.sql
 V026__delivery_acceptance_center.sql
 V027__workflow_production_enhancement.sql
+V028__workflow_execution_reliability_final.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -177,7 +178,7 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | --- | --- | --- |
 | P0 登录、权限、模型接入 | 已完成 | JWT、Redis、模型供应商、SSE |
 | P1 Agent 管理 | 已完成 | CRUD、发布、复制、删除、运行、Agent 权限 |
-| P2 RAG 知识库 | 已完成 | 上传、解析、切片、Embedding、Milvus、引用来源 |
+| P2 RAG 知识库 | 已完成 | 上传、解析、切片、Embedding、Milvus、引用来源、可信回答模式 |
 | P3 Tool Calling | 已完成 | REST API、Webhook、DB Query、工具日志 |
 | P4 Trace 运行观测 | 已完成 | 运行列表、步骤详情、RAG/Tool/LLM 统一链路 |
 | P5 工作流编排 | 已完成 | Vue Flow、节点执行、上下文变量、Trace |

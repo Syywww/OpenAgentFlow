@@ -10,6 +10,7 @@ import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.knowledge.RagRetrievalOutcome;
 import com.openagentflow.domain.memory.MemoryDtos;
 import com.openagentflow.domain.model.ModelRouteDecision;
 import com.openagentflow.entity.AgentEntity;
@@ -144,6 +145,9 @@ public class ChatService {
         RuntimeRunEntity run = createRun(request, context);
         enrichContextWithMemory(context, request);
         enrichContextWithRag(context, request, run.getId());
+        if (shouldRejectByTrustedAnswer(context)) {
+            return completeTrustedAnswerRejected(run, context, false);
+        }
         if (context.getTools() != null && !context.getTools().isEmpty()) {
             return completeWithToolCalling(request, context, run);
         }
@@ -174,6 +178,10 @@ public class ChatService {
         RuntimeRunEntity run = createRun(request, context);
         enrichContextWithMemory(context, request);
         enrichContextWithRag(context, request, run.getId());
+        if (shouldRejectByTrustedAnswer(context)) {
+            completeStreamTrustedAnswerRejected(emitter, run, context);
+            return emitter;
+        }
         if (context.getTools() != null && !context.getTools().isEmpty()) {
             completeStreamWithToolCalling(emitter, request, context, run);
             return emitter;
@@ -187,7 +195,8 @@ public class ChatService {
                         "providerName", context.getProvider().getProviderName(),
                         "modelName", context.getModel().getModelName(),
                         "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources()
+                        "sources", context.getSources() == null ? List.of() : context.getSources(),
+                        "trustedAnswer", trustedAnswerPayload(context)
                 ));
                 LlmCallResult result = invokeWithGatewayFallback(context,
                         current -> openAiCompatibleClient.completeStream(
@@ -207,7 +216,8 @@ public class ChatService {
                         "completionTokens", nullToZero(result.getCompletionTokens()),
                         "totalTokens", nullToZero(result.getTotalTokens()),
                         "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources()
+                        "sources", context.getSources() == null ? List.of() : context.getSources(),
+                        "trustedAnswer", trustedAnswerPayload(context)
                 ));
                 emitter.complete();
             } catch (Exception exception) {
@@ -316,6 +326,7 @@ public class ChatService {
                         "modelName", context.getModel().getModelName(),
                         "memories", context.getMemories() == null ? List.of() : context.getMemories(),
                         "sources", context.getSources() == null ? List.of() : context.getSources(),
+                        "trustedAnswer", trustedAnswerPayload(context),
                         "tools", context.getTools() == null ? List.of() : context.getTools()
                 ));
                 LlmCallResult decision = invokeWithGatewayFallback(context,
@@ -430,15 +441,26 @@ public class ChatService {
             return;
         }
         RuntimeTraceStepEntity ragStep = createRagStep(runId, request);
-        List<KnowledgeSource> sources;
+        RagRetrievalOutcome outcome;
         try {
-            sources = knowledgeBaseService.retrieveForAgent(context.getAgent(), request.getInput(), runId);
-            finishRagStep(ragStep, sources, null);
+            outcome = knowledgeBaseService.retrieveForAgentWithPolicy(context.getAgent(), request.getInput(), runId);
+            finishRagStep(ragStep, outcome, null);
         } catch (Exception exception) {
-            finishRagStep(ragStep, List.of(), exception);
+            finishRagStep(ragStep, null, exception);
             throw exception;
         }
+        List<KnowledgeSource> sources = outcome.getSources() == null ? List.of() : outcome.getSources();
         context.setSources(sources);
+        context.setRagTrustedAnswerMode(Boolean.TRUE.equals(outcome.getTrustedAnswerMode()));
+        context.setRagAnswerable(outcome.getAnswerable() == null || Boolean.TRUE.equals(outcome.getAnswerable()));
+        context.setRagRejectReason(outcome.getRejectReason());
+        context.setRagConfidenceScore(outcome.getConfidenceScore());
+        context.setRagMinCitationCount(outcome.getMinCitationCount());
+        context.setRagCitationRequired(Boolean.TRUE.equals(outcome.getCitationRequired()));
+        context.setRagQualityAdvice(outcome.getQualityAdvice());
+        if (shouldRejectByTrustedAnswer(context)) {
+            return;
+        }
         if (sources.isEmpty()) {
             if (knowledgeBaseService.hasEnabledKnowledgeBindings(context.getAgent().getId())) {
                 List<ChatMessage> messages = new ArrayList<>(context.getMessages());
@@ -448,7 +470,7 @@ public class ChatService {
             return;
         }
         List<ChatMessage> messages = new ArrayList<>(context.getMessages());
-        messages.add(1, new ChatMessage("system", buildRagPrompt(sources)));
+        messages.add(1, new ChatMessage("system", buildRagPrompt(sources, context)));
         context.setMessages(messages);
     }
 
@@ -482,9 +504,21 @@ public class ChatService {
      * @param sources 引用来源
      * @param exception 异常对象
      */
-    private void finishRagStep(RuntimeTraceStepEntity step, List<KnowledgeSource> sources, Exception exception) {
+    private void finishRagStep(RuntimeTraceStepEntity step, RagRetrievalOutcome outcome, Exception exception) {
+        List<KnowledgeSource> sources = outcome == null || outcome.getSources() == null ? List.of() : outcome.getSources();
         step.setStatus(exception == null ? "SUCCESS" : "FAILED");
-        step.setOutputPayload(toJson(Map.of("sources", sources == null ? List.of() : sources)));
+        step.setOutputPayload(toJson(Map.of(
+                "sources", sources,
+                "trustedAnswer", outcome == null ? Map.of() : Map.of(
+                        "enabled", Boolean.TRUE.equals(outcome.getTrustedAnswerMode()),
+                        "answerable", outcome.getAnswerable() == null || Boolean.TRUE.equals(outcome.getAnswerable()),
+                        "citationRequired", Boolean.TRUE.equals(outcome.getCitationRequired()),
+                        "minCitationCount", outcome.getMinCitationCount() == null ? 0 : outcome.getMinCitationCount(),
+                        "confidenceScore", outcome.getConfidenceScore() == null ? 0D : outcome.getConfidenceScore(),
+                        "rejectReason", safeText(outcome.getRejectReason()),
+                        "qualityAdvice", safeText(outcome.getQualityAdvice())
+                )
+        )));
         step.setLatencyMs((int) java.time.Duration.between(step.getStartedAt(), LocalDateTime.now()).toMillis());
         step.setErrorMessage(exception == null ? null : exception.getMessage());
         step.setFinishedAt(LocalDateTime.now());
@@ -497,9 +531,18 @@ public class ChatService {
      * @param sources 引用来源列表
      * @return 注入模型的上下文提示
      */
-    private String buildRagPrompt(List<KnowledgeSource> sources) {
+    private String buildRagPrompt(List<KnowledgeSource> sources, ChatRunContext context) {
         StringBuilder builder = new StringBuilder();
-        builder.append("以下是从企业知识库检索到的参考资料。请优先依据资料回答；如果资料不足，请明确说明不确定。回答中可以用 [来源1]、[来源2] 标注依据。\n");
+        if (Boolean.TRUE.equals(context.getRagTrustedAnswerMode())) {
+            builder.append("已启用 RAG 可信回答模式。你只能依据下面的企业知识库来源回答，不得使用未被来源支持的事实；")
+                    .append("如果来源不足或无法覆盖用户问题，必须明确说明“当前知识库资料不足，无法确认”。");
+            if (Boolean.TRUE.equals(context.getRagCitationRequired())) {
+                builder.append("回答中的关键结论必须使用 [来源1]、[来源2] 这样的编号标注依据。");
+            }
+            builder.append("\n");
+        } else {
+            builder.append("以下是从企业知识库检索到的参考资料。请优先依据资料回答；如果资料不足，请明确说明不确定。回答中可以用 [来源1]、[来源2] 标注依据。\n");
+        }
         for (int index = 0; index < sources.size(); index++) {
             KnowledgeSource source = sources.get(index);
             builder.append("\n[来源").append(index + 1).append("] ")
@@ -509,6 +552,131 @@ public class ChatService {
                     .append(source.getQuoteText());
         }
         return builder.toString();
+    }
+
+    /**
+     * 判断本轮是否应该被可信回答模式拦截。
+     *
+     * @param context 聊天上下文
+     * @return 是否需要拒答
+     */
+    private boolean shouldRejectByTrustedAnswer(ChatRunContext context) {
+        return context != null
+                && Boolean.TRUE.equals(context.getRagTrustedAnswerMode())
+                && Boolean.FALSE.equals(context.getRagAnswerable());
+    }
+
+    /**
+     * 生成可信回答模式拒答文本。
+     *
+     * @param context 聊天上下文
+     * @return 拒答文本
+     */
+    private String trustedRejectContent(ChatRunContext context) {
+        String reason = StringUtils.hasText(context.getRagRejectReason())
+                ? context.getRagRejectReason()
+                : "本轮没有召回足够可靠的知识库引用来源";
+        String advice = StringUtils.hasText(context.getRagQualityAdvice())
+                ? "\n\n建议：" + context.getRagQualityAdvice()
+                : "";
+        return "当前知识库资料不足，无法确认。\n\n可信回答模式已启用，本次回答被拦截，原因：" + reason + advice;
+    }
+
+    /**
+     * 完成可信回答模式拒答。
+     *
+     * @param run 运行记录
+     * @param context 聊天上下文
+     * @param stream 是否流式
+     * @return 聊天响应
+     */
+    private ChatCompletionResponse completeTrustedAnswerRejected(RuntimeRunEntity run, ChatRunContext context, boolean stream) {
+        String content = trustedRejectContent(context);
+        LocalDateTime finishedAt = LocalDateTime.now();
+        run.setOutputText(content);
+        run.setOutputPayload(toJson(Map.of(
+                "content", content,
+                "memories", context.getMemories() == null ? List.of() : context.getMemories(),
+                "sources", context.getSources() == null ? List.of() : context.getSources(),
+                "trustedAnswer", trustedAnswerPayload(context)
+        )));
+        run.setStatus("SUCCESS");
+        run.setLatencyMs((int) java.time.Duration.between(run.getStartedAt(), finishedAt).toMillis());
+        run.setFinishedAt(finishedAt);
+        runtimeRunMapper.updateById(run);
+        agentSessionService.appendAssistantMessage(context.getSessionId(), content, 0, Map.of(
+                "runId", run.getId(),
+                "status", "SUCCESS",
+                "stream", stream,
+                "trustedAnswerRejected", true,
+                "sourceCount", context.getSources() == null ? 0 : context.getSources().size()
+        ));
+        LlmCallResult result = new LlmCallResult();
+        result.setContent(content);
+        result.setLatencyMs(run.getLatencyMs());
+        result.setPromptTokens(0);
+        result.setCompletionTokens(0);
+        result.setTotalTokens(0);
+        return toResponse(run, context, result, "SUCCESS", null);
+    }
+
+    /**
+     * 以 SSE 形式输出可信回答模式拒答。
+     *
+     * @param emitter SSE 发射器
+     * @param run 运行记录
+     * @param context 聊天上下文
+     */
+    private void completeStreamTrustedAnswerRejected(SseEmitter emitter, RuntimeRunEntity run, ChatRunContext context) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                ChatCompletionResponse response = completeTrustedAnswerRejected(run, context, true);
+                sendSse(emitter, "meta", Map.of(
+                        "runId", run.getId(),
+                        "sessionId", safeText(context.getSessionId()),
+                        "providerName", context.getProvider().getProviderName(),
+                        "modelName", context.getModel().getModelName(),
+                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
+                        "sources", context.getSources() == null ? List.of() : context.getSources(),
+                        "trustedAnswer", trustedAnswerPayload(context)
+                ));
+                sendSse(emitter, "delta", Map.of("content", response.getContent()));
+                sendSse(emitter, "done", Map.of(
+                        "runId", run.getId(),
+                        "sessionId", safeText(context.getSessionId()),
+                        "status", "SUCCESS",
+                        "latencyMs", nullToZero(response.getLatencyMs()),
+                        "promptTokens", 0,
+                        "completionTokens", 0,
+                        "totalTokens", 0,
+                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
+                        "sources", context.getSources() == null ? List.of() : context.getSources(),
+                        "trustedAnswer", trustedAnswerPayload(context)
+                ));
+                emitter.complete();
+            } catch (Exception exception) {
+                sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
+                emitter.complete();
+            }
+        });
+    }
+
+    /**
+     * 构建可信回答状态载荷。
+     *
+     * @param context 聊天上下文
+     * @return 前端展示载荷
+     */
+    private Map<String, Object> trustedAnswerPayload(ChatRunContext context) {
+        return Map.of(
+                "enabled", Boolean.TRUE.equals(context.getRagTrustedAnswerMode()),
+                "answerable", context.getRagAnswerable() == null || Boolean.TRUE.equals(context.getRagAnswerable()),
+                "citationRequired", Boolean.TRUE.equals(context.getRagCitationRequired()),
+                "minCitationCount", context.getRagMinCitationCount() == null ? 0 : context.getRagMinCitationCount(),
+                "confidenceScore", context.getRagConfidenceScore() == null ? 0D : context.getRagConfidenceScore(),
+                "rejectReason", safeText(context.getRagRejectReason()),
+                "qualityAdvice", safeText(context.getRagQualityAdvice())
+        );
     }
 
     /**
@@ -693,7 +861,8 @@ public class ChatService {
         run.setOutputPayload(toJson(Map.of(
                 "content", safeText(result.getContent()),
                 "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                "sources", context.getSources() == null ? List.of() : context.getSources()
+                "sources", context.getSources() == null ? List.of() : context.getSources(),
+                "trustedAnswer", trustedAnswerPayload(context)
         )));
         run.setStatus("SUCCESS");
         // 一次运行可能包含“工具决策 LLM + 最终回复 LLM”，这里按累计值写入运行总账。
@@ -710,7 +879,8 @@ public class ChatService {
         step.setOutputPayload(toJson(Map.of(
                 "content", safeText(result.getContent()),
                 "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                "sources", context.getSources() == null ? List.of() : context.getSources()
+                "sources", context.getSources() == null ? List.of() : context.getSources(),
+                "trustedAnswer", trustedAnswerPayload(context)
         )));
         step.setTokenUsage(toJson(Map.of(
                 "promptTokens", nullToZero(result.getPromptTokens()),
@@ -887,6 +1057,11 @@ public class ChatService {
         response.setErrorMessage(errorMessage);
         response.setMemories(context.getMemories() == null ? List.of() : context.getMemories());
         response.setSources(context.getSources() == null ? List.of() : context.getSources());
+        response.setTrustedAnswerMode(Boolean.TRUE.equals(context.getRagTrustedAnswerMode()));
+        response.setAnswerable(context.getRagAnswerable() == null || Boolean.TRUE.equals(context.getRagAnswerable()));
+        response.setRejectReason(context.getRagRejectReason());
+        response.setConfidenceScore(context.getRagConfidenceScore());
+        response.setTrustedAnswer(trustedAnswerPayload(context));
         return response;
     }
 
@@ -921,18 +1096,19 @@ public class ChatService {
                           ChatRunContext context,
                           LlmCallResult result,
                           List<Map<String, Object>> toolResults) {
-        sendSse(emitter, "done", Map.of(
-                "runId", run.getId(),
-                "sessionId", safeText(context.getSessionId()),
-                "status", "SUCCESS",
-                "latencyMs", nullToZero(result.getLatencyMs()),
-                "promptTokens", nullToZero(result.getPromptTokens()),
-                "completionTokens", nullToZero(result.getCompletionTokens()),
-                "totalTokens", nullToZero(result.getTotalTokens()),
-                "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                "sources", context.getSources() == null ? List.of() : context.getSources(),
-                "toolResults", toolResults == null ? List.of() : toolResults
-        ));
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("runId", run.getId());
+        payload.put("sessionId", safeText(context.getSessionId()));
+        payload.put("status", "SUCCESS");
+        payload.put("latencyMs", nullToZero(result.getLatencyMs()));
+        payload.put("promptTokens", nullToZero(result.getPromptTokens()));
+        payload.put("completionTokens", nullToZero(result.getCompletionTokens()));
+        payload.put("totalTokens", nullToZero(result.getTotalTokens()));
+        payload.put("memories", context.getMemories() == null ? List.of() : context.getMemories());
+        payload.put("sources", context.getSources() == null ? List.of() : context.getSources());
+        payload.put("trustedAnswer", trustedAnswerPayload(context));
+        payload.put("toolResults", toolResults == null ? List.of() : toolResults);
+        sendSse(emitter, "done", payload);
     }
 
     /**

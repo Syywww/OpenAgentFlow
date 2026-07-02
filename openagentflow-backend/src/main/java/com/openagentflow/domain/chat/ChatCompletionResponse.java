@@ -47,6 +47,21 @@ public class ChatCompletionResponse {
     /** RAG 引用来源列表。 */
     private List<KnowledgeSource> sources;
 
+    /** 是否启用 RAG 可信回答模式。 */
+    private Boolean trustedAnswerMode;
+
+    /** 本次 RAG 是否满足可信回答条件。 */
+    private Boolean answerable;
+
+    /** 可信回答拒答原因。 */
+    private String rejectReason;
+
+    /** RAG 最佳置信得分。 */
+    private Double confidenceScore;
+
+    /** RAG 可信回答状态载荷。 */
+    private Map<String, Object> trustedAnswer;
+
     /** Memory 召回来源列表。 */
     private List<MemoryDtos.RecallItem> memories;
 
@@ -147,6 +162,46 @@ public class ChatCompletionResponse {
 
     public void setSources(List<KnowledgeSource> sources) {
         this.sources = sources;
+    }
+
+    public Boolean getTrustedAnswerMode() {
+        return trustedAnswerMode;
+    }
+
+    public void setTrustedAnswerMode(Boolean trustedAnswerMode) {
+        this.trustedAnswerMode = trustedAnswerMode;
+    }
+
+    public Boolean getAnswerable() {
+        return answerable;
+    }
+
+    public void setAnswerable(Boolean answerable) {
+        this.answerable = answerable;
+    }
+
+    public String getRejectReason() {
+        return rejectReason;
+    }
+
+    public void setRejectReason(String rejectReason) {
+        this.rejectReason = rejectReason;
+    }
+
+    public Double getConfidenceScore() {
+        return confidenceScore;
+    }
+
+    public void setConfidenceScore(Double confidenceScore) {
+        this.confidenceScore = confidenceScore;
+    }
+
+    public Map<String, Object> getTrustedAnswer() {
+        return trustedAnswer;
+    }
+
+    public void setTrustedAnswer(Map<String, Object> trustedAnswer) {
+        this.trustedAnswer = trustedAnswer;
     }
 
     public List<MemoryDtos.RecallItem> getMemories() {

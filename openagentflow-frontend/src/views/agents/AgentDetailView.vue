@@ -20,6 +20,7 @@ import {
   fetchKnowledgeBases,
   saveAgentKnowledgeBindings,
   type AgentKnowledgeBindingSummary,
+  type AgentKnowledgeBindingOptions,
   type KnowledgeBaseSummary,
 } from '../../api/knowledge';
 import {
@@ -79,6 +80,15 @@ const form = reactive({
   status: 'draft',
 });
 
+const knowledgePolicy = reactive<Required<AgentKnowledgeBindingOptions>>({
+  topK: 5,
+  scoreThreshold: 0.65,
+  lowConfidenceThreshold: 0.72,
+  trustedAnswerMode: true,
+  citationRequired: true,
+  minCitationCount: 1,
+});
+
 const isNew = computed(() => route.params.id === 'new');
 const pageTitle = computed(() => (isNew.value ? '新建智能体' : form.agentName || '智能体详情'));
 const pageDescription = computed(() => form.description || '配置 Prompt、模型参数、知识库、工具、工作流与运行权限');
@@ -127,6 +137,7 @@ async function loadKnowledgeBases() {
 async function loadKnowledgeBindings(agentId: string) {
   knowledgeBindings.value = await fetchAgentKnowledgeBindings(agentId);
   selectedKnowledgeBaseIds.value = knowledgeBindings.value.map((binding) => binding.knowledgeBaseId);
+  applyKnowledgePolicy(knowledgeBindings.value[0]?.retrievalConfig);
 }
 
 async function loadTools() {
@@ -192,7 +203,7 @@ async function handleSave() {
 
 async function saveBindings(agentId: string) {
   await Promise.all([
-    saveAgentKnowledgeBindings(agentId, selectedKnowledgeBaseIds.value, 5, 0.65),
+    saveAgentKnowledgeBindings(agentId, selectedKnowledgeBaseIds.value, { ...knowledgePolicy }),
     saveAgentToolBindings(agentId, selectedToolIds.value),
     saveAgentWorkflowBindings(agentId, selectedWorkflowIds.value),
   ]);
@@ -265,6 +276,23 @@ function applySystemPromptTemplate() {
   }
 }
 
+function applyKnowledgePolicy(config?: string) {
+  if (!config) {
+    return;
+  }
+  try {
+    const parsed = JSON.parse(config) as Partial<AgentKnowledgeBindingOptions>;
+    knowledgePolicy.topK = Number(parsed.topK ?? knowledgePolicy.topK);
+    knowledgePolicy.scoreThreshold = Number(parsed.scoreThreshold ?? knowledgePolicy.scoreThreshold);
+    knowledgePolicy.lowConfidenceThreshold = Number(parsed.lowConfidenceThreshold ?? knowledgePolicy.lowConfidenceThreshold);
+    knowledgePolicy.trustedAnswerMode = parsed.trustedAnswerMode !== false;
+    knowledgePolicy.citationRequired = parsed.citationRequired !== false;
+    knowledgePolicy.minCitationCount = Number(parsed.minCitationCount ?? knowledgePolicy.minCitationCount);
+  } catch {
+    // 旧数据解析失败时继续使用默认可信回答策略。
+  }
+}
+
 function statusText(status: string) {
   if (status === 'published') return '运行中';
   if (status === 'draft') return '开发中';
@@ -334,6 +362,14 @@ function statusText(status: string) {
   <section v-else-if="activeTab === '知识库绑定'" class="agent-binding-panel">
     <div class="section-block">
       <div class="section-title"><h2>已绑定知识库</h2><span>{{ selectedKnowledgeBaseIds.length }} 个</span></div>
+      <div class="trusted-rag-policy">
+        <label class="checkbox-line"><input v-model="knowledgePolicy.trustedAnswerMode" type="checkbox" /> 可信回答模式</label>
+        <label class="checkbox-line"><input v-model="knowledgePolicy.citationRequired" type="checkbox" /> 答案必须带引用</label>
+        <label class="inline-field">TopK<input v-model.number="knowledgePolicy.topK" type="number" min="1" max="20" /></label>
+        <label class="inline-field">相似度阈值<input v-model.number="knowledgePolicy.scoreThreshold" type="number" min="0" max="1" step="0.01" /></label>
+        <label class="inline-field">低置信阈值<input v-model.number="knowledgePolicy.lowConfidenceThreshold" type="number" min="0" max="1" step="0.01" /></label>
+        <label class="inline-field">最少引用<input v-model.number="knowledgePolicy.minCitationCount" type="number" min="1" max="5" /></label>
+      </div>
       <div v-if="knowledgeBases.length === 0" class="empty-state">暂无知识库，请先在知识库模块创建并上传文档</div>
       <template v-else>
         <div class="agent-binding-list">

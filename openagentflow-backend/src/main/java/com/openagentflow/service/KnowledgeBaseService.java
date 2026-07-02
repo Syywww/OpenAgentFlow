@@ -16,6 +16,7 @@ import com.openagentflow.domain.knowledge.KnowledgeRetrievalResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.knowledge.KnowledgeUploadResult;
 import com.openagentflow.domain.knowledge.KnowledgeVectorRebuildResult;
+import com.openagentflow.domain.knowledge.RagRetrievalOutcome;
 import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentKnowledgeBindingEntity;
@@ -424,17 +425,22 @@ public class KnowledgeBaseService {
                 .eq(AgentKnowledgeBindingEntity::getAgentId, agentId));
         List<String> ids = request.getKnowledgeBaseIds() == null ? List.of() : request.getKnowledgeBaseIds();
         Set<String> uniqueIds = new LinkedHashSet<>(ids);
-        String config = toJson(Map.of(
-                "topK", normalizeTopK(request.getTopK()),
-                "candidateK", normalizeCandidateK(null, normalizeTopK(request.getTopK())),
-                "scoreThreshold", clampScore(request.getScoreThreshold(), properties.getRag().getDefaultScoreThreshold()),
-                "lowConfidenceThreshold", clampScore(null, Math.max(properties.getRag().getDefaultScoreThreshold(), 0.62D)),
-                "searchMode", "hybrid",
-                "rerankEnabled", true,
-                "rejectLowConfidence", true,
-                "vectorWeight", 0.72D,
-                "keywordWeight", 0.28D
-        ));
+        double scoreThreshold = clampScore(request.getScoreThreshold(), properties.getRag().getDefaultScoreThreshold());
+        double lowConfidenceThreshold = clampScore(request.getLowConfidenceThreshold(), Math.max(scoreThreshold, 0.62D));
+        Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put("topK", normalizeTopK(request.getTopK()));
+        configMap.put("candidateK", normalizeCandidateK(null, normalizeTopK(request.getTopK())));
+        configMap.put("scoreThreshold", scoreThreshold);
+        configMap.put("lowConfidenceThreshold", lowConfidenceThreshold);
+        configMap.put("searchMode", "hybrid");
+        configMap.put("rerankEnabled", true);
+        configMap.put("rejectLowConfidence", true);
+        configMap.put("trustedAnswerMode", request.getTrustedAnswerMode() == null || Boolean.TRUE.equals(request.getTrustedAnswerMode()));
+        configMap.put("citationRequired", request.getCitationRequired() == null || Boolean.TRUE.equals(request.getCitationRequired()));
+        configMap.put("minCitationCount", normalizeMinCitationCount(request.getMinCitationCount()));
+        configMap.put("vectorWeight", 0.72D);
+        configMap.put("keywordWeight", 0.28D);
+        String config = toJson(configMap);
         for (String kbId : uniqueIds) {
             KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
             assertCanView(kb);
@@ -457,13 +463,44 @@ public class KnowledgeBaseService {
      * @return 引用来源列表
      */
     public List<KnowledgeSource> retrieveForAgent(AgentEntity agent, String query, String runId) {
+        return retrieveForAgentWithPolicy(agent, query, runId).getSources();
+    }
+
+    /**
+     * 根据 Agent 绑定的知识库执行 RAG 检索，并返回可信回答判定结果。
+     *
+     * @param agent Agent 实体
+     * @param query 用户问题
+     * @param runId 运行 ID
+     * @return RAG 聚合检索结果
+     */
+    public RagRetrievalOutcome retrieveForAgentWithPolicy(AgentEntity agent, String query, String runId) {
+        RagRetrievalOutcome outcome = new RagRetrievalOutcome();
+        outcome.setSources(List.of());
+        outcome.setTrustedAnswerMode(false);
+        outcome.setCitationRequired(false);
+        outcome.setMinCitationCount(0);
+        outcome.setAnswerable(true);
+        outcome.setRejectReason("");
+        outcome.setConfidenceScore(0D);
+        outcome.setScoreThreshold(properties.getRag().getDefaultScoreThreshold());
+        outcome.setLowConfidenceThreshold(Math.max(properties.getRag().getDefaultScoreThreshold(), 0.62D));
+        outcome.setQualityAdvice("");
         if (agent == null || !StringUtils.hasText(query)) {
-            return List.of();
+            return outcome;
         }
         List<AgentKnowledgeBindingEntity> bindings = agentKnowledgeBindingMapper.selectList(new LambdaQueryWrapper<AgentKnowledgeBindingEntity>()
                 .eq(AgentKnowledgeBindingEntity::getAgentId, agent.getId())
                 .eq(AgentKnowledgeBindingEntity::getEnabled, true));
         List<KnowledgeSource> allSources = new ArrayList<>();
+        boolean trustedMode = false;
+        boolean citationRequired = false;
+        int minCitationCount = 0;
+        double confidenceScore = 0D;
+        double scoreThreshold = properties.getRag().getDefaultScoreThreshold();
+        double lowConfidenceThreshold = Math.max(scoreThreshold, 0.62D);
+        List<String> rejectReasons = new ArrayList<>();
+        List<String> qualityAdvices = new ArrayList<>();
         for (AgentKnowledgeBindingEntity binding : bindings) {
             KnowledgeBaseEntity kb = knowledgeBaseMapper.selectById(binding.getKnowledgeBaseId());
             if (kb == null || kb.getDeletedAt() != null || !"active".equalsIgnoreCase(kb.getStatus())) {
@@ -471,17 +508,44 @@ public class KnowledgeBaseService {
             }
             Map<String, Object> config = parseMap(binding.getRetrievalConfig());
             RetrievalOptions options = optionsFromConfig(config);
+            trustedMode = trustedMode || options.trustedAnswerMode;
+            citationRequired = citationRequired || options.citationRequired;
+            minCitationCount = Math.max(minCitationCount, options.minCitationCount);
+            scoreThreshold = Math.max(scoreThreshold, options.scoreThreshold);
+            lowConfidenceThreshold = Math.max(lowConfidenceThreshold, options.lowConfidenceThreshold);
             KnowledgeRetrievalResult result = retrieveFromKnowledgeBase(kb, agent.getId(), runId, query, options);
+            confidenceScore = Math.max(confidenceScore, result.getConfidenceScore() == null ? 0D : result.getConfidenceScore());
+            if (StringUtils.hasText(result.getRejectReason())) {
+                rejectReasons.add(kb.getKbName() + "：" + result.getRejectReason());
+            }
+            if (StringUtils.hasText(result.getQualityAdvice())) {
+                qualityAdvices.add(kb.getKbName() + "：" + result.getQualityAdvice());
+            }
             // 低置信拒答开启时不把弱相关片段注入模型，避免模型基于不可靠资料继续编造答案。
             if (Boolean.FALSE.equals(result.getAnswerable()) && options.rejectLowConfidence) {
                 continue;
             }
             allSources.addAll(result.getSources());
         }
-        return allSources.stream()
+        List<KnowledgeSource> sources = allSources.stream()
                 .sorted(Comparator.comparing(KnowledgeSource::getScore, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(properties.getRag().getDefaultTopK())
                 .toList();
+        boolean answerable = !trustedMode || sources.size() >= Math.max(1, minCitationCount);
+        if (trustedMode && !answerable && rejectReasons.isEmpty()) {
+            rejectReasons.add("可信回答模式要求至少命中 " + Math.max(1, minCitationCount) + " 条可靠引用来源，当前仅命中 " + sources.size() + " 条");
+        }
+        outcome.setSources(sources);
+        outcome.setTrustedAnswerMode(trustedMode);
+        outcome.setCitationRequired(citationRequired);
+        outcome.setMinCitationCount(minCitationCount);
+        outcome.setAnswerable(answerable);
+        outcome.setRejectReason(answerable ? "" : String.join("；", rejectReasons));
+        outcome.setConfidenceScore(confidenceScore);
+        outcome.setScoreThreshold(scoreThreshold);
+        outcome.setLowConfidenceThreshold(lowConfidenceThreshold);
+        outcome.setQualityAdvice(String.join("；", qualityAdvices));
+        return outcome;
     }
 
     /**
@@ -1363,6 +1427,9 @@ public class KnowledgeBaseService {
         options.keywordWeight = clamp(request.getKeywordWeight() == null ? 0.28D : request.getKeywordWeight(), 0D, 1D);
         options.lowConfidenceThreshold = clampScore(request.getLowConfidenceThreshold(), Math.max(options.scoreThreshold, 0.62D));
         options.rejectLowConfidence = request.getRejectLowConfidence() == null || Boolean.TRUE.equals(request.getRejectLowConfidence());
+        options.trustedAnswerMode = false;
+        options.citationRequired = Boolean.TRUE.equals(request.getRejectLowConfidence());
+        options.minCitationCount = 1;
         options.documentIds = normalizeDocumentIds(request.getDocumentIds());
         options.pageNo = request.getPageNo() != null && request.getPageNo() > 0 ? request.getPageNo() : null;
         options.metadataKeyword = safeText(request.getMetadataKeyword()).trim();
@@ -1386,6 +1453,9 @@ public class KnowledgeBaseService {
         options.keywordWeight = clamp(doubleValue(config.get("keywordWeight"), 0.28D), 0D, 1D);
         options.lowConfidenceThreshold = clampScore(doubleValue(config.get("lowConfidenceThreshold"), Math.max(options.scoreThreshold, 0.62D)), Math.max(options.scoreThreshold, 0.62D));
         options.rejectLowConfidence = booleanValue(config.get("rejectLowConfidence"), true);
+        options.trustedAnswerMode = booleanValue(config.get("trustedAnswerMode"), false);
+        options.citationRequired = booleanValue(config.get("citationRequired"), options.trustedAnswerMode);
+        options.minCitationCount = normalizeMinCitationCount(intValue(config.get("minCitationCount"), 1));
         options.documentIds = normalizeDocumentIds(readStringList(config.get("documentIds")));
         options.pageNo = intValue(config.get("pageNo"), 0) > 0 ? intValue(config.get("pageNo"), 0) : null;
         options.metadataKeyword = safeText(asString(config.get("metadataKeyword"))).trim();
@@ -1414,6 +1484,17 @@ public class KnowledgeBaseService {
     private int normalizeCandidateK(Integer value, int topK) {
         int candidateK = value == null ? topK * 4 : value;
         return Math.max(topK, Math.min(100, candidateK));
+    }
+
+    /**
+     * 归一化可信回答最少引用数。
+     *
+     * @param value 原始引用数
+     * @return 安全引用数
+     */
+    private int normalizeMinCitationCount(Integer value) {
+        int count = value == null ? 1 : value;
+        return Math.max(1, Math.min(5, count));
     }
 
     /**
@@ -1970,6 +2051,12 @@ public class KnowledgeBaseService {
         private boolean rerankEnabled;
         /** 是否低置信拒答。 */
         private boolean rejectLowConfidence;
+        /** 是否启用可信回答模式。 */
+        private boolean trustedAnswerMode;
+        /** 是否要求答案必须携带引用。 */
+        private boolean citationRequired;
+        /** 可信回答最少引用来源数量。 */
+        private int minCitationCount;
         /** 向量权重。 */
         private double vectorWeight;
         /** 关键词权重。 */

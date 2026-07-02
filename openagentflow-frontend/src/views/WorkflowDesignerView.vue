@@ -108,8 +108,10 @@ const nodeSaving = ref(false);
 const createModalOpen = ref(false);
 const nodePickerOpen = ref(false);
 const nodePickerPosition = ref({ x: 24, y: 80 });
+const selectedPickerNodeType = ref('LLM');
 const pendingNodePosition = ref({ x: 120, y: 120 });
 const chatPanelNodeId = ref('');
+const outputChatOpen = ref(true);
 let runAnimationTimer: ReturnType<typeof window.setInterval> | null = null;
 const { currentPage: workflowPage, pagedItems: pagedWorkflows } = usePagination(workflows);
 const { currentPage: templatePage, pagedItems: pagedTemplates } = usePagination(templates);
@@ -163,6 +165,7 @@ const nodeForm = reactive({
   subWorkflowId: '',
   pluginCode: '',
   joinStrategy: 'all',
+  outputTemplate: '{{lastOutput}}',
 });
 
 const debugForm = reactive({
@@ -199,6 +202,7 @@ const palette = [
   { type: 'PLUGIN', label: '插件' },
   { type: 'API', label: 'API/Webhook' },
   { type: 'NOTIFY', label: '通知' },
+  { type: 'OUTPUT', label: '输出' },
   { type: 'END', label: '结束' },
 ];
 
@@ -221,11 +225,15 @@ const nodeTypeOptions = [
   { type: 'PLUGIN', label: '插件' },
   { type: 'API', label: 'API/Webhook' },
   { type: 'NOTIFY', label: '通知' },
+  { type: 'OUTPUT', label: '输出节点' },
   { type: 'END', label: '结束' },
 ];
 const stepByNodeKey = computed(() => Object.fromEntries(runSteps.value.map((step) => [step.nodeKey, step])));
 const activeChatNode = computed(() => nodes.value.find((node) => node.id === chatPanelNodeId.value));
 const activeChatStep = computed(() => (chatPanelNodeId.value ? stepByNodeKey.value[chatPanelNodeId.value] : undefined));
+const outputNode = computed(() => nodes.value.find((node) => String(node.data?.nodeType || '').toUpperCase() === 'OUTPUT'));
+const hasOutputNode = computed(() => Boolean(outputNode.value));
+const showOutputChat = computed(() => hasOutputNode.value && outputChatOpen.value);
 
 onMounted(async () => {
   await Promise.all([loadOptions(), loadWorkflowList(), loadAdvancedData()]);
@@ -282,6 +290,7 @@ async function openWorkflow(id: string) {
     edges.value = graphEdges && graphEdges.length === 0 ? [] : detail.edges.map(toFlowEdge);
     selectedNodeId.value = nodes.value[0]?.id || '';
     chatPanelNodeId.value = '';
+    outputChatOpen.value = nodes.value.some((node) => String(node.data?.nodeType || '').toUpperCase() === 'OUTPUT');
     runSteps.value = [];
     runningNodeId.value = '';
     const policy = readExecutionPolicy(detail.graphJson);
@@ -340,6 +349,7 @@ function resetEmptyCanvas() {
   edges.value = [];
   selectedNodeId.value = '';
   chatPanelNodeId.value = '';
+  outputChatOpen.value = false;
   runSteps.value = [];
 }
 
@@ -394,6 +404,7 @@ async function handleCreateWorkflow() {
     edges.value = [];
     selectedNodeId.value = '';
     chatPanelNodeId.value = '';
+    outputChatOpen.value = false;
     runSteps.value = [];
     runningNodeId.value = '';
     workflows.value = workflows.value.map((item) => (item.id === created.id ? { ...item, nodeCount: 0 } : item));
@@ -418,6 +429,7 @@ function applyTemplate(template: WorkflowTemplateSummary) {
   workflowForm.grayPercent = 100;
   selectedNodeId.value = nodes.value[0]?.id || '';
   activePanel.value = 'node';
+  outputChatOpen.value = nodes.value.some((node) => String(node.data?.nodeType || '').toUpperCase() === 'OUTPUT');
   fillNodeForm();
   toast('模板已应用到新画布');
 }
@@ -523,6 +535,7 @@ function openNodePicker(payload: MouseEvent | { event?: MouseEvent }) {
       y: Math.max(20, event.clientY - canvasRect.top - 32),
     };
   }
+  selectedPickerNodeType.value = selectedPickerNodeType.value || 'LLM';
   nodePickerOpen.value = true;
 }
 
@@ -537,6 +550,7 @@ function openNodePickerAtCenter() {
     x: 120 + nodes.value.length * 32,
     y: 120 + nodes.value.length * 24,
   };
+  selectedPickerNodeType.value = selectedPickerNodeType.value || 'LLM';
   nodePickerOpen.value = true;
 }
 
@@ -556,7 +570,15 @@ function addNode(type: string, label: string) {
   selectedNodeId.value = id;
   activePanel.value = 'node';
   nodePickerOpen.value = false;
+  if (type.toUpperCase() === 'OUTPUT') {
+    outputChatOpen.value = true;
+  }
   fillNodeForm();
+}
+
+function addSelectedNodeType() {
+  const option = nodeTypeOptions.find((item) => item.type === selectedPickerNodeType.value) || nodeTypeOptions[0];
+  addNode(option.type, option.label);
 }
 
 function removeSelectedNode() {
@@ -567,12 +589,16 @@ function removeSelectedNode() {
   nodes.value = nodes.value.filter((node) => node.id !== selectedNodeId.value);
   edges.value = edges.value.filter((edge) => edge.source !== selectedNodeId.value && edge.target !== selectedNodeId.value);
   selectedNodeId.value = nodes.value[0]?.id || '';
+  outputChatOpen.value = nodes.value.some((node) => String(node.data?.nodeType || '').toUpperCase() === 'OUTPUT') && outputChatOpen.value;
   fillNodeForm();
 }
 
 function selectNode(event: { node: { id: string } }) {
   selectedNodeId.value = event.node.id;
   activePanel.value = 'node';
+  if (String(selectedNode.value?.data?.nodeType || '').toUpperCase() === 'OUTPUT') {
+    outputChatOpen.value = true;
+  }
   fillNodeForm();
 }
 
@@ -606,6 +632,7 @@ function fillNodeForm() {
   nodeForm.subWorkflowId = String(config.workflowId || '');
   nodeForm.pluginCode = String(config.pluginCode || '');
   nodeForm.joinStrategy = String(config.joinStrategy || 'all');
+  nodeForm.outputTemplate = String(config.outputTemplate || '{{lastOutput}}');
 }
 
 function applyNodeForm(event?: Event) {
@@ -625,6 +652,9 @@ function applyNodeForm(event?: Event) {
       data: { ...node.data, label: nodeForm.nodeName, nodeType: nodeForm.nodeType, config, retryPolicy },
     };
   });
+  if (nodeForm.nodeType === 'OUTPUT') {
+    outputChatOpen.value = true;
+  }
   if (event?.type === 'click') {
     void handleSaveNodeConfig(true);
   }
@@ -650,6 +680,7 @@ function buildNodeConfig() {
   if (nodeForm.nodeType === 'PLUGIN') return { ...common, pluginCode: nodeForm.pluginCode, toolName: nodeForm.toolName };
   if (nodeForm.nodeType === 'PARALLEL' || nodeForm.nodeType === 'JOIN') return { ...common, joinStrategy: nodeForm.joinStrategy };
   if (nodeForm.nodeType === 'LLM') return { ...common, promptTemplate: nodeForm.promptTemplate, systemPrompt: nodeForm.systemPrompt, temperature: Number(nodeForm.temperature), maxTokens: Number(nodeForm.maxTokens) };
+  if (nodeForm.nodeType === 'OUTPUT') return { ...common, outputTemplate: nodeForm.outputTemplate };
   return common;
 }
 
@@ -857,6 +888,10 @@ function closeNodeDialog() {
   chatPanelNodeId.value = '';
 }
 
+function closeOutputChat() {
+  outputChatOpen.value = false;
+}
+
 function formatNodeOutput(step?: WorkflowRunStepView) {
   if (!step) return '该节点还没有运行输出。';
   if (step.errorMessage) return step.errorMessage;
@@ -933,6 +968,7 @@ function defaultConfig(type: string) {
   if (type === 'SUBFLOW') return { workflowId: workflows.value[0]?.id || '', inputTemplate: '{{lastOutput}}' };
   if (type === 'PLUGIN') return { pluginCode: 'custom-plugin' };
   if (type === 'PARALLEL' || type === 'JOIN') return { joinStrategy: 'all' };
+  if (type === 'OUTPUT') return { outputTemplate: '{{lastOutput}}' };
   return {};
 }
 
@@ -942,6 +978,7 @@ function defaultRetryPolicy(type: string) {
 
 function nodeClass(type: string) {
   if (type === 'START' || type === 'END') return 'flow-node start';
+  if (type === 'OUTPUT') return 'flow-node output';
   if (type === 'CONDITION') return 'flow-node decision';
   if (type === 'HUMAN') return 'flow-node human';
   if (['PARALLEL', 'JOIN', 'LOOP', 'SUBFLOW'].includes(type)) return 'flow-node orchestration';
@@ -953,7 +990,7 @@ function canReceive(nodeType: unknown) {
 }
 
 function canSend(nodeType: unknown) {
-  return String(nodeType || '') !== 'END';
+  return !['END', 'OUTPUT'].includes(String(nodeType || '').toUpperCase());
 }
 
 function readExecutionPolicy(graphJson?: Record<string, unknown>) {
@@ -1053,12 +1090,19 @@ function resetDiffForm() {
         </div>
         <div class="node-picker-title-row">
           <b>选择节点类型</b>
-          <span>双击画布后选择要添加的节点类型</span>
+          <span>双击画布后从下拉框选择节点类型</span>
         </div>
-        <div class="node-picker-grid">
-          <button v-for="item in nodeTypeOptions" :key="item.type" type="button" @click="addNode(item.type, item.label)">
-            <b>{{ item.label }}</b>
-            <small>{{ item.type }}</small>
+        <div class="node-picker-form">
+          <label>
+            节点类型
+            <select v-model="selectedPickerNodeType" @keydown.enter.prevent="addSelectedNodeType">
+              <option v-for="item in nodeTypeOptions" :key="item.type" :value="item.type">
+                {{ item.label }} / {{ item.type }}
+              </option>
+            </select>
+          </label>
+          <button class="primary-button full" type="button" @click="addSelectedNodeType">
+            <Plus :size="16" /> 添加节点
           </button>
         </div>
       </div>
@@ -1076,6 +1120,28 @@ function resetDiffForm() {
           <span>耗时 {{ activeChatStep?.latencyMs || 0 }} ms</span>
           <span>尝试 {{ activeChatStep?.attemptNo || 0 }}</span>
         </div>
+      </aside>
+      <aside v-if="showOutputChat" class="workflow-output-chat-panel">
+        <div class="node-dialog-header">
+          <div>
+            <b>智能对话</b>
+            <span>{{ outputNode?.label || outputNode?.data?.label || '输出节点' }}</span>
+          </div>
+          <div class="node-dialog-actions">
+            <StatusBadge :label="lastRunStatus || '待运行'" :tone="lastRunStatus === 'SUCCESS' ? 'success' : lastRunStatus === 'FAILED' ? 'danger' : 'info'" />
+            <button class="icon-button" type="button" title="关闭智能对话" @click="closeOutputChat"><X :size="14" /></button>
+          </div>
+        </div>
+        <textarea v-model="runInput" placeholder="输入问题后点击智能对话，会从当前工作流输出节点返回结果" />
+        <div class="table-actions">
+          <button class="primary-button slim" type="button" :disabled="loading" @click="handleRun">
+            <Play :size="14" /> 智能对话
+          </button>
+          <button class="secondary-button slim" type="button" :disabled="!traceRunId" @click="$router.push(`/logs/${traceRunId}`)">
+            <Bug :size="14" /> Trace
+          </button>
+        </div>
+        <pre>{{ runResult || '运行后这里展示输出节点返回的最终内容。' }}</pre>
       </aside>
     </div>
 
@@ -1128,6 +1194,7 @@ function resetDiffForm() {
         </template>
 
         <label v-if="nodeForm.nodeType === 'SUBFLOW'">子工作流<select v-model="nodeForm.subWorkflowId" @change="applyNodeForm"><option value="">请选择</option><option v-for="item in workflows" :key="item.id" :value="item.id">{{ item.workflowName }}</option></select></label>
+        <label v-if="nodeForm.nodeType === 'OUTPUT'">输出模板<textarea v-model="nodeForm.outputTemplate" placeholder="{{lastOutput}}" @blur="applyNodeForm" /></label>
 
         <div class="section-title compact-title"><h2>生产策略</h2><span>重试 / 超时 / 沙箱</span></div>
         <label>重试次数<input v-model.number="nodeForm.retryCount" type="number" min="0" @blur="applyNodeForm" /></label>
