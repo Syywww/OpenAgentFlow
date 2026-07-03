@@ -147,6 +147,9 @@ const nodeForm = reactive({
   queryTemplate: '{{input}}',
   toolName: '',
   conditionExpr: 'success',
+  runConditionEnabled: false,
+  runConditionMode: 'RUN_WHEN',
+  runConditionExpr: '',
   temperature: 0.3,
   maxTokens: 2048,
   retryCount: 1,
@@ -614,6 +617,9 @@ function fillNodeForm() {
   nodeForm.queryTemplate = String(config.queryTemplate || '{{input}}');
   nodeForm.toolName = String(config.toolName || config.toolCode || '');
   nodeForm.conditionExpr = String(config.conditionExpr || 'success');
+  nodeForm.runConditionEnabled = Boolean(config.runConditionEnabled);
+  nodeForm.runConditionMode = String(config.runConditionMode || 'RUN_WHEN');
+  nodeForm.runConditionExpr = String(config.runConditionExpr || '');
   nodeForm.temperature = Number(config.temperature ?? 0.3);
   nodeForm.maxTokens = Number(config.maxTokens ?? 2048);
   nodeForm.retryCount = Number(config.retryCount ?? retryPolicy.retryCount ?? 1);
@@ -670,6 +676,9 @@ function buildNodeConfig() {
     fallbackOutput: nodeForm.fallbackOutput,
     sandboxLevel: nodeForm.sandboxLevel,
     budgetTokens: Number(nodeForm.budgetTokens),
+    runConditionEnabled: Boolean(nodeForm.runConditionEnabled),
+    runConditionMode: nodeForm.runConditionMode,
+    runConditionExpr: nodeForm.runConditionExpr,
   };
   if (nodeForm.nodeType === 'RAG') return { ...common, queryTemplate: nodeForm.queryTemplate };
   if (nodeForm.nodeType === 'TOOL' || nodeForm.nodeType === 'API' || nodeForm.nodeType === 'NOTIFY') return { ...common, toolName: nodeForm.toolName, arguments: { input: '{{input}}', lastOutput: '{{lastOutput}}' } };
@@ -959,17 +968,18 @@ function toWorkflowRequest(): WorkflowRequest {
 }
 
 function defaultConfig(type: string) {
-  if (type === 'RAG') return { queryTemplate: '{{input}}' };
-  if (type === 'LLM') return { promptTemplate: '{{input}}', temperature: 0.3, maxTokens: 2048 };
-  if (type === 'TOOL' || type === 'API' || type === 'NOTIFY') return { toolName: tools.value[0]?.toolCode || '', arguments: { input: '{{input}}' } };
-  if (type === 'CONDITION') return { conditionExpr: 'success' };
-  if (type === 'HUMAN') return { taskName: '人工确认', expireMinutes: 60, suggestion: '{{lastOutput}}' };
-  if (type === 'LOOP') return { itemPath: 'items', itemTemplate: '{{item}}', maxLoops: 20 };
-  if (type === 'SUBFLOW') return { workflowId: workflows.value[0]?.id || '', inputTemplate: '{{lastOutput}}' };
-  if (type === 'PLUGIN') return { pluginCode: 'custom-plugin' };
-  if (type === 'PARALLEL' || type === 'JOIN') return { joinStrategy: 'all' };
-  if (type === 'OUTPUT') return { outputTemplate: '{{lastOutput}}' };
-  return {};
+  const conditionDefaults = { runConditionEnabled: false, runConditionMode: 'RUN_WHEN', runConditionExpr: '' };
+  if (type === 'RAG') return { ...conditionDefaults, queryTemplate: '{{input}}' };
+  if (type === 'LLM') return { ...conditionDefaults, promptTemplate: '{{input}}', temperature: 0.3, maxTokens: 2048 };
+  if (type === 'TOOL' || type === 'API' || type === 'NOTIFY') return { ...conditionDefaults, toolName: tools.value[0]?.toolCode || '', arguments: { input: '{{input}}' } };
+  if (type === 'CONDITION') return { ...conditionDefaults, conditionExpr: 'success' };
+  if (type === 'HUMAN') return { ...conditionDefaults, taskName: '人工确认', expireMinutes: 60, suggestion: '{{lastOutput}}' };
+  if (type === 'LOOP') return { ...conditionDefaults, itemPath: 'items', itemTemplate: '{{item}}', maxLoops: 20 };
+  if (type === 'SUBFLOW') return { ...conditionDefaults, workflowId: workflows.value[0]?.id || '', inputTemplate: '{{lastOutput}}' };
+  if (type === 'PLUGIN') return { ...conditionDefaults, pluginCode: 'custom-plugin' };
+  if (type === 'PARALLEL' || type === 'JOIN') return { ...conditionDefaults, joinStrategy: 'all' };
+  if (type === 'OUTPUT') return { ...conditionDefaults, outputTemplate: '{{lastOutput}}' };
+  return conditionDefaults;
 }
 
 function defaultRetryPolicy(type: string) {
@@ -1161,6 +1171,17 @@ function resetDiffForm() {
         <label>节点类型<select v-model="nodeForm.nodeType" @change="applyNodeForm">
           <option v-for="item in nodeTypeOptions" :key="item.type" :value="item.type">{{ item.label }}</option>
         </select></label>
+
+        <div class="node-condition-editor">
+          <label class="inline-check"><input v-model="nodeForm.runConditionEnabled" type="checkbox" @change="applyNodeForm" /> 启用执行条件</label>
+          <template v-if="nodeForm.runConditionEnabled">
+            <label>执行方式<select v-model="nodeForm.runConditionMode" @change="applyNodeForm">
+              <option value="RUN_WHEN">满足条件才执行</option>
+              <option value="SKIP_WHEN">满足条件就跳过</option>
+            </select></label>
+            <label>执行表达式<input v-model="nodeForm.runConditionExpr" placeholder="input contains 订单 / lastOutput contains 成功" @blur="applyNodeForm" /></label>
+          </template>
+        </div>
 
         <template v-if="nodeForm.nodeType === 'LLM'">
           <label>模型<select><option v-for="model in models" :key="model.id">{{ model.providerName }} / {{ model.modelName }}</option></select></label>

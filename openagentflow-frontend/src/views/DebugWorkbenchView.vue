@@ -24,6 +24,8 @@ interface UiMessage {
   status?: string;
 }
 
+type EvidencePanel = 'sources' | 'tools' | 'stats';
+
 const route = useRoute();
 const router = useRouter();
 const { showModal, showDrawer } = useOverlay();
@@ -48,10 +50,26 @@ const retrievalSources = ref<KnowledgeSource[]>([]);
 const memoryResults = ref<MemoryRecallItem[]>([]);
 const toolResults = ref<Record<string, unknown>[]>([]);
 const trustedAnswer = ref<TrustedAnswerStatus | null>(null);
+const activeEvidencePanel = ref<EvidencePanel>('sources');
 
 const selectedAgent = computed(() => agents.value.find((agent) => agent.id === selectedAgentId.value));
 const selectedModel = computed(() => models.value.find((model) => model.id === selectedModelId.value));
 const canIntroduceSupplement = computed(() => generationPaused.value && !loading.value && Boolean(inputText.value.trim()) && Boolean(selectedModelId.value));
+const bestSourceScore = computed(() => retrievalSources.value.reduce((best, source) => Math.max(best, source.score || 0), 0));
+const successfulToolCount = computed(() => toolResults.value.filter((tool) => Boolean(tool.success)).length);
+const evidenceSummary = computed(() => ({
+  sourceCount: retrievalSources.value.length,
+  bestScore: bestSourceScore.value,
+  toolCount: toolResults.value.length,
+  successfulToolCount: successfulToolCount.value,
+  tokenCount: Number(runDone.value.totalTokens || 0),
+  latencyMs: Number(runDone.value.latencyMs || 0),
+}));
+
+function switchEvidencePanel(panel: EvidencePanel) {
+  activeEvidencePanel.value = panel;
+}
+
 const runtimePhases = computed(() => {
   const hasRun = Boolean(runMeta.value.runId || runDone.value.runId);
   const done = String(runDone.value.status || '').toUpperCase() === 'SUCCESS';
@@ -254,10 +272,7 @@ async function sendMessageWithText(question: string, displayQuestion = question)
     return;
   }
 
-  const history: ChatMessage[] = messages.value.map((message) => ({
-    role: message.role,
-    content: message.content,
-  }));
+  const history = buildCleanHistory(question);
   messages.value.push({ role: 'user', content: displayQuestion });
   const assistantMessage: UiMessage = { role: 'assistant', content: '', status: '生成中' };
   messages.value.push(assistantMessage);
@@ -318,6 +333,36 @@ async function sendMessageWithText(question: string, displayQuestion = question)
       activeAssistantMessage.value = null;
     }
   }
+}
+
+function buildCleanHistory(question: string): ChatMessage[] {
+  const orderIntent = hasOrderRuntimeIntent(question);
+  return messages.value
+    .filter((message) => orderIntent || !isOrderFailureAssistantMessage(message))
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+}
+
+function hasOrderRuntimeIntent(text: string) {
+  const value = text.trim().toLowerCase();
+  if (!value) {
+    return false;
+  }
+  const hasOrderNo = /oaf-demo-\d+/i.test(value) || /\b[a-z]{1,8}[-_]\d{4,}\b/i.test(value) || /\b\d{8,}\b/.test(value);
+  const hasOrderAction = ['订单', 'order', '物流', '快递', '运单', '包裹', '到哪里', '到哪', '状态', '进度', '发货', '签收', '配送', '送达', '退款', '售后'].some((keyword) => value.includes(keyword));
+  const knowledgeOnly = ['产品', '优惠', '优惠券', '优惠卷', '活动', '折扣', '满减', '促销', '会员', '积分', '价格', '套餐'].some((keyword) => value.includes(keyword));
+  return hasOrderNo && hasOrderAction && !knowledgeOnly;
+}
+
+function isOrderFailureAssistantMessage(message: UiMessage) {
+  if (message.role !== 'assistant') {
+    return false;
+  }
+  const value = message.content.toLowerCase();
+  return ['订单查询', '未匹配到相关订单', '未找到对应订单', '未找到该订单', '参数有误', 'oaf-demo-1001', '演示订单号', '非订单号', '查询演示订单']
+    .some((keyword) => value.includes(keyword));
 }
 
 function streamHandlers(assistantMessage: UiMessage) {
@@ -540,8 +585,55 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
         <small v-if="trustedAnswer?.rejectReason">{{ trustedAnswer.rejectReason }}</small>
       </div>
       <RuntimeInterpreter title="Runtime 解释器" :phases="runtimePhases" compact />
-      <section class="trace-scroll-section">
-        <div class="section-title"><h2>引用来源</h2><span>{{ retrievalSources.length }} 条</span></div>
+      <section class="trace-evidence-tabs" aria-label="调试证据切换" role="tablist">
+        <input id="debug-evidence-sources" v-model="activeEvidencePanel" class="trace-evidence-radio" type="radio" name="debug-evidence-panel" value="sources" />
+        <label
+          class="trace-evidence-tab"
+          :class="{ active: activeEvidencePanel === 'sources' }"
+          for="debug-evidence-sources"
+          role="tab"
+          tabindex="0"
+          :aria-selected="activeEvidencePanel === 'sources'"
+          @keydown.enter.prevent="switchEvidencePanel('sources')"
+          @keydown.space.prevent="switchEvidencePanel('sources')"
+        >
+          <span>检索结果</span>
+          <b>{{ retrievalSources.length }}</b>
+          <small>知识库引用</small>
+        </label>
+        <input id="debug-evidence-tools" v-model="activeEvidencePanel" class="trace-evidence-radio" type="radio" name="debug-evidence-panel" value="tools" />
+        <label
+          class="trace-evidence-tab"
+          :class="{ active: activeEvidencePanel === 'tools' }"
+          for="debug-evidence-tools"
+          role="tab"
+          tabindex="0"
+          :aria-selected="activeEvidencePanel === 'tools'"
+          @keydown.enter.prevent="switchEvidencePanel('tools')"
+          @keydown.space.prevent="switchEvidencePanel('tools')"
+        >
+          <span>工具调用</span>
+          <b>{{ toolResults.length }}</b>
+          <small>{{ successfulToolCount }} 次成功</small>
+        </label>
+        <input id="debug-evidence-stats" v-model="activeEvidencePanel" class="trace-evidence-radio" type="radio" name="debug-evidence-panel" value="stats" />
+        <label
+          class="trace-evidence-tab"
+          :class="{ active: activeEvidencePanel === 'stats' }"
+          for="debug-evidence-stats"
+          role="tab"
+          tabindex="0"
+          :aria-selected="activeEvidencePanel === 'stats'"
+          @keydown.enter.prevent="switchEvidencePanel('stats')"
+          @keydown.space.prevent="switchEvidencePanel('stats')"
+        >
+          <span>引用统计</span>
+          <b>{{ bestSourceScore.toFixed(2) }}</b>
+          <small>最佳置信</small>
+        </label>
+      </section>
+      <section v-if="activeEvidencePanel === 'sources'" :key="activeEvidencePanel" class="trace-scroll-section trace-evidence-panel">
+        <div class="section-title"><h2>检索结果</h2><span>{{ retrievalSources.length }} 条</span></div>
         <div class="debug-scroll-box source-scroll-box">
           <div v-if="retrievalSources.length === 0" class="empty-state compact-empty">当前对话暂无知识库引用</div>
           <article v-for="source in retrievalSources" :key="source.chunkId" class="chunk-item">
@@ -553,7 +645,7 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
           </article>
         </div>
       </section>
-      <section class="trace-scroll-section">
+      <section v-else-if="activeEvidencePanel === 'tools'" :key="activeEvidencePanel" class="trace-scroll-section trace-evidence-panel">
         <div class="section-title"><h2>工具调用</h2><span>{{ toolResults.length }} 次</span></div>
         <div class="debug-scroll-box tool-scroll-box">
           <div v-if="toolResults.length === 0" class="empty-state compact-empty">当前对话暂无工具调用</div>
@@ -568,10 +660,40 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
           </article>
         </div>
       </section>
-      <pre class="code-block light">promptTokens: {{ runDone.promptTokens || 0 }}
+      <section v-else :key="activeEvidencePanel" class="trace-scroll-section trace-evidence-panel">
+        <div class="section-title"><h2>引用统计</h2><span>{{ runDone.status || '待运行' }}</span></div>
+        <div class="trace-stat-grid">
+          <article class="trace-stat-card">
+            <span>检索结果</span>
+            <b>{{ evidenceSummary.sourceCount }}</b>
+            <small>当前轮引用条数</small>
+          </article>
+          <article class="trace-stat-card">
+            <span>最佳置信</span>
+            <b>{{ evidenceSummary.bestScore.toFixed(4) }}</b>
+            <small>{{ trustedAnswer?.qualityAdvice || '暂无质量建议' }}</small>
+          </article>
+          <article class="trace-stat-card">
+            <span>工具成功</span>
+            <b>{{ evidenceSummary.successfulToolCount }}/{{ evidenceSummary.toolCount }}</b>
+            <small>调用成功率</small>
+          </article>
+          <article class="trace-stat-card">
+            <span>Token</span>
+            <b>{{ evidenceSummary.tokenCount }}</b>
+            <small>本次模型消耗</small>
+          </article>
+          <article class="trace-stat-card">
+            <span>耗时</span>
+            <b>{{ evidenceSummary.latencyMs }}ms</b>
+            <small>端到端返回</small>
+          </article>
+          <pre class="code-block light">promptTokens: {{ runDone.promptTokens || 0 }}
 completionTokens: {{ runDone.completionTokens || 0 }}
 totalTokens: {{ runDone.totalTokens || 0 }}
 latencyMs: {{ runDone.latencyMs || 0 }}</pre>
+        </div>
+      </section>
     </aside>
   </section>
 </template>

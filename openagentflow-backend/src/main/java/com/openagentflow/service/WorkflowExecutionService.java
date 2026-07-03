@@ -225,7 +225,7 @@ public class WorkflowExecutionService {
                 totalCompletionTokens += nodeResult.completionTokens();
                 totalTokens += nodeResult.totalTokens();
                 enforceBudget(workflow, runtimeRun, current, context, totalTokens);
-                if (nodeResult.output() != null) {
+                if (nodeResult.output() != null && !"SKIPPED".equalsIgnoreCase(nodeResult.status())) {
                     context.put("lastOutput", nodeResult.output());
                     finalOutput = String.valueOf(nodeResult.output());
                 }
@@ -331,6 +331,22 @@ public class WorkflowExecutionService {
         int timeoutMs = numberValue(firstNonNull(config.get("timeoutMs"), retryPolicy.get("timeoutMs")), 0D).intValue();
         String failureStrategy = stringValue(firstNonNull(config.get("failureStrategy"), retryPolicy.get("failureStrategy")), "STOP").toUpperCase(Locale.ROOT);
         Exception lastException = null;
+        NodeConditionDecision conditionDecision = evaluateNodeRunCondition(node, config, context);
+        if (!conditionDecision.shouldRun()) {
+            WorkflowStepRunEntity stepRun = createWorkflowStepRun(runtimeRun.getWorkflowRunId(), runtimeRun.getWorkflowId(), node, context);
+            RuntimeTraceStepEntity traceStep = createTraceStep(runtimeRun, node, context);
+            LocalDateTime startedAt = LocalDateTime.now();
+            NodeExecutionResult skipped = NodeExecutionResult.skipped(node, conditionDecision.toOutput());
+            stepRun.setAttemptNo(1);
+            workflowStepRunMapper.updateById(stepRun);
+            skipped.stepResult().setAttemptNo(1);
+            context.put("lastSkippedNodeKey", node.getNodeKey());
+            context.put("lastSkippedReason", conditionDecision.reason());
+            context.put("nodeSkipped", true);
+            finishStepSuccess(stepRun, traceStep, skipped, startedAt);
+            return skipped;
+        }
+        context.remove("nodeSkipped");
 
         for (int attempt = 1; attempt <= retryCount + 1; attempt++) {
             WorkflowStepRunEntity stepRun = createWorkflowStepRun(runtimeRun.getWorkflowRunId(), runtimeRun.getWorkflowId(), node, context);
@@ -489,25 +505,54 @@ public class WorkflowExecutionService {
         if (agent == null) {
             throw new BusinessException("WORKFLOW_AGENT_REQUIRED", "工具节点需要绑定 Agent 后运行");
         }
-        String toolName = stringValue(config.get("toolName"), stringValue(config.get("toolCode"), ""));
-        if (!StringUtils.hasText(toolName)) {
+        String toolCode = resolveToolCode(config);
+        if (!StringUtils.hasText(toolCode)) {
             throw new BusinessException("WORKFLOW_TOOL_EMPTY", "工具节点未配置工具编码");
         }
         Map<String, Object> arguments = renderMap(parseMap(config.get("arguments")), context);
         ToolCallRequest call = new ToolCallRequest();
         call.setId("wf_tool_" + newId());
-        call.setName(toolName);
+        call.setName(toolCode);
         call.setArgumentsJson(toJson(arguments));
         ToolExecutionResult result = toolService.executeToolCallForAgent(agent, runtimeRun, traceStep.getId(), call);
         Map<String, Object> output = new LinkedHashMap<>();
-        output.put("toolName", toolName);
+        output.put("toolName", toolCode);
+        output.put("toolCode", toolCode);
         output.put("success", Boolean.TRUE.equals(result.getSuccess()));
         output.put("statusCode", result.getStatusCode());
         output.put("latencyMs", result.getLatencyMs());
         output.put("responseBody", safeText(result.getResponseBody()));
+        output.put("responseJson", parseJsonValue(safeText(result.getResponseBody())));
         output.put("errorMessage", safeText(result.getErrorMessage()));
         context.put("toolResult", output);
         return NodeExecutionResult.success(node, output, 0, 0, 0);
+    }
+
+    /**
+     * 解析工具节点配置中的工具编码。
+     *
+     * @param config 节点配置
+     * @return 工具编码
+     */
+    private String resolveToolCode(Map<String, Object> config) {
+        String directCode = stringValue(config.get("toolCode"), "");
+        if (StringUtils.hasText(directCode)) {
+            return directCode;
+        }
+        String toolName = stringValue(config.get("toolName"), "");
+        if (StringUtils.hasText(toolName)) {
+            return toolName;
+        }
+        String toolId = stringValue(config.get("toolId"), "");
+        if (!StringUtils.hasText(toolId)) {
+            return "";
+        }
+        List<String> codes = jdbcTemplate.queryForList(
+                "select tool_code from tool_definition where id = ? and deleted_at is null limit 1",
+                String.class,
+                toolId
+        );
+        return codes.isEmpty() ? "" : codes.getFirst();
     }
 
     /**
@@ -723,6 +768,32 @@ public class WorkflowExecutionService {
                 .filter(node -> targetKey.equals(node.getNodeKey()))
                 .findFirst()
                 .orElse(null);
+    }
+
+    /**
+     * 评估节点级执行条件，决定当前节点是否进入真实执行。
+     */
+    private NodeConditionDecision evaluateNodeRunCondition(WorkflowNodeEntity node,
+                                                           Map<String, Object> config,
+                                                           Map<String, Object> context) {
+        boolean enabled = booleanValue(firstNonNull(config.get("runConditionEnabled"), config.get("conditionEnabled")), false);
+        String expression = stringValue(firstNonNull(config.get("runConditionExpr"), config.get("nodeConditionExpr")), "").trim();
+        String mode = stringValue(firstNonNull(config.get("runConditionMode"), config.get("conditionMode")), "RUN_WHEN").toUpperCase(Locale.ROOT);
+        if (!enabled || !StringUtils.hasText(expression)) {
+            return new NodeConditionDecision(true, expression, mode, false, "未启用节点执行条件");
+        }
+        String renderedExpression = renderTemplate(expression, context);
+        boolean matched = matches(renderedExpression, context);
+        boolean skipWhen = "SKIP_WHEN".equals(mode);
+        boolean shouldRun = skipWhen ? !matched : matched;
+        String reason = shouldRun
+                ? "节点执行条件通过：" + renderedExpression
+                : (skipWhen ? "命中跳过条件：" : "未满足执行条件：") + renderedExpression;
+        if (!shouldRun) {
+            context.put("lastConditionExpression", renderedExpression);
+            context.put("lastConditionMatched", matched);
+        }
+        return new NodeConditionDecision(shouldRun, renderedExpression, mode, matched, reason);
     }
 
     /**
@@ -1247,9 +1318,38 @@ public class WorkflowExecutionService {
         if (!sources.isEmpty()) {
             messages.add(new ChatMessage("system", buildRagPrompt(sources)));
         }
+        String workflowContextPrompt = buildWorkflowContextPrompt(context);
+        if (StringUtils.hasText(workflowContextPrompt)) {
+            messages.add(new ChatMessage("system", workflowContextPrompt));
+        }
         String promptTemplate = stringValue(config.get("promptTemplate"), "{{input}}");
         messages.add(new ChatMessage("user", renderTemplate(promptTemplate, context)));
         return messages;
+    }
+
+    /**
+     * 构建工作流结构化上下文提示，让 LLM 节点能明确看到上游工具和节点输出。
+     *
+     * @param context 工作流上下文
+     * @return 上下文提示词
+     */
+    private String buildWorkflowContextPrompt(Map<String, Object> context) {
+        Object toolResult = context.get("toolResult");
+        Object lastOutput = context.get("lastOutput");
+        if (toolResult == null && !(lastOutput instanceof Map<?, ?>) && !(lastOutput instanceof List<?>)) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder("以下是工作流上游节点已经产生的可信结构化结果，请作为事实依据使用。\n");
+        if (toolResult != null) {
+            builder.append("\n[已执行工具结果]\n").append(toJson(toolResult));
+            builder.append("\n如果工具结果 success=true 且 responseJson.found=true，必须直接使用工具返回的订单状态、物流单号、预计送达时间和处理建议，不要回答缺少工具结果。");
+            builder.append("\n如果 responseJson.queryType=order_summary，必须直接回答 orderCount 和 orders 中的订单摘要，不要转向知识库拒答。");
+        }
+        if (lastOutput != null && lastOutput != toolResult && !(lastOutput instanceof String)) {
+            builder.append("\n[上一节点输出]\n").append(toJson(lastOutput));
+        }
+        builder.append("\n若 RAG 来源为空，但工具结果已成功返回，仍可基于工具结果回答工具覆盖的事实；涉及退款、赔付等高风险动作，只给出处理建议并提示人工确认。");
+        return builder.toString();
     }
 
     /**
@@ -1407,11 +1507,24 @@ public class WorkflowExecutionService {
             String path = expr.substring("json:".length());
             return pathValue(context, path) != null;
         }
+        String lowerExpr = expr.toLowerCase(Locale.ROOT);
+        int notContainsIndex = lowerExpr.indexOf(" not contains ");
+        if (notContainsIndex > 0) {
+            Object left = pathValue(context, expr.substring(0, notContainsIndex).trim());
+            String right = unquote(expr.substring(notContainsIndex + " not contains ".length()).trim());
+            return left == null || !String.valueOf(left).contains(right);
+        }
+        int containsIndex = lowerExpr.indexOf(" contains ");
+        if (containsIndex > 0) {
+            Object left = pathValue(context, expr.substring(0, containsIndex).trim());
+            String right = unquote(expr.substring(containsIndex + " contains ".length()).trim());
+            return left != null && String.valueOf(left).contains(right);
+        }
         for (String operator : List.of(">=", "<=", "==", "!=", ">", "<")) {
             int index = expr.indexOf(operator);
             if (index > 0) {
                 Object left = pathValue(context, expr.substring(0, index).trim());
-                String right = expr.substring(index + operator.length()).trim().replace("\"", "");
+                String right = unquote(expr.substring(index + operator.length()).trim());
                 return compare(left, right, operator);
             }
         }
@@ -1712,6 +1825,34 @@ public class WorkflowExecutionService {
     }
 
     /**
+     * 读取布尔配置，兼容前端传入的字符串值。
+     */
+    private boolean booleanValue(Object value, boolean fallback) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value == null) {
+            return fallback;
+        }
+        String text = String.valueOf(value).trim();
+        if (!StringUtils.hasText(text)) {
+            return fallback;
+        }
+        return "true".equalsIgnoreCase(text) || "1".equals(text) || "yes".equalsIgnoreCase(text);
+    }
+
+    /**
+     * 去除条件表达式右侧的单双引号。
+     */
+    private String unquote(String value) {
+        String text = safeText(value).trim();
+        if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) {
+            return text.substring(1, text.length() - 1);
+        }
+        return text;
+    }
+
+    /**
      * 空字符串兜底。
      */
     private String safeText(String text) {
@@ -1767,6 +1908,35 @@ public class WorkflowExecutionService {
     /**
      * 节点执行的内部结果。
      */
+    private record NodeConditionDecision(boolean shouldRun,
+                                         String expression,
+                                         String mode,
+                                         boolean matched,
+                                         String reason) {
+        /**
+         * 转换为前端和 Trace 可读的跳过输出。
+         */
+        private Map<String, Object> toOutput() {
+            Map<String, Object> output = new LinkedHashMap<>();
+            output.put("skipped", true);
+            output.put("expression", safeRecordText(expression));
+            output.put("mode", safeRecordText(mode));
+            output.put("matched", matched);
+            output.put("reason", safeRecordText(reason));
+            return output;
+        }
+
+        /**
+         * record 内部不能直接调用外部实例方法，这里做本地空值兜底。
+         */
+        private static String safeRecordText(String text) {
+            return text == null ? "" : text;
+        }
+    }
+
+    /**
+     * 节点执行的内部结果。
+     */
     private record NodeExecutionResult(Object output,
                                        WorkflowDtos.StepResult stepResult,
                                        String status,
@@ -1803,6 +1973,20 @@ public class WorkflowExecutionService {
             step.setOutput(output);
             step.setTokenCount(totalTokens);
             return new NodeExecutionResult(output, step, "SUCCESS", null, promptTokens, completionTokens, totalTokens, costAmount == null ? BigDecimal.ZERO : costAmount);
+        }
+
+        /**
+         * 构造被节点执行条件跳过的结果。
+         */
+        private static NodeExecutionResult skipped(WorkflowNodeEntity node, Object output) {
+            WorkflowDtos.StepResult step = new WorkflowDtos.StepResult();
+            step.setNodeKey(node.getNodeKey());
+            step.setNodeName(node.getNodeName());
+            step.setNodeType(node.getNodeType());
+            step.setStatus("SKIPPED");
+            step.setOutput(output);
+            step.setTokenCount(0);
+            return new NodeExecutionResult(output, step, "SKIPPED", null, 0, 0, 0, BigDecimal.ZERO);
         }
 
         /**

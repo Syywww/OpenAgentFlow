@@ -1200,6 +1200,30 @@ label.wide {
   gap: 12px;
 }
 
+.node-condition-editor {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inline-check input {
+  width: 14px;
+  height: 14px;
+}
+
 .button-row {
   display: flex;
   align-items: center;
@@ -1440,7 +1464,7 @@ label.wide {
 
 .debug-layout {
   display: grid;
-  grid-template-columns: minmax(210px, 240px) minmax(360px, 1fr) minmax(240px, 300px);
+  grid-template-columns: minmax(210px, 240px) minmax(340px, 1fr) minmax(300px, 360px);
   gap: 14px;
   min-height: min(650px, calc(100vh - 158px));
 }
@@ -1733,14 +1757,35 @@ label.wide {
 }
 
 .trace-panel {
-  display: grid;
-  align-content: stretch;
-  grid-template-rows: repeat(9, auto) minmax(0, 1fr) minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   height: min(650px, calc(100vh - 158px));
   max-height: calc(100vh - 174px);
   min-height: 0;
-  overflow: hidden;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 10px;
+  scrollbar-gutter: stable;
+}
+
+.trace-panel > * {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.trace-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.trace-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.trace-panel::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #cbd5e1;
 }
 
 .trace-scroll-section {
@@ -1754,8 +1799,127 @@ label.wide {
 
 .source-scroll-box,
 .tool-scroll-box {
-  height: 100%;
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
+}
+
+.trace-evidence-tabs {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trace-evidence-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.trace-evidence-tab {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px 9px;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.trace-evidence-tab:hover {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.trace-evidence-tab.active,
+.trace-evidence-tab[aria-selected="true"],
+.trace-evidence-radio:checked + .trace-evidence-tab {
+  border-color: var(--primary);
+  background: #eff6ff;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.1);
+}
+
+.trace-evidence-radio:focus-visible + .trace-evidence-tab,
+.trace-evidence-tab:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 2px;
+}
+
+.trace-evidence-tab span,
+.trace-evidence-tab small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-evidence-tab span {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.trace-evidence-tab b {
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.trace-evidence-tab small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trace-evidence-panel {
+  flex: 0 0 auto;
+  min-height: 220px;
+  max-height: min(360px, 42vh);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.trace-stat-grid {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
+}
+
+.trace-stat-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 9px 10px;
+}
+
+.trace-stat-card span,
+.trace-stat-card small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-stat-card b {
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.1;
 }
 
 .trace-step {
@@ -2005,8 +2169,9 @@ label.wide {
 }
 
 .trace-panel .runtime-interpreter.compact {
-  max-height: 188px;
-  overflow: hidden;
+  max-height: 600px;
+  min-height: 440px;
+  overflow: auto;
 }
 
 .code-block {
@@ -2148,6 +2313,7 @@ label.wide {
   display: grid;
   gap: 6px;
   margin-top: 10px;
+  min-width: 0;
 }
 
 .chunk-item div {
@@ -2155,10 +2321,14 @@ label.wide {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
 }
 
 .chunk-item p {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chunk-item > span {
@@ -2753,6 +2923,18 @@ label.wide {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 14px;
+  align-items: start;
+  min-height: 0;
+}
+
+.run-detail-layout.single-panel {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.run-timeline-panel {
+  max-height: calc(100vh - 318px);
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .governance-grid {
@@ -3156,6 +3338,50 @@ label.wide {
   display: grid;
   align-content: start;
   gap: 14px;
+  max-height: calc(100vh - 318px);
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.run-side .section-block {
+  min-height: 0;
+}
+
+.run-side .code-block.light {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.run-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.run-analysis-grid div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.run-analysis-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.run-analysis-grid b {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chart-placeholder {
@@ -3650,6 +3876,25 @@ label.wide {
   gap: 12px;
 }
 
+.source-drawer-tabs {
+  margin-bottom: 2px;
+}
+
+.source-drawer-tabs .tab {
+  flex: 1 0 auto;
+  text-align: center;
+}
+
+.drawer-tab-panel {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.drawer-stat-grid {
+  max-height: none;
+}
+
 .source-item {
   display: grid;
   gap: 6px;
@@ -3662,6 +3907,12 @@ label.wide {
 .source-item span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.source-item .code-block {
+  max-height: 160px;
+  padding: 10px;
+  white-space: pre-wrap;
 }
 
 .score-line {

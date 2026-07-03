@@ -8,6 +8,7 @@ import com.openagentflow.domain.chat.ChatMessage;
 import com.openagentflow.domain.chat.ChatRunContext;
 import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
+import com.openagentflow.domain.chat.ToolDefinitionForModel;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.knowledge.RagRetrievalOutcome;
@@ -41,6 +42,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -256,8 +258,152 @@ public class ChatService {
         context.setRouteDecision(routeDecision);
         context.setMessages(buildMessages(agent, request));
         context.setSources(List.of());
-        context.setTools(toolService.listModelToolsForAgent(agent));
+        List<ToolDefinitionForModel> agentTools = toolService.listModelToolsForAgent(agent);
+        context.setTools(filterToolsForInput(agentTools, request.getInput()));
+        context.setMessages(injectToolRoutingPrompt(context.getMessages(), agentTools, request.getInput()));
         return context;
+    }
+
+    /**
+     * 根据用户输入过滤本轮可暴露给模型的工具。
+     *
+     * <p>模型看到工具后会倾向于主动调用，因此这里先做轻量意图门控。订单查询类工具必须识别到真实订单号，
+     * 并且本轮问题属于物流、订单状态、发货、签收等实时业务查询时才暴露；产品、优惠券、活动、价格政策等
+     * 知识咨询优先走 RAG 和普通模型回答。</p>
+     *
+     * @param tools Agent 已绑定且启用的工具
+     * @param input 用户本轮输入
+     * @return 过滤后的工具列表
+     */
+    private List<ToolDefinitionForModel> filterToolsForInput(List<ToolDefinitionForModel> tools, String input) {
+        if (tools == null || tools.isEmpty()) {
+            return List.of();
+        }
+        String normalizedInput = normalizeText(input);
+        boolean orderIntent = hasOrderRuntimeIntent(normalizedInput);
+        return tools.stream()
+                .filter(tool -> !isOrderRuntimeTool(tool) || orderIntent)
+                .map(tool -> strengthenToolDescription(tool, orderIntent))
+                .toList();
+    }
+
+    /**
+     * 注入工具路由提示，避免历史会话中的工具结果污染本轮知识咨询。
+     *
+     * @param messages 原始消息列表
+     * @param tools Agent 已绑定工具
+     * @param input 用户本轮输入
+     * @return 注入提示后的消息列表
+     */
+    private List<ChatMessage> injectToolRoutingPrompt(List<ChatMessage> messages, List<ToolDefinitionForModel> tools, String input) {
+        if (messages == null || messages.isEmpty() || tools == null || tools.stream().noneMatch(this::isOrderRuntimeTool)) {
+            return messages;
+        }
+        String normalizedInput = normalizeText(input);
+        boolean orderIntent = hasOrderRuntimeIntent(normalizedInput);
+        boolean orderQuestionWithoutNo = !orderIntent
+                && containsAny(normalizedInput, "订单", "order", "物流", "快递", "运单", "包裹", "发货", "签收", "配送", "送达");
+        boolean shouldIsolateOrderHistory = !orderIntent;
+        String routingPrompt;
+        if (orderIntent) {
+            routingPrompt = "本轮已识别到订单实时查询意图和订单号，可以在需要时调用订单工具；最终回答必须基于本轮工具结果，不得复用旧工具结果。";
+        } else if (orderQuestionWithoutNo) {
+            routingPrompt = "本轮用户可能在询问订单或物流，但没有提供可识别订单号。订单工具已禁用。请直接请用户补充订单号，不要编造订单状态，也不要提示订单查询失败。";
+        } else {
+            routingPrompt = "本轮用户问题不是订单实时查询，订单工具已禁用。请不要延续上一轮订单查询失败结果，不要提示使用演示订单号；如果问题是产品、优惠券、活动、价格、会员权益或政策咨询，优先基于知识库回答，资料不足时再追问具体产品名称或品类。";
+        }
+        List<ChatMessage> routedMessages = messages.stream()
+                .filter(message -> !shouldIsolateOrderHistory || !isOrderFailureHistory(message))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        int insertIndex = Math.max(1, routedMessages.size() - 1);
+        routedMessages.add(insertIndex, new ChatMessage("system", routingPrompt));
+        return routedMessages;
+    }
+
+    /**
+     * 判断历史消息是否属于订单工具失败上下文。
+     *
+     * <p>当本轮不是订单查询时，这类历史会强烈污染模型，让问候、产品咨询继续围绕订单失败回答。</p>
+     *
+     * @param message 历史消息
+     * @return 是否需要隔离
+     */
+    private boolean isOrderFailureHistory(ChatMessage message) {
+        if (message == null || !"assistant".equals(message.getRole())) {
+            return false;
+        }
+        String content = normalizeText(message.getContent());
+        return containsAny(content,
+                "订单查询", "未匹配到相关订单", "未找到对应订单", "未找到该订单", "参数有误",
+                "oaf-demo-1001", "演示订单号", "非订单号", "查询演示订单");
+    }
+
+    /**
+     * 判断用户本轮是否真的需要订单运行时工具。
+     *
+     * @param normalizedInput 已归一化输入
+     * @return 是否具备订单工具调用意图
+     */
+    private boolean hasOrderRuntimeIntent(String normalizedInput) {
+        if (!StringUtils.hasText(normalizedInput)) {
+            return false;
+        }
+        boolean hasExplicitOrderNo = hasExplicitOrderNo(normalizedInput);
+        boolean hasOrderWord = containsAny(normalizedInput, "订单", "order", "物流", "快递", "运单", "包裹");
+        boolean hasRuntimeAction = containsAny(normalizedInput,
+                "到哪里", "到哪", "状态", "进度", "发货", "发出", "签收", "配送", "送达", "物流", "快递", "运单", "退款", "售后");
+        boolean hasOrderSummaryIntent = containsAny(normalizedInput,
+                "多少订单", "几个订单", "几笔订单", "订单数量", "订单数", "我的订单", "订单列表", "所有订单", "有哪些订单");
+        boolean knowledgeOnlyIntent = containsAny(normalizedInput,
+                "优惠", "优惠券", "优惠卷", "券", "活动", "折扣", "满减", "促销", "会员", "积分", "价格", "套餐");
+        // 订单汇总查询不依赖单个订单号，可以直接走只读订单工具；普通订单状态查询仍要求明确订单号。
+        return ((hasExplicitOrderNo && (hasRuntimeAction || hasOrderWord)) || hasOrderSummaryIntent) && !knowledgeOnlyIntent;
+    }
+
+    /**
+     * 判断输入中是否存在可用于订单工具的真实订单号。
+     *
+     * @param normalizedInput 已归一化输入
+     * @return 是否包含订单号
+     */
+    private boolean hasExplicitOrderNo(String normalizedInput) {
+        return StringUtils.hasText(normalizedInput)
+                && (normalizedInput.matches(".*oaf-demo-[0-9]+.*")
+                || normalizedInput.matches(".*\\b[a-z]{1,8}[-_][0-9]{4,}\\b.*")
+                || normalizedInput.matches(".*\\b[0-9]{8,}\\b.*"));
+    }
+
+    /**
+     * 判断工具是否属于订单实时查询类工具。
+     *
+     * @param tool 模型工具定义
+     * @return 是否订单工具
+     */
+    private boolean isOrderRuntimeTool(ToolDefinitionForModel tool) {
+        String text = normalizeText(safeText(tool.getName()) + " " + safeText(tool.getDescription()));
+        return containsAny(text, "order", "订单", "物流", "快递", "运单");
+    }
+
+    /**
+     * 给工具描述补充边界，减少模型误调用。
+     *
+     * @param tool 原始工具定义
+     * @param orderIntent 本轮是否订单意图
+     * @return 带边界描述的工具定义
+     */
+    private ToolDefinitionForModel strengthenToolDescription(ToolDefinitionForModel tool, boolean orderIntent) {
+        ToolDefinitionForModel copy = new ToolDefinitionForModel();
+        copy.setId(tool.getId());
+        copy.setName(tool.getName());
+        copy.setParameters(tool.getParameters());
+        String description = safeText(tool.getDescription());
+        if (isOrderRuntimeTool(tool)) {
+            description = description + " 当用户明确提供订单号并询问订单状态、物流进度、发货签收等实时订单数据时调用；当用户询问我的订单、订单数量、订单列表、多少订单时也可以调用并返回订单汇总；产品、优惠券、促销活动、价格政策等咨询不要调用本工具。";
+        } else if (!orderIntent) {
+            description = description + " 当前用户问题没有订单实时查询意图，优先按知识库和普通对话回答。";
+        }
+        copy.setDescription(description);
+        return copy;
     }
 
     /**
@@ -1212,6 +1358,35 @@ public class ChatService {
      */
     private String safeText(String text) {
         return text == null ? "" : text;
+    }
+
+    /**
+     * 文本归一化，便于进行轻量意图判断。
+     *
+     * @param text 原始文本
+     * @return 小写后的非空文本
+     */
+    private String normalizeText(String text) {
+        return safeText(text).trim().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 判断文本是否包含任一关键词。
+     *
+     * @param text 待检查文本
+     * @param keywords 关键词列表
+     * @return 是否命中
+     */
+    private boolean containsAny(String text, String... keywords) {
+        if (!StringUtils.hasText(text)) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (text.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

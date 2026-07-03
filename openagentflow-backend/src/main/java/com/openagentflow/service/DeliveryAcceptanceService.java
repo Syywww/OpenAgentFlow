@@ -34,7 +34,7 @@ import java.util.UUID;
 public class DeliveryAcceptanceService {
 
     /** 最新 SQL 脚本版本，用于交付清单展示。 */
-    private static final String LATEST_SQL_VERSION = "V026__delivery_acceptance_center.sql";
+    private static final String LATEST_SQL_VERSION = "V029__demo_data_package.sql";
 
     /** 当前前端版本，和 package.json 保持一致。 */
     private static final String FRONTEND_VERSION = "0.1.0";
@@ -357,12 +357,14 @@ public class DeliveryAcceptanceService {
      * @return 检查项
      */
     private DeliveryAcceptanceDtos.CheckItem checkCostReady() {
-        long priceCount = count("select count(1) from model_price_config where enabled = 1");
+        long priceConfigCount = count("select count(1) from model_price_config where enabled = 1");
+        long modelPriceCount = count("select count(1) from model_config where status = 'enabled' and (input_price_per_1k > 0 or output_price_per_1k > 0)");
         long quotaCount = count("select count(1) from model_usage_quota where enabled = 1");
+        long priceCount = Math.max(priceConfigCount, modelPriceCount);
         return item("cost_ready", "成本与配额", "运营治理", priceCount > 0 ? "passed" : "warning",
                 priceCount > 0 ? "模型价格配置可用" : "缺少启用的模型价格配置",
                 "配置模型价格和配额规则，确保成本不为 0",
-                false, priceCount + "/" + quotaCount, "价格配置>0", mapOf("priceCount", priceCount, "quotaCount", quotaCount));
+                false, priceCount + "/" + quotaCount, "价格配置>0", mapOf("priceConfigCount", priceConfigCount, "modelPriceCount", modelPriceCount, "quotaCount", quotaCount));
     }
 
     /**
@@ -430,15 +432,23 @@ public class DeliveryAcceptanceService {
      * @return 检查项
      */
     private DeliveryAcceptanceDtos.CheckItem checkDemoData() {
-        long agents = count("select count(1) from agent where deleted_at is null");
-        long knowledge = count("select count(1) from knowledge_base where deleted_at is null");
-        long tools = count("select count(1) from tool_definition where deleted_at is null");
-        long workflows = count("select count(1) from workflow_definition where deleted_at is null");
-        boolean ready = agents > 0 && knowledge > 0 && tools > 0 && workflows > 0;
+        long agents = count("select count(1) from agent where deleted_at is null and agent_code in ('customer-support-agent','order-analyst-agent','quality-review-agent')");
+        long knowledge = count("select count(1) from knowledge_base where deleted_at is null and kb_code = 'product-manual-kb'");
+        long chunks = count("select count(1) from knowledge_chunk where kb_id = '40000000-0000-0000-0000-000000000001' and status = 'active'");
+        long tools = count("select count(1) from tool_definition where deleted_at is null and tool_code in ('demo_order_status_rest','demo_customer_event_webhook','demo_readonly_order_sql')");
+        long workflows = count("select count(1) from workflow_definition where deleted_at is null and workflow_code = 'demo-customer-service-flow'");
+        long datasets = count("select count(1) from eval_dataset where deleted_at is null and dataset_code = 'demo-customer-service-eval'");
+        long teams = count("select count(1) from agent_team where team_code = 'demo-customer-service-squad' and status = 'published'");
+        long prompts = count("select count(1) from prompt_template where template_code in ('demo-customer-service-system','demo-trusted-rag-answer')");
+        long memories = count("select count(1) from agent_memory where memory_key in ('customer_support_agent_long_term_template','demo_customer_support_preference') and status = 'active'");
+        boolean ready = agents >= 3 && knowledge > 0 && chunks >= 4 && tools >= 3 && workflows > 0 && datasets > 0 && teams > 0 && prompts >= 2 && memories >= 1;
         return item("demo_data", "演示数据", "交付清单", ready ? "passed" : "warning",
-                ready ? "演示数据覆盖 Agent、知识库、工具和工作流" : "演示数据不完整",
-                "补齐演示 Agent、知识库、工具、工作流和评测集",
-                false, agents + "/" + knowledge + "/" + tools + "/" + workflows, "四类资源均>0", mapOf("agents", agents, "knowledge", knowledge, "tools", tools, "workflows", workflows));
+                ready ? "演示样例包已覆盖 Agent、知识库、工具、工作流、评测集和协作团队" : "演示样例包不完整",
+                "运行 scripts/init-demo-data.ps1 补齐 P33 演示样例包",
+                false,
+                agents + "/" + knowledge + "/" + chunks + "/" + tools + "/" + workflows + "/" + datasets + "/" + teams,
+                "Agent>=3、分片>=4、工具>=3、工作流/评测集/团队均>0",
+                mapOf("agents", agents, "knowledge", knowledge, "chunks", chunks, "tools", tools, "workflows", workflows, "datasets", datasets, "teams", teams, "prompts", prompts, "memories", memories));
     }
 
     /**
@@ -518,7 +528,10 @@ public class DeliveryAcceptanceService {
                 "tools", count("select count(1) from tool_definition where deleted_at is null"),
                 "workflows", count("select count(1) from workflow_definition where deleted_at is null"),
                 "evaluationDatasets", count("select count(1) from eval_dataset where deleted_at is null"),
-                "promptTemplates", count("select count(1) from prompt_template where deleted_at is null")));
+                "promptTemplates", count("select count(1) from prompt_template"),
+                "agentTeams", count("select count(1) from agent_team"),
+                "memories", count("select count(1) from agent_memory where status = 'active'"),
+                "demoPackage", count("select count(1) from sys_config where config_key = 'demo.data.package.version'")));
         return manifest;
     }
 

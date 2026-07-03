@@ -51,6 +51,10 @@ Redis: cache, sessions, queue state
 - `V025__evaluation_llm_as_judge.sql`: LLM-as-Judge metric setup, judge detail comments, and default score configuration.
 - `V026__delivery_acceptance_center.sql`: delivery acceptance report table, permissions, and menu API access.
 - `V027__workflow_production_enhancement.sql`: workflow templates, API endpoints, strategy hit logs, input/output schema, execution policy, and advanced workflow permissions.
+- `V028__workflow_execution_reliability_final.sql`: workflow idempotency, heartbeat, recovery snapshot, and failed-node resume fields.
+- `V029__demo_data_package.sql`: one-click demo data package with Prompt, Agents, knowledge chunks, tools, workflow, evaluation dataset, multi-Agent team, Memory, and delivery checks.
+- `V030__customer_service_intent_guard_coupon_policy.sql`: customer-service tool intent boundary and coupon-policy knowledge chunk.
+- `V031__customer_service_product_policy.sql`: product/service-scope knowledge chunk and knowledge-first customer-service routing prompt.
 
 Recommended execution order:
 
@@ -82,6 +86,10 @@ V024__rag_production_retrieval_enhancement.sql
 V025__evaluation_llm_as_judge.sql
 V026__delivery_acceptance_center.sql
 V027__workflow_production_enhancement.sql
+V028__workflow_execution_reliability_final.sql
+V029__demo_data_package.sql
+V030__customer_service_intent_guard_coupon_policy.sql
+V031__customer_service_product_policy.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -174,6 +182,18 @@ Coverage matches the PostgreSQL version at the feature level:
 - The migration creates `workflow_template`, `workflow_api_endpoint`, and `workflow_policy_hit_log`, with Chinese comments for every table and column.
 - The backend exposes advanced workflow overview, templates, API endpoint publishing, human task decisions, endpoint invocation, and version diff APIs.
 - The frontend workflow designer now includes production node types, retry and timeout policy, failure branch strategy, debug options, templates, API publishing, governance, human tasks, and version comparison.
+
+## Latest Demo Package Update
+
+- `V029__demo_data_package.sql` seeds a complete customer-service demo package for local showcase and delivery acceptance.
+- The package includes customer-service Prompt templates, three Agents, a knowledge base document with four chunks, three tool types, the `demo_order` table, a published workflow, an evaluation dataset, a multi-Agent team, and long-term Memory.
+- Demo HTTP tools use `mock.openagentflow.local` for display, while the backend returns built-in mock payloads for seeded demo tools.
+- `V030__customer_service_intent_guard_coupon_policy.sql` adds customer-service intent boundaries and a coupon-policy knowledge chunk, so coupon or promotion questions stay on RAG instead of calling order tools.
+- `V031__customer_service_product_policy.sql` adds product/service-scope knowledge for “what products do you have” questions and reinforces knowledge-first routing.
+- `V032__demo_workflow_node_conditions.sql` adds sample node-level run conditions to the demo workflow RAG node and order-tool node.
+- `V033__demo_order_summary_tool_intent.sql` expands demo order-tool routing for “my orders” and “how many orders” questions.
+- `scripts/init-demo-data.ps1` can apply the package to an existing local MySQL database and optionally write a local model API key without storing it in repository files.
+- The delivery acceptance backend checks whether the P33 demo package covers Agent, knowledge base, chunks, tools, workflow, evaluation dataset, team, Prompt, and Memory.
 
 ## Milvus Mapping
 

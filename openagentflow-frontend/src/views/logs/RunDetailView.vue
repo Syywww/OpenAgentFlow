@@ -193,15 +193,8 @@ function stepBadge(step?: TraceStepDetail) {
     <div class="empty-state">正在加载 Trace...</div>
   </section>
 
-  <RuntimeInterpreter
-    v-if="!loading && run"
-    title="Agent Runtime 可视化解释器"
-    :subtitle="`${run.runType} · ${run.statusLabel}`"
-    :phases="runtimePhases"
-  />
-
-  <section v-if="!loading && run" class="run-detail-layout">
-    <div class="section-block">
+  <section v-if="!loading && run" class="run-detail-layout" :class="{ 'single-panel': activeTab !== '步骤详情' }">
+    <div v-if="activeTab === '步骤详情'" class="section-block run-timeline-panel">
       <div class="section-title"><h2>步骤时间线</h2><StatusBadge :label="run.statusLabel" /></div>
       <div class="timeline-list">
         <button
@@ -220,45 +213,98 @@ function stepBadge(step?: TraceStepDetail) {
     </div>
 
     <div class="run-side">
-      <div class="section-block">
-        <div class="section-title"><h2>输入信息</h2></div>
-        <p>{{ run.inputText || '-' }}</p>
-      </div>
-      <div class="section-block">
-        <div class="section-title"><h2>输出信息</h2></div>
-        <p>{{ run.outputText || '-' }}</p>
-        <p v-if="run.errorMessage" class="form-error">{{ run.errorMessage }}</p>
-      </div>
-      <div class="section-block">
-        <div class="section-title"><h2>当前步骤</h2><StatusBadge v-if="selectedStep" :label="selectedStep.status" /></div>
-        <p><b>{{ selectedStep?.stepName || '-' }}</b></p>
-        <p>类型：{{ selectedStep?.stepType || '-' }} · 耗时：{{ formatMs(selectedStep?.latencyMs) }}</p>
-        <p v-if="selectedStep?.errorMessage" class="form-error">{{ selectedStep.errorMessage }}</p>
-      </div>
-      <div class="section-block">
-        <div class="section-title"><h2>输入载荷</h2></div>
-        <pre class="code-block light">{{ toJson(selectedStep?.inputPayload) }}</pre>
-      </div>
-      <div class="section-block">
-        <div class="section-title"><h2>输出载荷</h2></div>
-        <pre class="code-block light">{{ toJson(selectedStep?.outputPayload) }}</pre>
-      </div>
-      <div v-if="selectedStep?.stepType === 'LLM'" class="section-block">
-        <div class="section-title"><h2>Prompt / Messages</h2></div>
-        <pre class="code-block light">{{ toJson(selectedStep.prompt || selectedStep.llmCall?.requestMessages) }}</pre>
-      </div>
-      <div v-if="selectedStep?.stepType === 'RAG'" class="section-block">
-        <div class="section-title"><h2>RAG 检索</h2><span>{{ selectedStep.retrievalLogs?.length || 0 }} 条</span></div>
-        <pre class="code-block light">{{ toJson(selectedStep.retrievalLogs || run.retrievalLogs) }}</pre>
-      </div>
-      <div v-if="selectedStep?.stepType === 'TOOL'" class="section-block">
-        <div class="section-title"><h2>工具调用</h2></div>
-        <pre class="code-block light">{{ toJson(selectedStep.toolInvocation) }}</pre>
-      </div>
-      <div class="section-block">
-        <div class="section-title"><h2>Token 使用</h2></div>
-        <pre class="code-block light">{{ toJson(selectedStep?.tokenUsage) }}</pre>
-      </div>
+      <template v-if="activeTab === '运行概览'">
+        <RuntimeInterpreter
+          title="Agent Runtime 可视化解释器"
+          :subtitle="`${run.runType} · ${run.statusLabel}`"
+          :phases="runtimePhases"
+          compact
+        />
+        <div class="section-block">
+          <div class="section-title"><h2>输入信息</h2></div>
+          <p>{{ run.inputText || '-' }}</p>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>输出信息</h2></div>
+          <p>{{ run.outputText || '-' }}</p>
+          <p v-if="run.errorMessage" class="form-error">{{ run.errorMessage }}</p>
+        </div>
+      </template>
+
+      <template v-else-if="activeTab === '步骤详情'">
+        <div class="section-block">
+          <div class="section-title"><h2>当前步骤</h2><StatusBadge v-if="selectedStep" :label="selectedStep.status" /></div>
+          <p><b>{{ selectedStep?.stepName || '-' }}</b></p>
+          <p>类型：{{ selectedStep?.stepType || '-' }} · 耗时：{{ formatMs(selectedStep?.latencyMs) }}</p>
+          <p v-if="selectedStep?.errorMessage" class="form-error">{{ selectedStep.errorMessage }}</p>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>输入载荷</h2></div>
+          <pre class="code-block light">{{ toJson(selectedStep?.inputPayload) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>输出载荷</h2></div>
+          <pre class="code-block light">{{ toJson(selectedStep?.outputPayload) }}</pre>
+        </div>
+        <div v-if="selectedStep?.stepType === 'LLM'" class="section-block">
+          <div class="section-title"><h2>Prompt / Messages</h2></div>
+          <pre class="code-block light">{{ toJson(selectedStep.prompt || selectedStep.llmCall?.requestMessages) }}</pre>
+        </div>
+        <div v-if="selectedStep?.stepType === 'RAG'" class="section-block">
+          <div class="section-title"><h2>RAG 检索</h2><span>{{ selectedStep.retrievalLogs?.length || 0 }} 条</span></div>
+          <pre class="code-block light">{{ toJson(selectedStep.retrievalLogs || run.retrievalLogs) }}</pre>
+        </div>
+        <div v-if="selectedStep?.stepType === 'TOOL'" class="section-block">
+          <div class="section-title"><h2>工具调用</h2></div>
+          <pre class="code-block light">{{ toJson(selectedStep.toolInvocation) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>Token 使用</h2></div>
+          <pre class="code-block light">{{ toJson(selectedStep?.tokenUsage) }}</pre>
+        </div>
+      </template>
+
+      <template v-else-if="activeTab === '性能分析'">
+        <div class="section-block run-analysis-grid">
+          <div><span>总耗时</span><b>{{ formatMs(run.latencyMs) }}</b></div>
+          <div><span>总 Tokens</span><b>{{ run.totalTokens || 0 }}</b></div>
+          <div><span>Prompt</span><b>{{ run.promptTokens || 0 }}</b></div>
+          <div><span>Completion</span><b>{{ run.completionTokens || 0 }}</b></div>
+          <div><span>总成本</span><b>{{ formatCost(run.totalCost) }}</b></div>
+          <div><span>步骤数</span><b>{{ run.steps.length }}</b></div>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>LLM 调用</h2><span>{{ run.llmCalls?.length || 0 }} 次</span></div>
+          <pre class="code-block light">{{ toJson(run.llmCalls || []) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>工具耗时</h2><span>{{ run.toolInvocations?.length || 0 }} 次</span></div>
+          <pre class="code-block light">{{ toJson(run.toolInvocations || []) }}</pre>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="section-block">
+          <div class="section-title"><h2>运行元数据</h2></div>
+          <pre class="code-block light">{{ toJson(run.metadata) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>运行输入载荷</h2></div>
+          <pre class="code-block light">{{ toJson(run.inputPayload) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>运行输出载荷</h2></div>
+          <pre class="code-block light">{{ toJson(run.outputPayload) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>RAG 检索日志</h2><span>{{ run.retrievalLogs?.length || 0 }} 条</span></div>
+          <pre class="code-block light">{{ toJson(run.retrievalLogs || []) }}</pre>
+        </div>
+        <div class="section-block">
+          <div class="section-title"><h2>工具调用日志</h2><span>{{ run.toolInvocations?.length || 0 }} 次</span></div>
+          <pre class="code-block light">{{ toJson(run.toolInvocations || []) }}</pre>
+        </div>
+      </template>
     </div>
   </section>
 </template>

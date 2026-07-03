@@ -1,15 +1,75 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { AlertTriangle, ArrowRight, Check, Copy, FileUp, Play, Plus, X } from 'lucide-vue-next';
 import StatusBadge from './StatusBadge.vue';
 import { useOverlay } from '../composables/useOverlay';
 
+type SourceDrawerPanel = 'retrieval' | 'tools' | 'stats';
+
 const router = useRouter();
 const { overlay, closeModal, closeDrawer, toast } = useOverlay();
+const activeSourceDrawerPanel = ref<SourceDrawerPanel>('retrieval');
+
+const sourceDrawerItems = [
+  {
+    name: '企业知识库建设白皮书.pdf',
+    score: '0.92',
+    page: 'P12-14',
+    summary: '企业知识库应采用分层架构，包括数据采集、知识处理、知识存储、服务应用与终端交互。',
+  },
+  {
+    name: '企业数字化转型技术架构指南.docx',
+    score: '0.89',
+    page: 'P13-15',
+    summary: '知识处理链路需要覆盖解析、清洗、切片、向量化、质量巡检和引用追溯。',
+  },
+  {
+    name: '知识图谱在企业知识管理中的应用.pdf',
+    score: '0.86',
+    page: 'P14-16',
+    summary: '图谱关系、向量召回与关键词召回可以互补提升复杂问题的可解释性。',
+  },
+];
+
+const sourceDrawerTools = [
+  {
+    name: '架构模板生成器',
+    status: '成功',
+    latency: '1.23s',
+    detail: '{"template":"enterprise-rag","sections":["模型接入","知识库","Trace"]}',
+  },
+  {
+    name: '知识库质量检查',
+    status: '成功',
+    latency: '0.84s',
+    detail: '{"lowConfidence":false,"citationCoverage":0.87}',
+  },
+];
+
+const sourceDrawerStats = [
+  { label: '检索结果', value: '3', help: '本次命中的知识片段' },
+  { label: '最佳置信', value: '0.92', help: '最高相似度得分' },
+  { label: '工具调用', value: '2', help: '参与回答的工具动作' },
+  { label: '引用覆盖', value: '87%', help: '回答内容可追溯比例' },
+];
+
+watch(
+  () => overlay.drawer,
+  (drawer) => {
+    if (drawer === 'sources') {
+      activeSourceDrawerPanel.value = 'retrieval';
+    }
+  },
+);
 
 function go(path: string) {
   closeModal();
   router.push(path);
+}
+
+function switchSourceDrawerPanel(panel: SourceDrawerPanel) {
+  activeSourceDrawerPanel.value = panel;
 }
 </script>
 
@@ -274,21 +334,60 @@ function go(path: string) {
         </header>
 
         <div v-if="overlay.drawer === 'sources'" class="drawer-stack">
-          <div class="tabs">
-            <button class="tab active" type="button">检索结果</button>
-            <button class="tab" type="button">工具调用</button>
-            <button class="tab" type="button">引用统计</button>
+          <div class="tabs source-drawer-tabs" role="tablist">
+            <button
+              class="tab"
+              :class="{ active: activeSourceDrawerPanel === 'retrieval' }"
+              type="button"
+              role="tab"
+              :aria-selected="activeSourceDrawerPanel === 'retrieval'"
+              @click="switchSourceDrawerPanel('retrieval')"
+            >
+              检索结果
+            </button>
+            <button
+              class="tab"
+              :class="{ active: activeSourceDrawerPanel === 'tools' }"
+              type="button"
+              role="tab"
+              :aria-selected="activeSourceDrawerPanel === 'tools'"
+              @click="switchSourceDrawerPanel('tools')"
+            >
+              工具调用
+            </button>
+            <button
+              class="tab"
+              :class="{ active: activeSourceDrawerPanel === 'stats' }"
+              type="button"
+              role="tab"
+              :aria-selected="activeSourceDrawerPanel === 'stats'"
+              @click="switchSourceDrawerPanel('stats')"
+            >
+              引用统计
+            </button>
           </div>
-          <article v-for="(source, index) in ['企业知识库建设白皮书.pdf', '企业数字化转型技术架构指南.docx', '知识图谱在企业知识管理中的应用.pdf']" :key="source" class="source-item">
-            <b>{{ index + 1 }}. {{ source }}</b>
-            <span>相似度 0.{{ 92 - index * 3 }} · 页码 P{{ 12 + index }}-{{ 14 + index }}</span>
-            <p>企业知识库应采用分层架构，包括数据采集、知识处理、知识存储、服务应用与终端交互。</p>
-          </article>
-          <article class="source-item">
-            <b>架构模板生成器</b>
-            <StatusBadge label="成功" />
-            <span>耗时 1.23s</span>
-          </article>
+          <div v-if="activeSourceDrawerPanel === 'retrieval'" class="drawer-tab-panel">
+            <article v-for="(source, index) in sourceDrawerItems" :key="source.name" class="source-item">
+              <b>{{ index + 1 }}. {{ source.name }}</b>
+              <span>相似度 {{ source.score }} · 页码 {{ source.page }}</span>
+              <p>{{ source.summary }}</p>
+            </article>
+          </div>
+          <div v-else-if="activeSourceDrawerPanel === 'tools'" class="drawer-tab-panel">
+            <article v-for="tool in sourceDrawerTools" :key="tool.name" class="source-item">
+              <b>{{ tool.name }}</b>
+              <StatusBadge :label="tool.status" />
+              <span>耗时 {{ tool.latency }}</span>
+              <pre class="code-block light">{{ tool.detail }}</pre>
+            </article>
+          </div>
+          <div v-else class="trace-stat-grid drawer-stat-grid">
+            <article v-for="item in sourceDrawerStats" :key="item.label" class="trace-stat-card">
+              <span>{{ item.label }}</span>
+              <b>{{ item.value }}</b>
+              <small>{{ item.help }}</small>
+            </article>
+          </div>
         </div>
 
         <div v-else-if="overlay.drawer === 'step'" class="drawer-stack">

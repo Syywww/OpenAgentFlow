@@ -30,6 +30,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -258,7 +259,7 @@ public class AgentService {
         agentAccessService.assertCanView(entity);
         request.setAgentId(entity.getId());
         WorkflowDefinitionEntity workflow = workflowService.findEnabledWorkflowForAgent(entity.getId());
-        if (workflow != null) {
+        if (workflow != null && shouldRunBoundWorkflow(workflow, request.getInput())) {
             String sessionId = ensureWorkflowSession(entity, request);
             WorkflowDtos.RunResult result = workflowExecutionService.runWorkflow(workflow.getId(), toWorkflowRunRequest(entity, request), "agent_run");
             agentSessionService.appendAssistantMessage(sessionId, safeText(result.getOutputText()), result.getTotalTokens(), Map.of(
@@ -283,11 +284,73 @@ public class AgentService {
         agentAccessService.assertCanView(entity);
         request.setAgentId(entity.getId());
         WorkflowDefinitionEntity workflow = workflowService.findEnabledWorkflowForAgent(entity.getId());
-        if (workflow != null) {
+        if (workflow != null && shouldRunBoundWorkflow(workflow, request.getInput())) {
             String sessionId = ensureWorkflowSession(entity, request);
             return runWorkflowStream(entity, workflow, request, sessionId);
         }
         return chatService.completeStream(request);
+    }
+
+    /**
+     * 判断本轮 Agent 输入是否应该触发已绑定工作流。
+     *
+     * <p>客服演示工作流包含固定订单工具节点，如果所有输入都执行工作流，会导致问候、天气、产品咨询也先查订单。
+     * 这里对订单演示类工作流增加路由门控：只有识别到真实订单号和订单实时查询意图时才进入工作流。</p>
+     *
+     * @param workflow 绑定工作流
+     * @param input 用户输入
+     * @return 是否运行绑定工作流
+     */
+    private boolean shouldRunBoundWorkflow(WorkflowDefinitionEntity workflow, String input) {
+        if (!isOrderDemoWorkflow(workflow)) {
+            return true;
+        }
+        return hasOrderRuntimeIntent(input);
+    }
+
+    /**
+     * 判断工作流是否属于订单演示查询链路。
+     *
+     * @param workflow 工作流实体
+     * @return 是否订单演示工作流
+     */
+    private boolean isOrderDemoWorkflow(WorkflowDefinitionEntity workflow) {
+        if (workflow == null) {
+            return false;
+        }
+        String text = normalizeText(safeText(workflow.getWorkflowCode()) + " "
+                + safeText(workflow.getWorkflowName()) + " "
+                + safeText(workflow.getDescription()) + " "
+                + safeText(workflow.getGraphJson()));
+        return text.contains("demo_order_status_rest")
+                || text.contains("demo_readonly_order_sql")
+                || text.contains("订单工具")
+                || text.contains("订单状态查询");
+    }
+
+    /**
+     * 判断用户输入是否具备订单实时查询意图。
+     *
+     * @param input 用户输入
+     * @return 是否可以进入订单工作流
+     */
+    private boolean hasOrderRuntimeIntent(String input) {
+        String text = normalizeText(input);
+        if (!StringUtils.hasText(text)) {
+            return false;
+        }
+        boolean hasOrderNo = text.matches(".*oaf-demo-[0-9]+.*")
+                || text.matches(".*\\b[a-z]{1,8}[-_][0-9]{4,}\\b.*")
+                || text.matches(".*\\b[0-9]{8,}\\b.*");
+        boolean hasRuntimeAction = containsAny(text,
+                "订单", "order", "物流", "快递", "运单", "包裹", "到哪里", "到哪", "状态", "进度",
+                "发货", "发出", "签收", "配送", "送达", "退款", "售后");
+        boolean hasOrderSummaryIntent = containsAny(text,
+                "多少订单", "几个订单", "几笔订单", "订单数量", "订单数", "我的订单", "订单列表", "所有订单", "有哪些订单");
+        boolean knowledgeOnly = containsAny(text,
+                "天气", "你好", "您好", "我是谁", "产品", "优惠", "优惠券", "优惠卷", "活动",
+                "折扣", "满减", "促销", "会员", "积分", "价格", "套餐");
+        return ((hasOrderNo && hasRuntimeAction) || hasOrderSummaryIntent) && !knowledgeOnly;
     }
 
     /**
@@ -715,6 +778,35 @@ public class AgentService {
      */
     private String safeText(String text) {
         return text == null ? "" : text;
+    }
+
+    /**
+     * 文本归一化，便于运行入口做轻量路由判断。
+     *
+     * @param text 原始文本
+     * @return 小写文本
+     */
+    private String normalizeText(String text) {
+        return safeText(text).trim().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 判断文本是否命中任一关键词。
+     *
+     * @param text 待检查文本
+     * @param keywords 关键词列表
+     * @return 是否命中
+     */
+    private boolean containsAny(String text, String... keywords) {
+        if (!StringUtils.hasText(text)) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (text.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

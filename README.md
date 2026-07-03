@@ -16,13 +16,14 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
 - **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、混合召回、重排、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
-- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
+- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
 - **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
-- **运行观测 Trace**：统一串联 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误、引用来源和 Agent Runtime 可视化解释器。
+- **运行观测 Trace**：统一串联 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误、引用来源、详情页卡片切换、步骤时间线按需展示、内部滚动和 Agent Runtime 可视化解释器。
 - **成本与用量中心**：按服务商、模型、Agent、用户、工作流、评测统计 Token、成本、耗时，支持明细导出、价格配置和配额拦截。
 - **组织空间治理**：组织、工作空间、空间成员、资源归属和空间级访问控制，支持 Agent、知识库、工具、工作流按空间隔离。
 - **运营监控告警**：统一展示平台健康、关键指标、告警规则、告警事件、通知渠道和一键巡检，支撑日常运营与交付验收。
 - **交付验收中心**：面向开源发布、客户交付和部署上线，提供环境检查、核心链路检查、风险提示、交付清单和报告生成。
+- **一键演示数据**：提供 P33 演示样例包，内置 Prompt、Agent、知识库、工具、工作流、评测集、多 Agent 团队和 Memory，支持脚本快速初始化。
 - **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台支持流式生成暂停、保留部分回答并引入补充说明继续，长对话内容、引用来源和工具调用在独立区域内滚动展示。
 - **Memory 记忆中心**：支持短期会话记忆、长期记忆、任务记忆、向量记忆、Prompt 同款管理布局、弹框维护、召回测试、过期清理、客服助手长期记忆模板、Agent 调试链路自动沉淀和 SSE 异步登录态传递。
@@ -111,6 +112,7 @@ dm/
 - [架构说明](docs/架构说明.md)
 - [配置说明](docs/配置说明.md)
 - [演示流程](docs/演示流程.md)
+- [演示数据包](docs/演示数据包.md)
 - [路线图](docs/路线图.md)
 - [生产部署](docs/生产部署.md)
 - [运营监控](docs/运营监控.md)
@@ -168,9 +170,47 @@ V025__evaluation_llm_as_judge.sql
 V026__delivery_acceptance_center.sql
 V027__workflow_production_enhancement.sql
 V028__workflow_execution_reliability_final.sql
+V029__demo_data_package.sql
+V030__customer_service_intent_guard_coupon_policy.sql
+V031__customer_service_product_policy.sql
+V032__demo_workflow_node_conditions.sql
+V033__demo_order_summary_tool_intent.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
+
+## 五分钟完整体验
+
+已有数据库可以单独初始化 P33 演示样例包：
+
+```powershell
+cd E:\xm\OpenAgentFlow-Java\dm
+.\scripts\init-demo-data.ps1
+```
+
+脚本会在导入 P33 前检查并补齐 `V028__workflow_execution_reliability_final.sql`，避免旧数据库缺少 `workflow_run.locked_by` 等工作流可靠性字段；导入 V029 后会继续应用 V030 到 V033 的演示增强脚本。
+
+如需同时写入本地模型 Key：
+
+```powershell
+.\scripts\init-demo-data.ps1 -DemoApiKey "你的本地模型APIKey"
+```
+
+如果 `mysql.exe` 未加入 `PATH`，可指定 MySQL 客户端路径：
+
+```powershell
+.\scripts\init-demo-data.ps1 -MysqlExe "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe"
+```
+
+推荐问题：
+
+```text
+订单 OAF-DEMO-1001 到哪里了？如果客户要求退款应该怎么处理？
+```
+
+该问题会使用演示订单 `OAF-DEMO-1001`：订单状态为运输中，物流单号为 `SF-DEMO-001`，预计明天18:00前送达；演示 REST 工具使用后端内置 mock 返回，并会从完整用户问题中提取订单号，工作流 LLM 节点会注入结构化 `toolResult`，DB 查询工具使用 `demo_order` 表。
+
+体验路径：登录后依次查看智能体“客服助手”、知识库“产品手册知识库”、工具中心三类演示工具、工作流“演示客服 RAG 工具工作流”、多 Agent 团队“演示客服协作团队”、评测集“演示客服问答评测集”，最后进入交付验收中心检查演示数据项。
 
 ## 当前版本状态
 
@@ -201,9 +241,10 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 | P24 Memory 记忆中心 | 已完成 | 短期记忆、长期记忆、任务记忆、向量记忆、客服助手长期记忆模板、召回测试、过期清理、调试链路自动沉淀、SSE 异步登录态传递 |
 | P26 评测增强 LLM-as-Judge | 已完成 | 裁判模型评分、Judge Prompt、质量维度 JSON、规则兜底、Judge 综合分和低分原因 |
 | P27 RAG 生产级召回增强 | 已完成 | 混合召回、候选扩召、向量/关键词权重、文档/页码/元数据过滤、重排、引用高亮、排序原因和低置信度建议 |
-| P29 Agent Runtime 可视化解释器 | 已完成 | 调试台实时链路、Trace 复盘链路、Agent 详情策略预演 |
+| P29 Agent Runtime 可视化解释器 | 已完成 | 调试台实时链路、Trace 复盘链路、Agent 详情策略预演、调试台右侧检索结果/工具调用/引用统计原生切换、右侧栏整体滚动、Runtime 解释器双倍高度、证据区固定高度滚动、引用来源抽屉卡片切换、详情页卡片切换、步骤时间线按需展示和内部滚动 |
 | P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
-| P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |
+| P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |
+| P33 一键演示数据与交付样例包 | 已完成 | 幂等 SQL 样例包、PowerShell 初始化脚本、客服知识库文档、Prompt/Agent/工具/工作流/评测集/多 Agent/Memory 样例、工作流工具节点编码兼容、LLM 节点结构化工具结果注入、客服订单工具意图门控、Agent 绑定工作流入口路由、产品与优惠券知识分片、非订单问题历史污染隔离、演示工作流节点条件示例、订单汇总查询工具意图、版本快照同步、交付验收中心演示数据检查 |
 
 ## 演示建议
 
@@ -227,6 +268,7 @@ Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
 18. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
 19. 打开交付验收中心，点击一键验收，查看环境、权限、核心链路、配置风险和交付清单。
 20. 打开工作流编排，使用模板创建流程，配置节点策略，在调试面板运行并查看 Trace。
+21. 执行 `scripts/init-demo-data.ps1`，使用推荐问题体验客服助手的 RAG、工具、工作流、Trace 和交付验收链路。
 
 ## 开源发布清单
 

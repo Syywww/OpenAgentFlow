@@ -364,6 +364,11 @@ public class ToolService {
         Instant startedAt = Instant.now();
         ToolExecutionResult result = new ToolExecutionResult();
         try {
+            ToolExecutionResult demoResult = tryExecuteDemoHttpTool(tool, inputParams);
+            if (demoResult != null) {
+                demoResult.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
+                return demoResult;
+            }
             String method = StringUtils.hasText(tool.getRequestMethod()) ? tool.getRequestMethod().toUpperCase(Locale.ROOT) : "POST";
             String url = buildUrl(tool.getEndpointUrl(), inputParams, "GET".equals(method));
             HttpRequest.Builder builder = HttpRequest.newBuilder()
@@ -390,6 +395,146 @@ public class ToolService {
     }
 
     /**
+     * 执行演示数据包内置的 HTTP 工具，避免演示环境依赖外部 Mock 服务。
+     *
+     * @param tool 工具定义
+     * @param inputParams 输入参数
+     * @return 演示工具结果；非演示工具返回 null
+     */
+    private ToolExecutionResult tryExecuteDemoHttpTool(ToolDefinitionEntity tool, Map<String, Object> inputParams) {
+        if (!"demo_seed".equalsIgnoreCase(safeText(tool.getSourceType()))
+                || !safeText(tool.getEndpointUrl()).contains("mock.openagentflow.local")) {
+            return null;
+        }
+        ToolExecutionResult result = new ToolExecutionResult();
+        result.setConfirmationRequired(false);
+        result.setStatusCode(200);
+        result.setSuccess(true);
+        if ("demo_order_status_rest".equals(tool.getToolCode())) {
+            result.setResponseBody(toJson(buildDemoOrderStatusPayload(inputParams)));
+            return result;
+        }
+        if ("demo_customer_event_webhook".equals(tool.getToolCode())) {
+            result.setResponseBody(toJson(Map.of(
+                    "accepted", true,
+                    "eventId", "EVT-DEMO-" + UUID.randomUUID().toString().substring(0, 8),
+                    "message", "演示客户事件已接收"
+            )));
+            return result;
+        }
+        result.setResponseBody(toJson(Map.of(
+                "success", true,
+                "message", "演示工具已执行",
+                "toolCode", tool.getToolCode()
+        )));
+        return result;
+    }
+
+    /**
+     * 构造演示订单查询结果。
+     *
+     * @param inputParams 输入参数
+     * @return 订单状态响应
+     */
+    private Map<String, Object> buildDemoOrderStatusPayload(Map<String, Object> inputParams) {
+        if (hasDemoOrderSummaryIntent(inputParams) && !hasDemoOrderNo(inputParams)) {
+            return Map.of(
+                    "found", true,
+                    "queryType", "order_summary",
+                    "customerId", "demo-user",
+                    "orderCount", 1,
+                    "orders", List.of(Map.of(
+                            "orderId", "OAF-DEMO-1001",
+                            "status", "shipping",
+                            "statusText", "运输中",
+                            "trackingNo", "SF-DEMO-001",
+                            "eta", "明天18:00前",
+                            "totalAmount", 199.00
+                    )),
+                    "message", "演示账户当前共有 1 笔订单，其中 OAF-DEMO-1001 正在运输中。"
+            );
+        }
+        String orderId = extractDemoOrderId(inputParams);
+        if ("OAF-DEMO-1001".equalsIgnoreCase(orderId)) {
+            return Map.of(
+                    "found", true,
+                    "orderId", "OAF-DEMO-1001",
+                    "status", "shipping",
+                    "statusText", "运输中",
+                    "trackingNo", "SF-DEMO-001",
+                    "carrier", "顺丰速运",
+                    "eta", "明天18:00前",
+                    "currentLocation", "上海分拨中心",
+                    "refundPolicy", "运输中订单建议先安抚客户并确认签收时效；如客户坚持退款，按知识库售后规则发起人工复核。"
+            );
+        }
+        return Map.of(
+                "found", false,
+                "orderId", orderId,
+                "message", "演示数据包中未找到该订单，请使用 OAF-DEMO-1001"
+        );
+    }
+
+    /**
+     * 从不同命名风格的入参中提取订单号。
+     *
+     * @param inputParams 输入参数
+     * @return 订单号
+     */
+    private String extractDemoOrderId(Map<String, Object> inputParams) {
+        Pattern orderPattern = Pattern.compile("OAF-DEMO-[0-9]+", Pattern.CASE_INSENSITIVE);
+        for (String key : List.of("orderId", "orderNo", "order_id", "order_no", "订单号")) {
+            Object value = inputParams.get(key);
+            if (value != null && StringUtils.hasText(String.valueOf(value))) {
+                // 工作流演示会把完整用户问题传入 orderId，这里优先从文本中提取真实订单号。
+                String text = String.valueOf(value).trim();
+                Matcher matcher = orderPattern.matcher(text);
+                return matcher.find() ? matcher.group().toUpperCase(Locale.ROOT) : text;
+            }
+        }
+        for (Object value : inputParams.values()) {
+            if (value == null) {
+                continue;
+            }
+            Matcher matcher = orderPattern.matcher(String.valueOf(value));
+            if (matcher.find()) {
+                return matcher.group().toUpperCase(Locale.ROOT);
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 判断演示工具入参是否属于订单汇总查询。
+     *
+     * @param inputParams 输入参数
+     * @return 是否查询订单数量或订单列表
+     */
+    private boolean hasDemoOrderSummaryIntent(Map<String, Object> inputParams) {
+        String text = inputParams.values().stream()
+                .filter(java.util.Objects::nonNull)
+                .map(String::valueOf)
+                .map(this::normalizeText)
+                .reduce("", (left, right) -> left + " " + right);
+        return StringUtils.hasText(text) && containsAny(text,
+                "多少订单", "几个订单", "几笔订单", "订单数量", "订单数", "我的订单", "订单列表", "所有订单", "有哪些订单");
+    }
+
+    /**
+     * 判断演示工具入参中是否已经包含明确订单号。
+     *
+     * @param inputParams 输入参数
+     * @return 是否包含 OAF 演示订单号
+     */
+    private boolean hasDemoOrderNo(Map<String, Object> inputParams) {
+        Pattern orderPattern = Pattern.compile("OAF-DEMO-[0-9]+", Pattern.CASE_INSENSITIVE);
+        return inputParams.values().stream()
+                .filter(java.util.Objects::nonNull)
+                .map(String::valueOf)
+                .anyMatch(value -> orderPattern.matcher(value).find());
+    }
+
+    /**
      * 执行数据库查询工具。
      *
      * @param tool 工具定义
@@ -400,7 +545,7 @@ public class ToolService {
         Instant startedAt = Instant.now();
         ToolExecutionResult result = new ToolExecutionResult();
         try {
-            String sql = renderSql(tool.getEndpointUrl(), inputParams);
+            String sql = renderSql(resolveDbSqlTemplate(tool), inputParams);
             if (!sql.trim().toLowerCase(Locale.ROOT).startsWith("select") || sql.contains(";")) {
                 throw new BusinessException("TOOL_SQL_FORBIDDEN", "数据库查询工具只允许单条 SELECT 语句");
             }
@@ -416,6 +561,20 @@ public class ToolService {
         result.setConfirmationRequired(false);
         result.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
         return result;
+    }
+
+    /**
+     * 解析数据库工具的 SQL 模板，兼容旧数据把模板放在认证配置里的情况。
+     *
+     * @param tool 工具定义
+     * @return SQL 模板
+     */
+    private String resolveDbSqlTemplate(ToolDefinitionEntity tool) {
+        if (StringUtils.hasText(tool.getEndpointUrl())) {
+            return tool.getEndpointUrl();
+        }
+        Object sqlTemplate = parseMap(tool.getAuthConfig()).get("sqlTemplate");
+        return sqlTemplate == null ? "" : String.valueOf(sqlTemplate);
     }
 
     /**
@@ -758,6 +917,7 @@ public class ToolService {
         String sql = template == null ? "" : template;
         for (Map.Entry<String, Object> entry : inputParams.entrySet()) {
             sql = sql.replace("{" + entry.getKey() + "}", sqlLiteral(entry.getValue()));
+            sql = sql.replace(":" + entry.getKey(), sqlLiteral(entry.getValue()));
         }
         return sql;
     }
@@ -1046,6 +1206,33 @@ public class ToolService {
      */
     private String safeText(String text) {
         return text == null ? "" : text;
+    }
+
+    /**
+     * 归一化用户输入，便于演示工具做轻量意图判断。
+     *
+     * @param text 原始文本
+     * @return 小写且去掉多余空白的文本
+     */
+    private String normalizeText(String text) {
+        return safeText(text).trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    /**
+     * 判断文本是否包含任一关键词。
+     *
+     * @param text 文本
+     * @param keywords 关键词列表
+     * @return 是否命中
+     */
+    private boolean containsAny(String text, String... keywords) {
+        String normalized = normalizeText(text);
+        for (String keyword : keywords) {
+            if (normalized.contains(normalizeText(keyword))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
