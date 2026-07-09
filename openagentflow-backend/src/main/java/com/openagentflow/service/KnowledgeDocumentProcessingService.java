@@ -135,6 +135,18 @@ public class KnowledgeDocumentProcessingService {
             byte[] bytes = file.getBytes();
             String fileName = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "document.txt";
             String fileExt = fileExt(fileName);
+            String fileHash = DigestUtils.md5DigestAsHex(bytes);
+            KnowledgeDocumentEntity duplicate = findParsedDuplicateDocument(kbId, fileHash);
+            if (duplicate != null) {
+                KnowledgeUploadResult result = new KnowledgeUploadResult();
+                result.setDocument(toSummary(duplicate));
+                result.setChunkCount(count("knowledge_chunk", "document_id", duplicate.getId()));
+                result.setEmbeddingCount(countByDocument(duplicate.getId()));
+                result.setMilvusSynced(true);
+                result.setAsyncAccepted(false);
+                result.setMessage("检测到相同文件已解析，已复用已有分片和向量结果");
+                return result;
+            }
             String documentId = newId();
             String storageKey = saveUploadFile(kbId, documentId, fileName, bytes);
 
@@ -145,7 +157,7 @@ public class KnowledgeDocumentProcessingService {
             document.setDocType(fileExt);
             document.setFileExt(fileExt);
             document.setFileSize(file.getSize());
-            document.setFileHash(DigestUtils.md5DigestAsHex(bytes));
+            document.setFileHash(fileHash);
             document.setStorageBucket("local");
             document.setStorageKey(storageKey);
             document.setSourceType("upload");
@@ -229,12 +241,15 @@ public class KnowledgeDocumentProcessingService {
             checkCanceled(taskId);
             updateProgress(taskId, documentId, "chunking", "文档切片", 30, "文档解析完成，开始切片", Map.of("textLength", text.length()));
 
-            List<String> chunks = chunkingService.split(text, kb.getChunkSize(), kb.getChunkOverlap());
-            if (chunks.isEmpty()) {
+            List<KnowledgeChunkingService.ChunkSegment> segments = chunkingService.splitSegments(text, kb.getChunkStrategy(), kb.getChunkSize(), kb.getChunkOverlap());
+            List<KnowledgeChunkingService.ChunkSegment> embeddingSegments = segments.stream()
+                    .filter(KnowledgeChunkingService.ChunkSegment::embeddingEnabled)
+                    .toList();
+            if (embeddingSegments.isEmpty()) {
                 throw new BusinessException("DOCUMENT_CHUNK_EMPTY", "文档没有生成有效分片");
             }
             checkCanceled(taskId);
-            updateProgress(taskId, documentId, "embedding", "调用向量模型", 45, "已生成 " + chunks.size() + " 个分片，开始调用 Embedding 模型", Map.of("chunkCount", chunks.size()));
+            updateProgress(taskId, documentId, "embedding", "调用向量模型", 45, "已生成 " + segments.size() + " 个分片，其中 " + embeddingSegments.size() + " 个子分片需要向量化", Map.of("chunkCount", segments.size(), "embeddingChunkCount", embeddingSegments.size()));
 
             ModelConfigEntity embeddingModel = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
             if (!StringUtils.hasText(kb.getEmbeddingModelId())) {
@@ -243,7 +258,7 @@ public class KnowledgeDocumentProcessingService {
             }
 
             Instant embeddingStartedAt = Instant.now();
-            EmbeddingBatchResult embeddingResult = embeddingService.embedWithTrace(embeddingModel, chunks);
+            EmbeddingBatchResult embeddingResult = embeddingService.embedWithTrace(embeddingModel, embeddingSegments.stream().map(KnowledgeChunkingService.ChunkSegment::content).toList());
             List<List<Double>> vectors = embeddingResult.getVectors();
             String embeddingMessage = Boolean.TRUE.equals(embeddingResult.getFallbackUsed())
                     ? "真实 Embedding 调用失败，已使用本地兜底向量：" + embeddingResult.getErrorMessage()
@@ -262,13 +277,21 @@ public class KnowledgeDocumentProcessingService {
 
             checkCanceled(taskId);
             updateProgress(taskId, documentId, "saving", "保存分片", 70,
-                    "开始保存 " + chunks.size() + " 个分片和向量记录到 MySQL", Map.of("milvusSynced", false));
-            List<KnowledgeChunkEntity> savedChunks = new ArrayList<>(chunks.size());
-            List<KnowledgeEmbeddingEntity> savedEmbeddings = new ArrayList<>(chunks.size());
-            for (int index = 0; index < chunks.size(); index++) {
+                    "开始保存 " + segments.size() + " 个分片和 " + embeddingSegments.size() + " 条向量记录到 MySQL", Map.of("milvusSynced", false));
+            List<KnowledgeChunkEntity> savedChunks = new ArrayList<>(embeddingSegments.size());
+            List<KnowledgeEmbeddingEntity> savedEmbeddings = new ArrayList<>(embeddingSegments.size());
+            Map<Integer, String> parentChunkIds = new LinkedHashMap<>();
+            int vectorIndex = 0;
+            int chunkNo = 1;
+            for (KnowledgeChunkingService.ChunkSegment segment : segments) {
                 // 先把分片与向量落入 MySQL，Milvus 异常时仍可通过 MySQL 向量兜底检索。
-                KnowledgeChunkEntity chunk = saveChunk(kb, document, chunks.get(index), index + 1);
-                KnowledgeEmbeddingEntity embedding = saveEmbedding(kb, chunk, embeddingModel, vectors.get(index));
+                String parentChunkId = segment.parentOrdinal() == null ? null : parentChunkIds.get(segment.parentOrdinal());
+                KnowledgeChunkEntity chunk = saveChunk(kb, document, segment, chunkNo++, parentChunkId);
+                if ("parent".equalsIgnoreCase(segment.level())) {
+                    parentChunkIds.put(segment.ordinal(), chunk.getId());
+                    continue;
+                }
+                KnowledgeEmbeddingEntity embedding = saveEmbedding(kb, chunk, embeddingModel, vectors.get(vectorIndex++));
                 savedChunks.add(chunk);
                 savedEmbeddings.add(embedding);
             }
@@ -307,7 +330,8 @@ public class KnowledgeDocumentProcessingService {
             latest.setParseStatus("parsed");
             latest.setParseError(null);
             knowledgeDocumentMapper.updateById(latest);
-            Map<String, Object> result = Map.of("milvusSynced", allMilvusSynced, "chunkCount", chunks.size(), "embeddingCount", vectors.size());
+            createKnowledgeBaseVersionSnapshot(kb, "upload-" + System.currentTimeMillis());
+            Map<String, Object> result = Map.of("milvusSynced", allMilvusSynced, "chunkCount", segments.size(), "embeddingCount", vectors.size());
             String doneMessage = allMilvusSynced ? "文档已解析、切片、真实向量化并写入 Milvus" : "文档已处理完成，Milvus 写入存在兜底：" + milvusMessage;
             updateProgress(taskId, documentId, "done", "处理完成", 100, doneMessage, result);
             asyncTaskService.markSuccess(taskId, doneMessage, result);
@@ -463,17 +487,55 @@ public class KnowledgeDocumentProcessingService {
      * @return 分片实体
      */
     private KnowledgeChunkEntity saveChunk(KnowledgeBaseEntity kb, KnowledgeDocumentEntity document, String content, int chunkNo) {
+        KnowledgeChunkingService.ChunkSegment segment = new KnowledgeChunkingService.ChunkSegment(
+                content, "child", null, chunkNo, "", "", chunkNo, 0, content == null ? 0 : content.length(), true);
+        return saveChunk(kb, document, segment, chunkNo, null);
+    }
+
+    /**
+     * 保存带结构元数据的文档分片。
+     *
+     * @param kb 知识库
+     * @param document 文档
+     * @param segment 切片段落
+     * @param chunkNo 全局切片序号
+     * @param parentChunkId 父分片ID
+     * @return 分片实体
+     */
+    private KnowledgeChunkEntity saveChunk(KnowledgeBaseEntity kb,
+                                           KnowledgeDocumentEntity document,
+                                           KnowledgeChunkingService.ChunkSegment segment,
+                                           int chunkNo,
+                                           String parentChunkId) {
+        String content = segment.content();
+        String contentHash = DigestUtils.md5DigestAsHex(content.getBytes(StandardCharsets.UTF_8));
         KnowledgeChunkEntity chunk = new KnowledgeChunkEntity();
         chunk.setId(newId());
         chunk.setKbId(kb.getId());
         chunk.setDocumentId(document.getId());
         chunk.setChunkNo(chunkNo);
-        chunk.setTitle(document.getDocName() + " #" + chunkNo);
+        chunk.setParentChunkId(parentChunkId);
+        chunk.setChunkLevel(segment.level());
+        chunk.setTitle(StringUtils.hasText(segment.sectionTitle()) ? segment.sectionTitle() : document.getDocName() + " #" + chunkNo);
+        chunk.setSectionTitle(segment.sectionTitle());
+        chunk.setSectionPath(segment.sectionPath());
+        chunk.setParagraphNo(segment.paragraphNo());
         chunk.setContent(content);
-        chunk.setTokenCount(Math.max(1, content.length() / 2));
-        chunk.setStartOffset(0);
-        chunk.setEndOffset(content.length());
-        chunk.setMetadata(toJson(Map.of("contentHash", DigestUtils.md5DigestAsHex(content.getBytes(StandardCharsets.UTF_8)))));
+        chunk.setTokenCount(chunkingService.estimateTokens(content));
+        chunk.setStartOffset(segment.startOffset() == null ? 0 : segment.startOffset());
+        chunk.setEndOffset(segment.endOffset() == null ? content.length() : segment.endOffset());
+        chunk.setStrategyVersion("rag-chunk-v2");
+        chunk.setContentHash(contentHash);
+        chunk.setSourceHash(document.getFileHash());
+        chunk.setMetadata(toJson(Map.of(
+                "chunkStrategy", safeValue(kb.getChunkStrategy()),
+                "chunkLevel", safeValue(segment.level()),
+                "parentChunkId", safeValue(parentChunkId),
+                "sectionTitle", safeValue(segment.sectionTitle()),
+                "sectionPath", safeValue(segment.sectionPath()),
+                "contentHash", contentHash,
+                "sourceHash", safeValue(document.getFileHash())
+        )));
         chunk.setStatus("active");
         knowledgeChunkMapper.insert(chunk);
         return chunk;
@@ -506,6 +568,65 @@ public class KnowledgeDocumentProcessingService {
         embedding.setContentHash(DigestUtils.md5DigestAsHex(chunk.getContent().getBytes(StandardCharsets.UTF_8)));
         knowledgeEmbeddingMapper.insert(embedding);
         return embedding;
+    }
+
+    /**
+     * 查找同一知识库下已解析的相同文件，避免重复进入后台切片和向量化。
+     *
+     * @param kbId 知识库 ID
+     * @param fileHash 文件哈希
+     * @return 已解析文档，找不到返回 null
+     */
+    private KnowledgeDocumentEntity findParsedDuplicateDocument(String kbId, String fileHash) {
+        if (!StringUtils.hasText(fileHash)) {
+            return null;
+        }
+        return knowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocumentEntity>()
+                .eq(KnowledgeDocumentEntity::getKbId, kbId)
+                .eq(KnowledgeDocumentEntity::getFileHash, fileHash)
+                .eq(KnowledgeDocumentEntity::getParseStatus, "parsed")
+                .orderByDesc(KnowledgeDocumentEntity::getUploadedAt)
+                .last("limit 1"));
+    }
+
+    /**
+     * 创建知识库版本快照，用于大量文档场景下的版本追踪和后续回滚。
+     *
+     * @param kb 知识库
+     * @param versionNo 版本号
+     */
+    private void createKnowledgeBaseVersionSnapshot(KnowledgeBaseEntity kb, String versionNo) {
+        try {
+            int documentCount = count("knowledge_document", "kb_id", kb.getId());
+            int chunkCount = count("knowledge_chunk", "kb_id", kb.getId());
+            int embeddingCount = count("knowledge_embedding", "kb_id", kb.getId());
+            jdbcTemplate.update("""
+                    INSERT INTO knowledge_base_version
+                      (id, kb_id, version_no, version_name, document_count, chunk_count, embedding_count,
+                       chunk_strategy, chunk_size, chunk_overlap, snapshot_json, status, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), 'active', ?)
+                    ON DUPLICATE KEY UPDATE
+                      document_count = VALUES(document_count),
+                      chunk_count = VALUES(chunk_count),
+                      embedding_count = VALUES(embedding_count),
+                      snapshot_json = VALUES(snapshot_json),
+                      status = 'active'
+                    """,
+                    newId(),
+                    kb.getId(),
+                    versionNo,
+                    "文档处理快照",
+                    documentCount,
+                    chunkCount,
+                    embeddingCount,
+                    kb.getChunkStrategy(),
+                    kb.getChunkSize(),
+                    kb.getChunkOverlap(),
+                    toJson(Map.of("kbId", kb.getId(), "documentCount", documentCount, "chunkCount", chunkCount, "embeddingCount", embeddingCount)),
+                    currentUserId());
+        } catch (Exception ignored) {
+            // 快照失败不能影响文档处理任务。
+        }
     }
 
     /**

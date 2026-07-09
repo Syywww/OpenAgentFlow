@@ -89,11 +89,27 @@ public class EmbeddingService {
         result.setEmbeddingApi(resolveEmbeddingApi(model));
         ModelProviderEntity provider = modelProviderService.requireProviderByModel(model);
         String apiKey = modelProviderService.findApiKeyValue(provider.getId());
+        int batchSize = resolveEmbeddingBatchSize(model);
+        List<List<Double>> allVectors = new ArrayList<>();
+        boolean fallbackUsed = false;
+        String lastError = "";
         try {
-            List<List<Double>> vectors = openAiCompatibleClient.embeddings(provider, model, apiKey, texts);
-            result.setVectors(vectors);
-            result.setFallbackUsed(false);
-            result.setDimension(firstDimension(vectors));
+            for (int start = 0; start < texts.size(); start += batchSize) {
+                int end = Math.min(start + batchSize, texts.size());
+                List<String> batch = texts.subList(start, end);
+                try {
+                    allVectors.addAll(callEmbeddingWithRetry(provider, model, apiKey, batch));
+                } catch (Exception exception) {
+                    fallbackUsed = true;
+                    lastError = exception.getMessage();
+                    allVectors.addAll(batch.stream().map(this::localFallbackEmbedding).toList());
+                }
+                sleepQuietly(120L);
+            }
+            result.setVectors(allVectors);
+            result.setFallbackUsed(fallbackUsed);
+            result.setErrorMessage(lastError);
+            result.setDimension(firstDimension(allVectors));
             return result;
         } catch (Exception exception) {
             // 开发阶段保留本地兜底向量，同时把失败原因返回给调用方用于日志展示。
@@ -103,6 +119,63 @@ public class EmbeddingService {
             result.setErrorMessage(exception.getMessage());
             result.setDimension(firstDimension(fallbackVectors));
             return result;
+        }
+    }
+
+    /**
+     * 单批 Embedding 调用，失败后做一次退避重试。
+     *
+     * @param provider 模型服务商
+     * @param model Embedding 模型
+     * @param apiKey API Key
+     * @param batch 当前批次文本
+     * @return 当前批次向量
+     */
+    private List<List<Double>> callEmbeddingWithRetry(ModelProviderEntity provider,
+                                                      ModelConfigEntity model,
+                                                      String apiKey,
+                                                      List<String> batch) {
+        try {
+            return openAiCompatibleClient.embeddings(provider, model, apiKey, batch);
+        } catch (Exception firstException) {
+            sleepQuietly(600L);
+            try {
+                return openAiCompatibleClient.embeddings(provider, model, apiKey, batch);
+            } catch (Exception secondException) {
+                throw secondException;
+            }
+        }
+    }
+
+    /**
+     * 解析 Embedding 批大小，默认 32，避免大文档一次性压垮模型服务。
+     *
+     * @param model Embedding 模型
+     * @return 批大小
+     */
+    private int resolveEmbeddingBatchSize(ModelConfigEntity model) {
+        if (!StringUtils.hasText(model.getDefaultParams())) {
+            return 32;
+        }
+        try {
+            JsonNode params = objectMapper.readTree(model.getDefaultParams());
+            int batchSize = params.path("embeddingBatchSize").asInt(32);
+            return Math.max(1, Math.min(batchSize, 128));
+        } catch (Exception exception) {
+            return 32;
+        }
+    }
+
+    /**
+     * 安静等待，用于简单限流和退避。
+     *
+     * @param millis 等待毫秒数
+     */
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(Math.max(0L, millis));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
         }
     }
 

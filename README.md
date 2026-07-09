@@ -14,7 +14,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限、调试运行和 Runtime 策略解释器。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
-- **RAG 知识库**：知识库 CRUD、文档上传、解析、切片、Embedding、Milvus 写入、混合召回、重排、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
+- **RAG 知识库**：知识库 CRUD、文档上传、解析、Parent-Child 递归结构化切片、Embedding、Milvus 写入、混合召回、重排、检索缓存、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
 - **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
 - **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
@@ -175,6 +175,8 @@ V030__customer_service_intent_guard_coupon_policy.sql
 V031__customer_service_product_policy.sql
 V032__demo_workflow_node_conditions.sql
 V033__demo_order_summary_tool_intent.sql
+V034__recursive_knowledge_chunking.sql
+V035__enterprise_rag_metadata_parent_child.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -218,7 +220,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | --- | --- | --- |
 | P0 登录、权限、模型接入 | 已完成 | JWT、Redis、模型供应商、SSE |
 | P1 Agent 管理 | 已完成 | CRUD、发布、复制、删除、运行、Agent 权限 |
-| P2 RAG 知识库 | 已完成 | 上传、解析、切片、Embedding、Milvus、引用来源、可信回答模式 |
+| P2 RAG 知识库 | 已完成 | 上传、解析、Parent-Child 递归结构化切片、Embedding、Milvus、引用来源、可信回答模式 |
 | P3 Tool Calling | 已完成 | REST API、Webhook、DB Query、工具日志 |
 | P4 Trace 运行观测 | 已完成 | 运行列表、步骤详情、RAG/Tool/LLM 统一链路 |
 | P5 工作流编排 | 已完成 | Vue Flow、节点执行、上下文变量、Trace |
@@ -240,7 +242,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P21 多 Agent 协作 | 已完成 | 协作团队 CRUD、成员分工、五种协作模式、真实 Agent 调用、协作执行、Trace 追踪 |
 | P24 Memory 记忆中心 | 已完成 | 短期记忆、长期记忆、任务记忆、向量记忆、客服助手长期记忆模板、召回测试、过期清理、调试链路自动沉淀、SSE 异步登录态传递 |
 | P26 评测增强 LLM-as-Judge | 已完成 | 裁判模型评分、Judge Prompt、质量维度 JSON、规则兜底、Judge 综合分和低分原因 |
-| P27 RAG 生产级召回增强 | 已完成 | 混合召回、候选扩召、向量/关键词权重、文档/页码/元数据过滤、重排、引用高亮、排序原因和低置信度建议 |
+| P27 RAG 生产级召回增强 | 已完成 | Parent-Child 分片、分片元数据、已有知识库默认策略迁移、重复文件复用、Office 文档解析增强、Embedding 批处理限流、权限感知检索、Agent 链路热点检索缓存、混合召回、候选扩召、向量/关键词权重、文档/页码/元数据过滤、重排、父分片上下文扩展、引用高亮、排序原因和低置信度建议 |
 | P29 Agent Runtime 可视化解释器 | 已完成 | 调试台实时链路、Trace 复盘链路、Agent 详情策略预演、调试台右侧检索结果/工具调用/引用统计原生切换、右侧栏整体滚动、Runtime 解释器双倍高度、证据区固定高度滚动、引用来源抽屉卡片切换、详情页卡片切换、步骤时间线按需展示和内部滚动 |
 | P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
 | P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |

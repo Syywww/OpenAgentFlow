@@ -20,8 +20,20 @@ public class KnowledgeSource {
     /** 分片 ID。 */
     private String chunkId;
 
+    /** 父分片 ID。 */
+    private String parentChunkId;
+
     /** 分片序号。 */
     private Integer chunkNo;
+
+    /** 分片层级。 */
+    private String chunkLevel;
+
+    /** 章节标题。 */
+    private String sectionTitle;
+
+    /** 章节路径。 */
+    private String sectionPath;
 
     /** 引用文本。 */
     private String quoteText;
@@ -93,12 +105,44 @@ public class KnowledgeSource {
         this.chunkId = chunkId;
     }
 
+    public String getParentChunkId() {
+        return parentChunkId;
+    }
+
+    public void setParentChunkId(String parentChunkId) {
+        this.parentChunkId = parentChunkId;
+    }
+
     public Integer getChunkNo() {
         return chunkNo;
     }
 
     public void setChunkNo(Integer chunkNo) {
         this.chunkNo = chunkNo;
+    }
+
+    public String getChunkLevel() {
+        return chunkLevel;
+    }
+
+    public void setChunkLevel(String chunkLevel) {
+        this.chunkLevel = chunkLevel;
+    }
+
+    public String getSectionTitle() {
+        return sectionTitle;
+    }
+
+    public void setSectionTitle(String sectionTitle) {
+        this.sectionTitle = sectionTitle;
+    }
+
+    public String getSectionPath() {
+        return sectionPath;
+    }
+
+    public void setSectionPath(String sectionPath) {
+        this.sectionPath = sectionPath;
     }
 
     public String getQuoteText() {

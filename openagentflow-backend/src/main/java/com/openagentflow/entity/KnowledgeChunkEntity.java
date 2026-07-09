@@ -28,9 +28,29 @@ public class KnowledgeChunkEntity {
     @TableField("chunk_no")
     private Integer chunkNo;
 
+    /** 父分片ID。 */
+    @TableField("parent_chunk_id")
+    private String parentChunkId;
+
+    /** 分片层级，parent/child。 */
+    @TableField("chunk_level")
+    private String chunkLevel;
+
     /** 标题。 */
     @TableField("title")
     private String title;
+
+    /** 章节标题。 */
+    @TableField("section_title")
+    private String sectionTitle;
+
+    /** 章节路径。 */
+    @TableField("section_path")
+    private String sectionPath;
+
+    /** 段落序号。 */
+    @TableField("paragraph_no")
+    private Integer paragraphNo;
 
     /** 内容。 */
     @TableField("content")
@@ -51,6 +71,18 @@ public class KnowledgeChunkEntity {
     /** 字段说明：ENDOFFSET。 */
     @TableField("end_offset")
     private Integer endOffset;
+
+    /** 切片策略版本。 */
+    @TableField("strategy_version")
+    private String strategyVersion;
+
+    /** 分片内容哈希。 */
+    @TableField("content_hash")
+    private String contentHash;
+
+    /** 来源文档哈希。 */
+    @TableField("source_hash")
+    private String sourceHash;
 
     /** 元数据JSON。 */
     @TableField("metadata")
@@ -96,12 +128,52 @@ public class KnowledgeChunkEntity {
         this.chunkNo = chunkNo;
     }
 
+    public String getParentChunkId() {
+        return parentChunkId;
+    }
+
+    public void setParentChunkId(String parentChunkId) {
+        this.parentChunkId = parentChunkId;
+    }
+
+    public String getChunkLevel() {
+        return chunkLevel;
+    }
+
+    public void setChunkLevel(String chunkLevel) {
+        this.chunkLevel = chunkLevel;
+    }
+
     public String getTitle() {
         return title;
     }
 
     public void setTitle(String title) {
         this.title = title;
+    }
+
+    public String getSectionTitle() {
+        return sectionTitle;
+    }
+
+    public void setSectionTitle(String sectionTitle) {
+        this.sectionTitle = sectionTitle;
+    }
+
+    public String getSectionPath() {
+        return sectionPath;
+    }
+
+    public void setSectionPath(String sectionPath) {
+        this.sectionPath = sectionPath;
+    }
+
+    public Integer getParagraphNo() {
+        return paragraphNo;
+    }
+
+    public void setParagraphNo(Integer paragraphNo) {
+        this.paragraphNo = paragraphNo;
     }
 
     public String getContent() {
@@ -142,6 +214,30 @@ public class KnowledgeChunkEntity {
 
     public void setEndOffset(Integer endOffset) {
         this.endOffset = endOffset;
+    }
+
+    public String getStrategyVersion() {
+        return strategyVersion;
+    }
+
+    public void setStrategyVersion(String strategyVersion) {
+        this.strategyVersion = strategyVersion;
+    }
+
+    public String getContentHash() {
+        return contentHash;
+    }
+
+    public void setContentHash(String contentHash) {
+        this.contentHash = contentHash;
+    }
+
+    public String getSourceHash() {
+        return sourceHash;
+    }
+
+    public void setSourceHash(String sourceHash) {
+        this.sourceHash = sourceHash;
     }
 
     public String getMetadata() {

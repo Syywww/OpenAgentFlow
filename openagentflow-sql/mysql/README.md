@@ -55,6 +55,10 @@ Redis: cache, sessions, queue state
 - `V029__demo_data_package.sql`: one-click demo data package with Prompt, Agents, knowledge chunks, tools, workflow, evaluation dataset, multi-Agent team, Memory, and delivery checks.
 - `V030__customer_service_intent_guard_coupon_policy.sql`: customer-service tool intent boundary and coupon-policy knowledge chunk.
 - `V031__customer_service_product_policy.sql`: product/service-scope knowledge chunk and knowledge-first customer-service routing prompt.
+- `V032__demo_workflow_node_conditions.sql`: sample node-level run conditions for the demo RAG and order-tool nodes.
+- `V033__demo_order_summary_tool_intent.sql`: demo order summary routing for "my orders" and "how many orders" questions.
+- `V034__recursive_knowledge_chunking.sql`: Parent-Child recursive structured chunking becomes the default strategy for new knowledge bases.
+- `V035__enterprise_rag_metadata_parent_child.sql`: enterprise RAG metadata, existing knowledge-base strategy migration, Parent-Child chunks, knowledge-base versions, and retrieval cache.
 
 Recommended execution order:
 
@@ -90,6 +94,10 @@ V028__workflow_execution_reliability_final.sql
 V029__demo_data_package.sql
 V030__customer_service_intent_guard_coupon_policy.sql
 V031__customer_service_product_policy.sql
+V032__demo_workflow_node_conditions.sql
+V033__demo_order_summary_tool_intent.sql
+V034__recursive_knowledge_chunking.sql
+V035__enterprise_rag_metadata_parent_child.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:

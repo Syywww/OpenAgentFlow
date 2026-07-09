@@ -347,7 +347,7 @@ ALTER TABLE knowledge_base MODIFY COLUMN kb_name varchar(160) NOT NULL COMMENT '
 ALTER TABLE knowledge_base MODIFY COLUMN description varchar(1000) COMMENT '描述';
 ALTER TABLE knowledge_base MODIFY COLUMN embedding_model_id char(36) COMMENT '向量模型ID';
 ALTER TABLE knowledge_base MODIFY COLUMN rerank_model_id char(36) COMMENT 'RERANK模型ID';
-ALTER TABLE knowledge_base MODIFY COLUMN chunk_strategy varchar(64) NOT NULL DEFAULT 'fixed_size' COMMENT '分片STRATEGY';
+ALTER TABLE knowledge_base MODIFY COLUMN chunk_strategy varchar(64) NOT NULL DEFAULT 'parent_child' COMMENT '分片STRATEGY';
 ALTER TABLE knowledge_base MODIFY COLUMN chunk_size int NOT NULL DEFAULT 512 COMMENT '分片大小';
 ALTER TABLE knowledge_base MODIFY COLUMN chunk_overlap int NOT NULL DEFAULT 64 COMMENT '分片OVERLAP';
 ALTER TABLE knowledge_base MODIFY COLUMN visibility varchar(32) NOT NULL DEFAULT 'private' COMMENT '字段说明：VISIBILITY';

@@ -280,6 +280,16 @@ public class KnowledgeBaseService {
             String fileName = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "document.txt";
             String fileExt = fileExt(fileName);
             String fileHash = DigestUtils.md5DigestAsHex(bytes);
+            KnowledgeDocumentEntity duplicate = findParsedDuplicateDocument(kbId, fileHash);
+            if (duplicate != null) {
+                KnowledgeUploadResult result = new KnowledgeUploadResult();
+                result.setDocument(toDocumentSummary(duplicate));
+                result.setChunkCount(count("knowledge_chunk", "document_id", duplicate.getId()));
+                result.setEmbeddingCount(countByJoin(duplicate.getId()));
+                result.setMilvusSynced(true);
+                result.setMessage("检测到相同文件已解析，已复用已有分片和向量结果");
+                return result;
+            }
             String documentId = newId();
             String storageKey = saveUploadFile(kbId, documentId, fileName, bytes);
 
@@ -300,8 +310,11 @@ public class KnowledgeBaseService {
             knowledgeDocumentMapper.insert(document);
 
             String text = documentParseService.parse(bytes, fileExt);
-            List<String> chunks = chunkingService.split(text, kb.getChunkSize(), kb.getChunkOverlap());
-            if (chunks.isEmpty()) {
+            List<KnowledgeChunkingService.ChunkSegment> segments = chunkingService.splitSegments(text, kb.getChunkStrategy(), kb.getChunkSize(), kb.getChunkOverlap());
+            List<KnowledgeChunkingService.ChunkSegment> embeddingSegments = segments.stream()
+                    .filter(KnowledgeChunkingService.ChunkSegment::embeddingEnabled)
+                    .toList();
+            if (embeddingSegments.isEmpty()) {
                 throw new BusinessException("DOCUMENT_CHUNK_EMPTY", "文档没有生成有效分片");
             }
 
@@ -310,14 +323,23 @@ public class KnowledgeBaseService {
                 kb.setEmbeddingModelId(embeddingModel.getId());
                 knowledgeBaseMapper.updateById(kb);
             }
-            List<List<Double>> vectors = embeddingService.embed(embeddingModel, chunks);
+            List<List<Double>> vectors = embeddingService.embed(embeddingModel, embeddingSegments.stream().map(KnowledgeChunkingService.ChunkSegment::content).toList());
             boolean allMilvusSynced = true;
             String milvusMessage = "";
-            for (int index = 0; index < chunks.size(); index++) {
-                KnowledgeChunkEntity chunk = saveChunk(kb, document, chunks.get(index), index + 1);
-                KnowledgeEmbeddingEntity embedding = saveEmbedding(kb, chunk, embeddingModel, vectors.get(index));
+            Map<Integer, String> parentChunkIds = new LinkedHashMap<>();
+            int vectorIndex = 0;
+            int chunkNo = 1;
+            for (KnowledgeChunkingService.ChunkSegment segment : segments) {
+                String parentChunkId = segment.parentOrdinal() == null ? null : parentChunkIds.get(segment.parentOrdinal());
+                KnowledgeChunkEntity chunk = saveChunk(kb, document, segment, chunkNo++, parentChunkId, fileHash);
+                if ("parent".equalsIgnoreCase(segment.level())) {
+                    parentChunkIds.put(segment.ordinal(), chunk.getId());
+                    continue;
+                }
+                List<Double> vector = vectors.get(vectorIndex++);
+                KnowledgeEmbeddingEntity embedding = saveEmbedding(kb, chunk, embeddingModel, vector);
                 try {
-                    milvusKnowledgeVectorService.upsertKnowledgeChunk(kb.getMilvusCollectionName(), embedding, chunk, vectors.get(index));
+                    milvusKnowledgeVectorService.upsertKnowledgeChunk(kb.getMilvusCollectionName(), embedding, chunk, vector);
                     embedding.setSyncStatus("synced");
                     embedding.setLastSyncedAt(LocalDateTime.now());
                 } catch (Exception exception) {
@@ -329,10 +351,11 @@ public class KnowledgeBaseService {
             }
             document.setParseStatus("parsed");
             knowledgeDocumentMapper.updateById(document);
+            createKnowledgeBaseVersionSnapshot(kb, "upload-" + System.currentTimeMillis());
 
             KnowledgeUploadResult result = new KnowledgeUploadResult();
             result.setDocument(toDocumentSummary(document));
-            result.setChunkCount(chunks.size());
+            result.setChunkCount(segments.size());
             result.setEmbeddingCount(vectors.size());
             result.setMilvusSynced(allMilvusSynced);
             result.setMessage(allMilvusSynced ? "文档已解析、切片、向量化并写入 Milvus" : "Milvus 写入失败，已保留 MySQL 向量兜底：" + milvusMessage);
@@ -506,6 +529,10 @@ public class KnowledgeBaseService {
             if (kb == null || kb.getDeletedAt() != null || !"active".equalsIgnoreCase(kb.getStatus())) {
                 continue;
             }
+            if (!canView(kb)) {
+                qualityAdvices.add(kb.getKbName() + "：当前用户无权访问，已从本次检索中过滤");
+                continue;
+            }
             Map<String, Object> config = parseMap(binding.getRetrievalConfig());
             RetrievalOptions options = optionsFromConfig(config);
             trustedMode = trustedMode || options.trustedAnswerMode;
@@ -610,6 +637,31 @@ public class KnowledgeBaseService {
                                                               String query,
                                                               RetrievalOptions options) {
         Instant startedAt = Instant.now();
+        String cacheKey = retrievalCacheKey(kb.getId(), query, options);
+        KnowledgeRetrievalResult cached = readRetrievalCache(cacheKey, options);
+        if (cached != null) {
+            String cacheAdvice = StringUtils.hasText(cached.getQualityAdvice())
+                    ? cached.getQualityAdvice()
+                    : "命中检索缓存，已复用热点问题引用来源";
+            String logId = saveRetrievalLog(
+                    kb,
+                    agentId,
+                    runId,
+                    query,
+                    List.of(),
+                    options,
+                    cached.getSources(),
+                    cached.getCandidateCount() == null ? cached.getSources().size() : cached.getCandidateCount(),
+                    cached.getConfidenceScore() == null ? 0D : cached.getConfidenceScore(),
+                    false,
+                    "",
+                    cacheAdvice,
+                    startedAt);
+            cached.getSources().forEach(source -> source.setRetrievalLogId(logId));
+            cached.setRetrievalLogId(logId);
+            cached.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
+            return cached;
+        }
         List<String> terms = extractQueryTerms(query);
         List<Double> queryVector = shouldUseVector(options.searchMode)
                 ? embeddingService.embed(embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId()), List.of(query)).getFirst()
@@ -629,6 +681,9 @@ public class KnowledgeBaseService {
         String qualityAdvice = buildQualityAdvice(options, rankedCandidates.size(), sources.size(), lowConfidence);
         String logId = saveRetrievalLog(kb, agentId, runId, query, queryVector, options, sources, rankedCandidates.size(), confidenceScore, lowConfidence, rejectReason, qualityAdvice, startedAt);
         sources.forEach(source -> source.setRetrievalLogId(logId));
+        if (!sources.isEmpty()) {
+            writeRetrievalCache(cacheKey, kb.getId(), query, options, sources, confidenceScore);
+        }
 
         KnowledgeRetrievalResult result = new KnowledgeRetrievalResult();
         result.setRetrievalLogId(logId);
@@ -668,6 +723,7 @@ public class KnowledgeBaseService {
             List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
                     .eq(KnowledgeChunkEntity::getKbId, kb.getId())
                     .eq(KnowledgeChunkEntity::getStatus, "active")
+                    .and(wrapper -> wrapper.ne(KnowledgeChunkEntity::getChunkLevel, "parent").or().isNull(KnowledgeChunkEntity::getChunkLevel))
                     .last("limit 2000"));
             for (KnowledgeChunkEntity chunk : chunks) {
                 if (!matchesRetrievalFilters(chunk, options)) {
@@ -685,6 +741,9 @@ public class KnowledgeBaseService {
         for (KnowledgeEmbeddingEntity embedding : embeddings) {
             KnowledgeChunkEntity chunk = knowledgeChunkMapper.selectById(embedding.getChunkId());
             if (chunk == null || !"active".equalsIgnoreCase(chunk.getStatus())) {
+                continue;
+            }
+            if ("parent".equalsIgnoreCase(chunk.getChunkLevel())) {
                 continue;
             }
             if (!matchesRetrievalFilters(chunk, options)) {
@@ -766,14 +825,35 @@ public class KnowledgeBaseService {
      * @return 引用来源
      */
     private KnowledgeSource toSource(KnowledgeBaseEntity kb, RetrievalCandidate candidate, String query, List<String> terms) {
-        KnowledgeSource source = toSource(kb, candidate.chunk, candidate.finalScore);
+        KnowledgeChunkEntity displayChunk = expandParentChunk(candidate.chunk);
+        KnowledgeSource source = toSource(kb, displayChunk, candidate.finalScore);
+        source.setChunkId(candidate.chunk.getId());
+        source.setChunkNo(candidate.chunk.getChunkNo());
+        source.setParentChunkId(candidate.chunk.getParentChunkId());
+        source.setChunkLevel(candidate.chunk.getChunkLevel());
+        source.setSectionTitle(candidate.chunk.getSectionTitle());
+        source.setSectionPath(candidate.chunk.getSectionPath());
         source.setVectorScore(candidate.vectorScore);
         source.setKeywordScore(candidate.keywordScore);
         source.setRerankScore(candidate.finalScore);
         source.setMatchReason(matchReason(candidate));
         source.setRankReason(rankReason(candidate, terms));
-        source.setHighlightedQuoteText(highlightQuote(candidate.chunk.getContent(), query, terms));
+        source.setHighlightedQuoteText(highlightQuote(displayChunk.getContent(), query, terms));
         return source;
+    }
+
+    /**
+     * 命中子分片时展开父分片上下文，用更完整的上下文给模型回答。
+     *
+     * @param chunk 命中的候选分片
+     * @return 用于展示和回答的分片
+     */
+    private KnowledgeChunkEntity expandParentChunk(KnowledgeChunkEntity chunk) {
+        if (chunk == null || !StringUtils.hasText(chunk.getParentChunkId())) {
+            return chunk;
+        }
+        KnowledgeChunkEntity parent = knowledgeChunkMapper.selectById(chunk.getParentChunkId());
+        return parent == null || !"active".equalsIgnoreCase(parent.getStatus()) ? chunk : parent;
     }
 
     /**
@@ -911,6 +991,7 @@ public class KnowledgeBaseService {
             List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
                     .eq(KnowledgeChunkEntity::getKbId, kbId)
                     .eq(KnowledgeChunkEntity::getStatus, "active")
+                    .and(wrapper -> wrapper.ne(KnowledgeChunkEntity::getChunkLevel, "parent").or().isNull(KnowledgeChunkEntity::getChunkLevel))
                     .orderByAsc(KnowledgeChunkEntity::getChunkNo));
             if (chunks.isEmpty()) {
                 asyncTaskService.markSuccess(taskId, "知识库暂无可重建分片", Map.of("chunkCount", 0));
@@ -1058,7 +1139,7 @@ public class KnowledgeBaseService {
         entity.setVectorConnectionId(DEFAULT_VECTOR_CONNECTION_ID);
         entity.setVectorCollectionId(DEFAULT_VECTOR_COLLECTION_ID);
         entity.setMilvusCollectionName(properties.getMilvus().getDefaultKnowledgeCollection());
-        entity.setChunkStrategy(StringUtils.hasText(request.getChunkStrategy()) ? request.getChunkStrategy() : "fixed_size");
+        entity.setChunkStrategy(StringUtils.hasText(request.getChunkStrategy()) ? request.getChunkStrategy() : "parent_child");
         entity.setChunkSize(request.getChunkSize() == null ? 512 : request.getChunkSize());
         entity.setChunkOverlap(request.getChunkOverlap() == null ? 64 : request.getChunkOverlap());
         entity.setVisibility(StringUtils.hasText(request.getVisibility()) ? request.getVisibility() : "private");
@@ -1075,20 +1156,119 @@ public class KnowledgeBaseService {
      * @return 切片实体
      */
     private KnowledgeChunkEntity saveChunk(KnowledgeBaseEntity kb, KnowledgeDocumentEntity document, String content, int chunkNo) {
+        KnowledgeChunkingService.ChunkSegment segment = new KnowledgeChunkingService.ChunkSegment(
+                content, "child", null, chunkNo, "", "", chunkNo, 0, content == null ? 0 : content.length(), true);
+        return saveChunk(kb, document, segment, chunkNo, null, document.getFileHash());
+    }
+
+    /**
+     * 保存带结构元数据的切片记录。
+     *
+     * @param kb 知识库
+     * @param document 文档
+     * @param segment 切片段落
+     * @param chunkNo 全局切片序号
+     * @param parentChunkId 父分片 ID
+     * @param sourceHash 来源文档哈希
+     * @return 切片实体
+     */
+    private KnowledgeChunkEntity saveChunk(KnowledgeBaseEntity kb,
+                                           KnowledgeDocumentEntity document,
+                                           KnowledgeChunkingService.ChunkSegment segment,
+                                           int chunkNo,
+                                           String parentChunkId,
+                                           String sourceHash) {
+        String content = segment.content();
+        String contentHash = DigestUtils.md5DigestAsHex(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         KnowledgeChunkEntity chunk = new KnowledgeChunkEntity();
         chunk.setId(newId());
         chunk.setKbId(kb.getId());
         chunk.setDocumentId(document.getId());
         chunk.setChunkNo(chunkNo);
-        chunk.setTitle(document.getDocName() + " #" + chunkNo);
+        chunk.setParentChunkId(parentChunkId);
+        chunk.setChunkLevel(segment.level());
+        chunk.setTitle(StringUtils.hasText(segment.sectionTitle()) ? segment.sectionTitle() : document.getDocName() + " #" + chunkNo);
+        chunk.setSectionTitle(segment.sectionTitle());
+        chunk.setSectionPath(segment.sectionPath());
+        chunk.setParagraphNo(segment.paragraphNo());
         chunk.setContent(content);
         chunk.setTokenCount(chunkingService.estimateTokens(content));
-        chunk.setStartOffset(0);
-        chunk.setEndOffset(content.length());
-        chunk.setMetadata("{}");
+        chunk.setStartOffset(segment.startOffset() == null ? 0 : segment.startOffset());
+        chunk.setEndOffset(segment.endOffset() == null ? content.length() : segment.endOffset());
+        chunk.setStrategyVersion("rag-chunk-v2");
+        chunk.setContentHash(contentHash);
+        chunk.setSourceHash(sourceHash);
+        chunk.setMetadata(toJson(Map.of(
+                "chunkStrategy", safeString(kb.getChunkStrategy()),
+                "chunkLevel", safeString(segment.level()),
+                "parentChunkId", safeString(parentChunkId),
+                "sectionTitle", safeString(segment.sectionTitle()),
+                "sectionPath", safeString(segment.sectionPath()),
+                "contentHash", contentHash,
+                "sourceHash", safeString(sourceHash)
+        )));
         chunk.setStatus("active");
         knowledgeChunkMapper.insert(chunk);
         return chunk;
+    }
+
+    /**
+     * 查找同一知识库下已解析的相同文件，用于避免重复切片和重复向量化。
+     *
+     * @param kbId 知识库 ID
+     * @param fileHash 文件哈希
+     * @return 已解析文档，找不到返回 null
+     */
+    private KnowledgeDocumentEntity findParsedDuplicateDocument(String kbId, String fileHash) {
+        if (!StringUtils.hasText(fileHash)) {
+            return null;
+        }
+        return knowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocumentEntity>()
+                .eq(KnowledgeDocumentEntity::getKbId, kbId)
+                .eq(KnowledgeDocumentEntity::getFileHash, fileHash)
+                .eq(KnowledgeDocumentEntity::getParseStatus, "parsed")
+                .orderByDesc(KnowledgeDocumentEntity::getUploadedAt)
+                .last("limit 1"));
+    }
+
+    /**
+     * 创建知识库版本快照，用于后续回滚、对比和灰度绑定。
+     *
+     * @param kb 知识库
+     * @param versionNo 版本号
+     */
+    private void createKnowledgeBaseVersionSnapshot(KnowledgeBaseEntity kb, String versionNo) {
+        try {
+            int documentCount = count("knowledge_document", "kb_id", kb.getId());
+            int chunkCount = count("knowledge_chunk", "kb_id", kb.getId());
+            int embeddingCount = count("knowledge_embedding", "kb_id", kb.getId());
+            jdbcTemplate.update("""
+                    INSERT INTO knowledge_base_version
+                      (id, kb_id, version_no, version_name, document_count, chunk_count, embedding_count,
+                       chunk_strategy, chunk_size, chunk_overlap, snapshot_json, status, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), 'active', ?)
+                    ON DUPLICATE KEY UPDATE
+                      document_count = VALUES(document_count),
+                      chunk_count = VALUES(chunk_count),
+                      embedding_count = VALUES(embedding_count),
+                      snapshot_json = VALUES(snapshot_json),
+                      status = 'active'
+                    """,
+                    newId(),
+                    kb.getId(),
+                    versionNo,
+                    "文档处理快照",
+                    documentCount,
+                    chunkCount,
+                    embeddingCount,
+                    kb.getChunkStrategy(),
+                    kb.getChunkSize(),
+                    kb.getChunkOverlap(),
+                    toJson(Map.of("kbId", kb.getId(), "documentCount", documentCount, "chunkCount", chunkCount, "embeddingCount", embeddingCount)),
+                    currentUserId());
+        } catch (Exception ignored) {
+            // 版本快照失败不影响文档主处理链路。
+        }
     }
 
     /**
@@ -1334,11 +1514,125 @@ public class KnowledgeBaseService {
         source.setDocumentId(chunk.getDocumentId());
         source.setDocumentName(document == null ? "" : document.getDocName());
         source.setChunkId(chunk.getId());
+        source.setParentChunkId(chunk.getParentChunkId());
         source.setChunkNo(chunk.getChunkNo());
+        source.setChunkLevel(chunk.getChunkLevel());
+        source.setSectionTitle(chunk.getSectionTitle());
+        source.setSectionPath(chunk.getSectionPath());
         source.setQuoteText(chunk.getContent());
         source.setScore(score);
         source.setPageNo(chunk.getPageNo());
         return source;
+    }
+
+    /**
+     * 生成检索缓存键。
+     *
+     * @param kbId 知识库 ID
+     * @param query 查询文本
+     * @param options 检索参数
+     * @return 缓存键
+     */
+    private String retrievalCacheKey(String kbId, String query, RetrievalOptions options) {
+        return DigestUtils.md5DigestAsHex((safeString(kbId) + "|" + normalizeText(query) + "|" + retrievalOptionsFingerprint(options)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 读取检索缓存。
+     *
+     * @param cacheKey 缓存键
+     * @param options 检索参数
+     * @return 命中的缓存结果
+     */
+    private KnowledgeRetrievalResult readRetrievalCache(String cacheKey, RetrievalOptions options) {
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                    SELECT sources_json, confidence_score
+                    FROM knowledge_retrieval_cache
+                    WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP(3)
+                    LIMIT 1
+                    """, cacheKey);
+            if (rows.isEmpty()) {
+                return null;
+            }
+            jdbcTemplate.update("UPDATE knowledge_retrieval_cache SET hit_count = hit_count + 1 WHERE cache_key = ?", cacheKey);
+            List<KnowledgeSource> sources = objectMapper.readValue(String.valueOf(rows.getFirst().get("sources_json")), new TypeReference<List<KnowledgeSource>>() {
+            });
+            KnowledgeRetrievalResult result = new KnowledgeRetrievalResult();
+            result.setSources(sources);
+            result.setSearchMode(options.searchMode);
+            result.setRerankEnabled(options.rerankEnabled);
+            result.setCandidateCount(sources.size());
+            result.setResultCount(sources.size());
+            result.setConfidenceScore(doubleValue(rows.getFirst().get("confidence_score"), 0D));
+            result.setLowConfidence(false);
+            result.setAnswerable(true);
+            result.setQualityAdvice("命中检索缓存，已复用热点问题引用来源");
+            result.setScoreThreshold(options.scoreThreshold);
+            result.setLowConfidenceThreshold(options.lowConfidenceThreshold);
+            return result;
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /**
+     * 写入检索缓存。
+     *
+     * @param cacheKey 缓存键
+     * @param kbId 知识库 ID
+     * @param query 查询文本
+     * @param options 检索参数
+     * @param sources 引用来源
+     * @param confidenceScore 置信得分
+     */
+    private void writeRetrievalCache(String cacheKey,
+                                     String kbId,
+                                     String query,
+                                     RetrievalOptions options,
+                                     List<KnowledgeSource> sources,
+                                     Double confidenceScore) {
+        try {
+            String optionsHash = DigestUtils.md5DigestAsHex(retrievalOptionsFingerprint(options).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            jdbcTemplate.update("""
+                    INSERT INTO knowledge_retrieval_cache
+                      (id, cache_key, kb_id, query_hash, options_hash, sources_json, confidence_score, expires_at)
+                    VALUES (?, ?, ?, ?, ?, CAST(? AS JSON), ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 10 MINUTE))
+                    ON DUPLICATE KEY UPDATE
+                      sources_json = VALUES(sources_json),
+                      confidence_score = VALUES(confidence_score),
+                      expires_at = VALUES(expires_at),
+                      updated_at = CURRENT_TIMESTAMP(3)
+                    """,
+                    newId(),
+                    cacheKey,
+                    kbId,
+                    DigestUtils.md5DigestAsHex(normalizeText(query).getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                    optionsHash,
+                    toJson(sources),
+                    confidenceScore == null ? 0D : confidenceScore);
+        } catch (Exception ignored) {
+            // 缓存失败不能影响主检索链路。
+        }
+    }
+
+    /**
+     * 生成检索参数指纹。
+     *
+     * @param options 检索参数
+     * @return 参数指纹
+     */
+    private String retrievalOptionsFingerprint(RetrievalOptions options) {
+        return toJson(Map.of(
+                "topK", options.topK,
+                "candidateK", options.candidateK,
+                "scoreThreshold", options.scoreThreshold,
+                "searchMode", safeString(options.searchMode),
+                "rerankEnabled", options.rerankEnabled,
+                "documentIds", options.documentIds,
+                "pageNo", options.pageNo == null ? "" : options.pageNo,
+                "metadataKeyword", safeString(options.metadataKeyword)
+        ));
     }
 
     /**
