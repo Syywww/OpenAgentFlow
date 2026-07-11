@@ -152,8 +152,12 @@ async function handleDiscover(server: McpServerSummary) {
   try {
     const result = await discoverMcpServer(server.id);
     operationLog.value = formatDiscoveryResult(server.serverName, result);
-    toast(result.status === 'success' ? 'MCP 能力发现完成' : 'MCP 能力发现失败');
-    await loadServers();
+    if (result.status === 'pending' || result.status === 'running') {
+      toast('MCP 能力发现任务已提交，可在异步任务中心查看进度');
+    } else {
+      toast(result.status === 'success' ? 'MCP 能力发现完成' : 'MCP 能力发现失败');
+      await loadServers();
+    }
   } finally {
     discoveringId.value = '';
   }
@@ -203,6 +207,7 @@ function formatDiscoveryResult(name: string, result: McpDiscoveryResult) {
     `Server: ${name}`,
     `taskId: ${result.taskId}`,
     `status: ${result.status}`,
+    `message: ${result.status === 'pending' ? '任务已投递 Kafka，等待 Worker 执行' : '任务已处理'}`,
     `tools/prompts/resources: ${result.toolsCount}/${result.promptsCount}/${result.resourcesCount}`,
     `error: ${result.errorMessage || '-'}`,
   ].join('\n');

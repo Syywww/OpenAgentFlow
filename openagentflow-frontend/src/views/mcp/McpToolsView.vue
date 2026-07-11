@@ -75,8 +75,12 @@ async function rediscover() {
   testResult.value = null;
   try {
     const result = await discoverMcpServer(selectedServerId.value);
-    toast(result.status === 'success' ? 'MCP 能力已重新发现' : 'MCP 能力发现失败');
-    await loadData();
+    if (result.status === 'pending' || result.status === 'running') {
+      toast('MCP 能力发现任务已提交，可在异步任务中心查看进度');
+    } else {
+      toast(result.status === 'success' ? 'MCP 能力已重新发现' : 'MCP 能力发现失败');
+      await loadData();
+    }
   } finally {
     discovering.value = false;
   }

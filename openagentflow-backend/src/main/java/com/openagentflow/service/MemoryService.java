@@ -6,8 +6,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.api.PageResult;
 import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.domain.memory.MemoryDtos;
+import com.openagentflow.domain.task.AsyncTaskDtos;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentMemoryEntity;
+import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.AgentMapper;
@@ -38,7 +40,7 @@ import java.util.UUID;
  * <p>负责短期记忆、长期记忆、任务记忆和向量记忆的保存、召回、治理清理和聊天链路自动沉淀。</p>
  */
 @Service
-public class MemoryService {
+public class MemoryService implements DistributedTaskHandler {
 
     /** 默认向量集合 ID，对应初始化 SQL 中的 Agent Memory 集合。 */
     private static final String DEFAULT_MEMORY_VECTOR_COLLECTION_ID = "70000000-0000-0000-0000-000000000102";
@@ -64,13 +66,21 @@ public class MemoryService {
     /** 平台配置。 */
     private final OpenAgentFlowProperties properties;
 
+    /** 异步任务服务。 */
+    private final AsyncTaskService asyncTaskService;
+
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
     public MemoryService(AgentMemoryMapper agentMemoryMapper,
                          AgentMapper agentMapper,
                          AgentAccessService agentAccessService,
                          EmbeddingService embeddingService,
                          JdbcTemplate jdbcTemplate,
                          ObjectMapper objectMapper,
-                         OpenAgentFlowProperties properties) {
+                         OpenAgentFlowProperties properties,
+                         AsyncTaskService asyncTaskService,
+                         KafkaTaskClient kafkaTaskClient) {
         this.agentMemoryMapper = agentMemoryMapper;
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
@@ -78,6 +88,8 @@ public class MemoryService {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.asyncTaskService = asyncTaskService;
+        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -362,6 +374,53 @@ public class MemoryService {
         result.setDeletedLowValueCount(deletedLowValue);
         result.setMessages(List.of("已归档过期记忆 " + archivedExpired + " 条", "已删除低价值归档记忆 " + deletedLowValue + " 条"));
         return result;
+    }
+
+    /**
+     * 提交 Memory 治理清理任务到 Kafka。
+     *
+     * @return 异步任务详情
+     */
+    public AsyncTaskDtos.Detail submitCleanupTask() {
+        assertCanManageCenter();
+        AsyncTaskEntity task = asyncTaskService.createTask(
+                "清理过期和低价值 Memory",
+                "MEMORY_CLEANUP",
+                "memory_governance",
+                null,
+                "agent_memory",
+                null,
+                null,
+                Map.of("scope", "expired_and_archived_low_value"));
+        try {
+            kafkaTaskClient.publish(task);
+        } catch (Exception exception) {
+            String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
+                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", error), 0);
+        }
+        return asyncTaskService.getTask(task.getId());
+    }
+
+    /**
+     * 返回 Memory 清理任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "MEMORY_CLEANUP";
+    }
+
+    /**
+     * 在 Kafka Worker 中执行 Memory 治理清理。
+     */
+    @Override
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity task) {
+        asyncTaskService.updateProgress(task.getId(), "memory_cleanup", "正在清理过期和低价值 Memory", 40, null);
+        MemoryDtos.CleanupResult result = cleanup();
+        return Map.of(
+                "archivedExpiredCount", result.getArchivedExpiredCount(),
+                "deletedLowValueCount", result.getDeletedLowValueCount(),
+                "messages", result.getMessages());
     }
 
     /**

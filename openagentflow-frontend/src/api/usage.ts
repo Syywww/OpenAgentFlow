@@ -1,5 +1,6 @@
 import { API_BASE_URL, getAccessToken, request } from './http';
 import type { PageResult } from './traces';
+import type { AsyncTaskDetail } from './tasks';
 
 export interface UsageOverview {
   callCount: number;
@@ -126,7 +127,7 @@ export async function deleteUsageQuota(id: string) {
 }
 
 export async function recalculateUsageCosts() {
-  return request<number>('/usage/recalculate-costs', { method: 'POST' });
+  return request<AsyncTaskDetail>('/usage/recalculate-costs', { method: 'POST' });
 }
 
 export async function exportUsageCalls(params: Record<string, string | number | undefined> = {}) {

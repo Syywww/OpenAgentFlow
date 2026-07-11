@@ -3,6 +3,7 @@ package com.openagentflow.controller;
 import com.openagentflow.api.ApiResponse;
 import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.usage.UsageDtos;
+import com.openagentflow.domain.task.AsyncTaskDtos;
 import com.openagentflow.service.UsageCostService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ContentDisposition;
@@ -150,11 +151,11 @@ public class UsageController {
     /**
      * 按当前模型单价重算历史成本。
      *
-     * @return 更新记录数
+     * @return 异步任务详情
      */
     @PostMapping("/recalculate-costs")
-    public ApiResponse<Integer> recalculateCosts() {
-        return ApiResponse.ok(usageCostService.recalculateHistoricalCosts());
+    public ApiResponse<AsyncTaskDtos.Detail> recalculateCosts() {
+        return ApiResponse.ok(usageCostService.submitHistoricalCostRecalculation());
     }
 
     /**

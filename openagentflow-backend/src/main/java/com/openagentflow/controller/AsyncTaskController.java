@@ -7,6 +7,7 @@ import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.service.AsyncTaskService;
 import com.openagentflow.service.KnowledgeDocumentProcessingService;
+import com.openagentflow.service.KafkaTaskClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,10 +29,15 @@ public class AsyncTaskController {
     /** 知识文档处理服务，用于文档类任务重试。 */
     private final KnowledgeDocumentProcessingService knowledgeDocumentProcessingService;
 
+    /** Kafka 任务工具类，用于重新投递其他分布式任务。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
     public AsyncTaskController(AsyncTaskService asyncTaskService,
-                               KnowledgeDocumentProcessingService knowledgeDocumentProcessingService) {
+                               KnowledgeDocumentProcessingService knowledgeDocumentProcessingService,
+                               KafkaTaskClient kafkaTaskClient) {
         this.asyncTaskService = asyncTaskService;
         this.knowledgeDocumentProcessingService = knowledgeDocumentProcessingService;
+        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -106,10 +112,21 @@ public class AsyncTaskController {
         if (task == null) {
             throw new BusinessException("TASK_NOT_FOUND", "异步任务不存在");
         }
-        if (!StringUtils.hasText(task.getTaskType()) || !"DOCUMENT_PROCESS".equals(task.getTaskType())) {
+        if (!StringUtils.hasText(task.getTaskType()) || !java.util.List.of(
+                "DOCUMENT_PROCESS",
+                "KNOWLEDGE_VECTOR_REBUILD",
+                "EVALUATION_RUN",
+                "MCP_DISCOVERY",
+                "KNOWLEDGE_GOVERNANCE_SCAN",
+                "MEMORY_CLEANUP",
+                "USAGE_COST_RECALCULATION").contains(task.getTaskType())) {
             throw new BusinessException("TASK_RETRY_UNSUPPORTED", "当前任务类型暂不支持重试");
         }
-        knowledgeDocumentProcessingService.retryTask(id);
+        if ("DOCUMENT_PROCESS".equals(task.getTaskType())) {
+            knowledgeDocumentProcessingService.retryTask(id);
+        } else {
+            kafkaTaskClient.publish(asyncTaskService.prepareRetry(id));
+        }
         return ApiResponse.ok(asyncTaskService.getTask(id));
     }
 }

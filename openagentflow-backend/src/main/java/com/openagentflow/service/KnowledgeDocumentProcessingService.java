@@ -17,7 +17,6 @@ import com.openagentflow.mapper.KnowledgeChunkMapper;
 import com.openagentflow.mapper.KnowledgeDocumentMapper;
 import com.openagentflow.mapper.KnowledgeEmbeddingMapper;
 import com.openagentflow.security.AuthUserDetails;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,8 +29,6 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -42,13 +39,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 
 /**
  * 知识库文档上传与后台处理服务。
  */
 @Service
-public class KnowledgeDocumentProcessingService {
+public class KnowledgeDocumentProcessingService implements DistributedTaskHandler {
 
     /** 日志对象，用于输出处理进度和模型调用结果。 */
     private static final Logger log = LoggerFactory.getLogger(KnowledgeDocumentProcessingService.class);
@@ -89,8 +85,11 @@ public class KnowledgeDocumentProcessingService {
     /** 异步任务中心服务。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** 平台异步任务线程池。 */
-    private final Executor asyncTaskExecutor;
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
+    /** 共享对象存储服务。 */
+    private final SharedObjectStorageService objectStorageService;
 
     public KnowledgeDocumentProcessingService(KnowledgeBaseMapper knowledgeBaseMapper,
                                               KnowledgeDocumentMapper knowledgeDocumentMapper,
@@ -103,7 +102,8 @@ public class KnowledgeDocumentProcessingService {
                                               JdbcTemplate jdbcTemplate,
                                               ObjectMapper objectMapper,
                                               AsyncTaskService asyncTaskService,
-                                              @Qualifier("oafAsyncTaskExecutor") Executor asyncTaskExecutor) {
+                                              KafkaTaskClient kafkaTaskClient,
+                                              SharedObjectStorageService objectStorageService) {
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
@@ -115,7 +115,8 @@ public class KnowledgeDocumentProcessingService {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
-        this.asyncTaskExecutor = asyncTaskExecutor;
+        this.kafkaTaskClient = kafkaTaskClient;
+        this.objectStorageService = objectStorageService;
     }
 
     /**
@@ -148,7 +149,8 @@ public class KnowledgeDocumentProcessingService {
                 return result;
             }
             String documentId = newId();
-            String storageKey = saveUploadFile(kbId, documentId, fileName, bytes);
+            String storageKey = knowledgeObjectKey(kbId, documentId, fileName);
+            String storageBucket = objectStorageService.put(storageKey, bytes, file.getContentType());
 
             KnowledgeDocumentEntity document = new KnowledgeDocumentEntity();
             document.setId(documentId);
@@ -158,7 +160,7 @@ public class KnowledgeDocumentProcessingService {
             document.setFileExt(fileExt);
             document.setFileSize(file.getSize());
             document.setFileHash(fileHash);
-            document.setStorageBucket("local");
+            document.setStorageBucket(storageBucket);
             document.setStorageKey(storageKey);
             document.setSourceType("upload");
             document.setParseStatus("processing");
@@ -181,9 +183,14 @@ public class KnowledgeDocumentProcessingService {
             document.setMetadata(toJson(metadata));
             knowledgeDocumentMapper.updateById(document);
 
-            // 后台处理不阻塞上传请求，前端通过任务中心或文档状态接口轮询进度。
-            asyncTaskExecutor.execute(() -> processDocument(asyncTask.getId(), kbId, documentId, bytes, fileExt));
-            log.info("知识库文档已接收，进入异步任务中心：kbId={}, documentId={}, taskId={}, fileName={}", kbId, documentId, asyncTask.getId(), fileName);
+            // MySQL 已保存任务和对象键，再投递 Kafka；发送异常由补偿调度器继续投递。
+            try {
+                kafkaTaskClient.publish(asyncTask);
+            } catch (Exception exception) {
+                asyncTaskService.appendLog(asyncTask.getId(), "warn", "enqueue_failed",
+                        "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 5);
+            }
+            log.info("知识库文档已接收并投递 Kafka：kbId={}, documentId={}, taskId={}, fileName={}", kbId, documentId, asyncTask.getId(), fileName);
 
             KnowledgeUploadResult result = new KnowledgeUploadResult();
             result.setDocument(toSummary(document));
@@ -226,16 +233,19 @@ public class KnowledgeDocumentProcessingService {
      * @param bytes 文件字节
      * @param fileExt 文件扩展名
      */
-    private void processDocument(String taskId, String kbId, String documentId, byte[] bytes, String fileExt) {
+    private Map<String, Object> processDocument(String taskId, String kbId, String documentId, byte[] bytes, String fileExt) {
         KnowledgeBaseEntity kb = knowledgeBaseMapper.selectById(kbId);
         KnowledgeDocumentEntity document = knowledgeDocumentMapper.selectById(documentId);
         if (kb == null || document == null) {
-            log.warn("知识库文档后台处理跳过，记录不存在：kbId={}, documentId={}", kbId, documentId);
-            return;
+            throw new BusinessException("DOCUMENT_NOT_FOUND", "知识库或文档不存在，无法执行分布式任务");
         }
         try {
-            asyncTaskService.markRunning(taskId);
             checkCanceled(taskId);
+            if (value(asyncTaskService.findById(taskId).getRetryCount()) > 0) {
+                // 重试前清理上一次未完整提交的分片，防止重复分片污染召回结果。
+                knowledgeChunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunkEntity>()
+                        .eq(KnowledgeChunkEntity::getDocumentId, documentId));
+            }
             updateProgress(taskId, documentId, "parsing", "解析文档", 15, "开始解析文档内容", null);
             String text = documentParseService.parse(bytes, fileExt);
             checkCanceled(taskId);
@@ -334,7 +344,7 @@ public class KnowledgeDocumentProcessingService {
             Map<String, Object> result = Map.of("milvusSynced", allMilvusSynced, "chunkCount", segments.size(), "embeddingCount", vectors.size());
             String doneMessage = allMilvusSynced ? "文档已解析、切片、真实向量化并写入 Milvus" : "文档已处理完成，Milvus 写入存在兜底：" + milvusMessage;
             updateProgress(taskId, documentId, "done", "处理完成", 100, doneMessage, result);
-            asyncTaskService.markSuccess(taskId, doneMessage, result);
+            return result;
         } catch (Exception exception) {
             boolean canceled = "TASK_CANCELED".equals(exception.getMessage());
             KnowledgeDocumentEntity failed = knowledgeDocumentMapper.selectById(documentId);
@@ -346,12 +356,37 @@ public class KnowledgeDocumentProcessingService {
             if (canceled) {
                 updateProgress(taskId, documentId, "canceled", "任务已取消", 100, "用户已取消任务，文档处理已停止", null);
                 asyncTaskService.markCanceled(taskId, "任务已取消，文档处理已停止");
+                return Map.of("canceled", true, "documentId", documentId);
             } else {
                 updateProgress(taskId, documentId, "failed", "处理失败", 100, "处理失败：" + exception.getMessage(), null);
-                asyncTaskService.markFailed(taskId, "DOCUMENT_PROCESS_FAILED", exception.getMessage());
             }
             log.error("知识库文档处理失败：kbId={}, documentId={}", kbId, documentId, exception);
+            throw new IllegalStateException("知识文档处理失败：" + exception.getMessage(), exception);
         }
+    }
+
+    /**
+     * 返回 Kafka 任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "DOCUMENT_PROCESS";
+    }
+
+    /**
+     * 从共享对象存储读取原文件并执行文档处理。
+     */
+    @Override
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity task) {
+        KnowledgeDocumentEntity document = knowledgeDocumentMapper.selectById(task.getSourceId());
+        if (document == null) {
+            throw new BusinessException("DOCUMENT_NOT_FOUND", "文档不存在，无法执行 Kafka 任务");
+        }
+        byte[] bytes = objectStorageService.get(document.getStorageBucket(), document.getStorageKey());
+        document.setParseStatus("processing");
+        document.setParseError(null);
+        knowledgeDocumentMapper.updateById(document);
+        return processDocument(task.getId(), document.getKbId(), document.getId(), bytes, document.getFileExt());
     }
 
     /**
@@ -366,17 +401,10 @@ public class KnowledgeDocumentProcessingService {
             asyncTaskService.markFailed(taskId, "DOCUMENT_NOT_FOUND", "文档不存在，无法重试");
             throw new BusinessException("DOCUMENT_NOT_FOUND", "文档不存在，无法重试");
         }
-        try {
-            Path path = Path.of(document.getStorageKey());
-            byte[] bytes = Files.readAllBytes(path);
-            document.setParseStatus("processing");
-            document.setParseError(null);
-            knowledgeDocumentMapper.updateById(document);
-            asyncTaskExecutor.execute(() -> processDocument(taskId, document.getKbId(), document.getId(), bytes, document.getFileExt()));
-        } catch (Exception exception) {
-            asyncTaskService.markFailed(taskId, "DOCUMENT_RETRY_FAILED", exception.getMessage());
-            throw new BusinessException("DOCUMENT_RETRY_FAILED", exception.getMessage());
-        }
+        document.setParseStatus("processing");
+        document.setParseError(null);
+        knowledgeDocumentMapper.updateById(document);
+        kafkaTaskClient.publish(task);
     }
 
     /**
@@ -733,13 +761,13 @@ public class KnowledgeDocumentProcessingService {
      * @param bytes 文件字节
      * @return 存储相对路径
      */
-    private String saveUploadFile(String kbId, String documentId, String fileName, byte[] bytes) throws Exception {
-        Path folder = Path.of("data", "uploads", "knowledge", kbId);
-        Files.createDirectories(folder);
+    private String knowledgeObjectKey(String kbId, String documentId, String fileName) {
         String safeName = fileName.replaceAll("[\\\\/:*?\"<>|]+", "_");
-        Path target = folder.resolve(documentId + "_" + safeName);
-        Files.write(target, bytes);
-        return target.toString().replace('\\', '/');
+        return "uploads/knowledge/" + kbId + "/" + documentId + "_" + safeName;
+    }
+
+    private int value(Integer value) {
+        return value == null ? 0 : value;
     }
 
     /**

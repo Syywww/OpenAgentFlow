@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.domain.knowledge.KnowledgeGovernanceDtos;
+import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.KnowledgeGovernanceIssueEntity;
 import com.openagentflow.entity.KnowledgeGovernancePolicyEntity;
 import com.openagentflow.exception.BusinessException;
@@ -28,7 +29,7 @@ import java.util.UUID;
  * <p>负责从知识库、文档、分片、向量和智能体绑定等真实数据中识别治理问题。</p>
  */
 @Service
-public class KnowledgeGovernanceService {
+public class KnowledgeGovernanceService implements DistributedTaskHandler {
 
     /** JSON工具，用于保存和解析问题证据。 */
     private final ObjectMapper objectMapper;
@@ -42,14 +43,24 @@ public class KnowledgeGovernanceService {
     /** 治理问题Mapper。 */
     private final KnowledgeGovernanceIssueMapper issueMapper;
 
+    /** 统一异步任务中心。 */
+    private final AsyncTaskService asyncTaskService;
+
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
     public KnowledgeGovernanceService(ObjectMapper objectMapper,
                                       JdbcTemplate jdbcTemplate,
                                       KnowledgeGovernancePolicyMapper policyMapper,
-                                      KnowledgeGovernanceIssueMapper issueMapper) {
+                                      KnowledgeGovernanceIssueMapper issueMapper,
+                                      AsyncTaskService asyncTaskService,
+                                      KafkaTaskClient kafkaTaskClient) {
         this.objectMapper = objectMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.policyMapper = policyMapper;
         this.issueMapper = issueMapper;
+        this.asyncTaskService = asyncTaskService;
+        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -191,12 +202,43 @@ public class KnowledgeGovernanceService {
     }
 
     /**
-     * 扫描知识库并生成治理问题。
+     * 提交知识治理扫描任务。
      *
      * @return 本次扫描新生成的问题数量
      */
-    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> scanIssues() {
+        AsyncTaskEntity task = asyncTaskService.createTask(
+                "扫描知识库治理问题",
+                "KNOWLEDGE_GOVERNANCE_SCAN",
+                "knowledge_governance",
+                null,
+                "knowledge_governance_issue",
+                null,
+                null,
+                Map.of("scanScope", "all"));
+        try {
+            kafkaTaskClient.publish(task);
+        } catch (Exception exception) {
+            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
+                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
+        }
+        return Map.of("asyncTaskId", task.getId(), "status", "pending", "message", "知识治理扫描任务已提交");
+    }
+
+    /**
+     * 返回 Kafka 任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "KNOWLEDGE_GOVERNANCE_SCAN";
+    }
+
+    /**
+     * 在 Kafka Worker 中扫描知识库并生成治理问题。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity task) {
         int created = 0;
         created += scanFailedDocuments();
         created += scanStuckDocuments();

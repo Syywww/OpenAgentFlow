@@ -59,6 +59,7 @@ Redis: cache, sessions, queue state
 - `V033__demo_order_summary_tool_intent.sql`: demo order summary routing for "my orders" and "how many orders" questions.
 - `V034__recursive_knowledge_chunking.sql`: Parent-Child recursive structured chunking becomes the default strategy for new knowledge bases.
 - `V035__enterprise_rag_metadata_parent_child.sql`: enterprise RAG metadata, existing knowledge-base strategy migration, Parent-Child chunks, knowledge-base versions, and retrieval cache.
+- `V036__kafka_distributed_async_tasks.sql`: Kafka queue metadata, Worker locks, heartbeat, retry scheduling, recovery indexes, and dead-letter fields for distributed async tasks.
 
 Recommended execution order:
 
@@ -98,6 +99,7 @@ V032__demo_workflow_node_conditions.sql
 V033__demo_order_summary_tool_intent.sql
 V034__recursive_knowledge_chunking.sql
 V035__enterprise_rag_metadata_parent_child.sql
+V036__kafka_distributed_async_tasks.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -133,8 +135,10 @@ Coverage matches the PostgreSQL version at the feature level:
 ## Latest Async Task Update
 
 - `V012__async_task_center.sql` creates `async_task` and `async_task_log`, with Chinese comments for every table and column.
-- Knowledge document upload now writes parsing, chunking, Embedding, MySQL save, Milvus sync, failure, cancel, and retry logs into the unified task center.
-- The task center is designed as the shared operational entry for later evaluation batch runs, MCP discovery, import jobs, vector rebuilds, and other long-running work.
+- `V036__kafka_distributed_async_tasks.sql` adds Kafka Topic/message IDs, Worker locks, heartbeat, next retry time, final failure time, and recovery indexes with Chinese comments.
+- Knowledge document processing, vector rebuild, evaluation batch execution, MCP discovery, knowledge governance scans, Memory cleanup, and historical cost recalculation are submitted to Kafka and executed by distributed Workers.
+- MySQL conditional updates provide idempotent task claims; five-second and thirty-second retry Topics provide delayed retries; exhausted tasks enter the dead-letter Topic and can be replayed from the task center.
+- Original uploaded files are stored in MinIO so any Worker instance can parse the same document.
 
 ## Latest Governance Risk Update
 

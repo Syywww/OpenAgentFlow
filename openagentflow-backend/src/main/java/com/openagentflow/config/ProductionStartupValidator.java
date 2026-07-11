@@ -21,6 +21,9 @@ public class ProductionStartupValidator implements ApplicationRunner {
     /** Compose 示例默认 JWT 密钥。 */
     private static final String DEFAULT_COMPOSE_JWT_SECRET = "please-change-this-secret-before-production";
 
+    /** MinIO 示例默认密钥。 */
+    private static final String DEFAULT_MINIO_SECRET = "minioadmin";
+
     /** Spring 环境对象。 */
     private final Environment environment;
 
@@ -40,6 +43,8 @@ public class ProductionStartupValidator implements ApplicationRunner {
         validateJwtSecret();
         validateCorsOrigins();
         validateMysqlPassword();
+        validateKafka();
+        validateObjectStorage();
     }
 
     /**
@@ -83,5 +88,36 @@ public class ProductionStartupValidator implements ApplicationRunner {
             throw new IllegalStateException("生产环境必须配置强 MySQL 密码，不能使用 123456 或 password");
         }
     }
-}
 
+    /**
+     * 校验生产环境 Kafka 分布式任务配置。
+     */
+    private void validateKafka() {
+        String bootstrapServers = environment.getProperty("spring.kafka.bootstrap-servers");
+        if (!Boolean.TRUE.equals(properties.getAsyncTask().getEnabled())) {
+            throw new IllegalStateException("生产环境必须启用 OAF_KAFKA_TASK_ENABLED，保证耗时任务分布式执行");
+        }
+        if (!StringUtils.hasText(bootstrapServers)
+                || bootstrapServers.contains("localhost")
+                || bootstrapServers.contains("127.0.0.1")) {
+            throw new IllegalStateException("生产环境必须通过 OAF_KAFKA_BOOTSTRAP_SERVERS 配置可用的 Kafka 集群地址");
+        }
+    }
+
+    /**
+     * 校验生产环境共享对象存储配置，避免不同 Worker 无法读取上传文档。
+     */
+    private void validateObjectStorage() {
+        OpenAgentFlowProperties.ObjectStorage storage = properties.getObjectStorage();
+        if (!Boolean.TRUE.equals(storage.getEnabled())) {
+            throw new IllegalStateException("生产环境必须启用 OAF_OBJECT_STORAGE_ENABLED，文档任务需要共享对象存储");
+        }
+        if (!StringUtils.hasText(storage.getEndpoint())
+                || !StringUtils.hasText(storage.getBucket())
+                || !StringUtils.hasText(storage.getAccessKey())
+                || !StringUtils.hasText(storage.getSecretKey())
+                || DEFAULT_MINIO_SECRET.equals(storage.getSecretKey())) {
+            throw new IllegalStateException("生产环境必须配置正式的 MinIO/S3 连接、存储桶和非默认访问密钥");
+        }
+    }
+}

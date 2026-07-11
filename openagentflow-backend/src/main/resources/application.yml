@@ -20,6 +20,26 @@ spring:
       database: ${OAF_REDIS_DATABASE:0}
       password: ${OAF_REDIS_PASSWORD:}
       timeout: 3s
+  kafka:
+    # IDEA 本地启动连接宿主机 9092；Docker 环境通过环境变量覆盖为 kafka:19092。
+    bootstrap-servers: ${OAF_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: 10
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 120000
+    consumer:
+      group-id: ${OAF_KAFKA_CONSUMER_GROUP:openagentflow-async-workers}
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      properties:
+        isolation.level: read_committed
+        max.poll.interval.ms: 900000
+    listener:
+      ack-mode: manual_immediate
+      concurrency: ${OAF_KAFKA_CONCURRENCY:4}
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -47,6 +67,24 @@ mybatis-plus:
       id-type: input
 
 openagentflow:
+  async-task:
+    # Kafka 分布式任务开关，关闭时仅允许任务入库，不启动消费者。
+    enabled: ${OAF_KAFKA_TASK_ENABLED:true}
+    topic: ${OAF_KAFKA_TASK_TOPIC:openagentflow.async-task}
+    retry-topic-5s: ${OAF_KAFKA_RETRY_TOPIC_5S:openagentflow.async-task.retry-5s}
+    retry-topic-30s: ${OAF_KAFKA_RETRY_TOPIC_30S:openagentflow.async-task.retry-30s}
+    dead-letter-topic: ${OAF_KAFKA_DLT_TOPIC:openagentflow.async-task.dlt}
+    consumer-group: ${OAF_KAFKA_CONSUMER_GROUP:openagentflow-async-workers}
+    partitions: ${OAF_KAFKA_TASK_PARTITIONS:6}
+    max-retries: ${OAF_KAFKA_TASK_MAX_RETRIES:3}
+    stale-seconds: ${OAF_KAFKA_TASK_STALE_SECONDS:300}
+  object-storage:
+    # 分布式 Worker 必须从共享对象存储读取上传文档。
+    enabled: ${OAF_OBJECT_STORAGE_ENABLED:true}
+    endpoint: ${OAF_MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${OAF_MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${OAF_MINIO_SECRET_KEY:minioadmin}
+    bucket: ${OAF_MINIO_BUCKET:openagentflow}
   milvus:
     # 开发环境未启动 Milvus 时可以设置为 false，后端会保留 MySQL 向量兜底并正常启动。
     enabled: ${OAF_MILVUS_ENABLED:true}

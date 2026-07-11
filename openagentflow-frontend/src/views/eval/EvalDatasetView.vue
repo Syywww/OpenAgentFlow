@@ -256,7 +256,7 @@ async function runTask() {
       judgeModelId: runForm.judgeModelId || undefined,
       judgePrompt: runForm.judgePrompt || undefined,
     });
-    successMessage.value = '评测任务已完成';
+    successMessage.value = '评测任务已提交，正在由 Kafka Worker 后台执行';
     await router.push(`/eval/result/${detail.id}`);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '运行评测失败';

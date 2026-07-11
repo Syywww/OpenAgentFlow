@@ -245,8 +245,9 @@ export interface KnowledgeGovernanceIssueSummary {
 }
 
 export interface KnowledgeGovernanceScanResult {
-  createdIssueCount: number;
-  openIssueCount: number;
+  asyncTaskId: string;
+  status: string;
+  message: string;
 }
 
 export async function fetchKnowledgeBases() {

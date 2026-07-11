@@ -110,6 +110,38 @@ public class AsyncTaskEntity {
     @TableField("error_message")
     private String errorMessage;
 
+    /** 当前 Kafka Topic。 */
+    @TableField("queue_topic")
+    private String queueTopic;
+
+    /** 最近一次 Kafka 消息ID。 */
+    @TableField("kafka_message_id")
+    private String kafkaMessageId;
+
+    /** 当前领取任务的 Worker ID。 */
+    @TableField("locked_by")
+    private String lockedBy;
+
+    /** Worker 领取时间。 */
+    @TableField("locked_at")
+    private LocalDateTime lockedAt;
+
+    /** Worker 最近心跳时间。 */
+    @TableField("heartbeat_at")
+    private LocalDateTime heartbeatAt;
+
+    /** 最近一次成功投递 Kafka 的时间。 */
+    @TableField("last_enqueued_at")
+    private LocalDateTime lastEnqueuedAt;
+
+    /** 下次允许执行时间。 */
+    @TableField("next_retry_at")
+    private LocalDateTime nextRetryAt;
+
+    /** 进入死信队列的时间。 */
+    @TableField("dead_letter_at")
+    private LocalDateTime deadLetterAt;
+
     /** 开始时间。 */
     @TableField("started_at")
     private LocalDateTime startedAt;
@@ -322,6 +354,70 @@ public class AsyncTaskEntity {
         this.errorMessage = errorMessage;
     }
 
+    public String getQueueTopic() {
+        return queueTopic;
+    }
+
+    public void setQueueTopic(String queueTopic) {
+        this.queueTopic = queueTopic;
+    }
+
+    public String getKafkaMessageId() {
+        return kafkaMessageId;
+    }
+
+    public void setKafkaMessageId(String kafkaMessageId) {
+        this.kafkaMessageId = kafkaMessageId;
+    }
+
+    public String getLockedBy() {
+        return lockedBy;
+    }
+
+    public void setLockedBy(String lockedBy) {
+        this.lockedBy = lockedBy;
+    }
+
+    public LocalDateTime getLockedAt() {
+        return lockedAt;
+    }
+
+    public void setLockedAt(LocalDateTime lockedAt) {
+        this.lockedAt = lockedAt;
+    }
+
+    public LocalDateTime getHeartbeatAt() {
+        return heartbeatAt;
+    }
+
+    public void setHeartbeatAt(LocalDateTime heartbeatAt) {
+        this.heartbeatAt = heartbeatAt;
+    }
+
+    public LocalDateTime getLastEnqueuedAt() {
+        return lastEnqueuedAt;
+    }
+
+    public void setLastEnqueuedAt(LocalDateTime lastEnqueuedAt) {
+        this.lastEnqueuedAt = lastEnqueuedAt;
+    }
+
+    public LocalDateTime getNextRetryAt() {
+        return nextRetryAt;
+    }
+
+    public void setNextRetryAt(LocalDateTime nextRetryAt) {
+        this.nextRetryAt = nextRetryAt;
+    }
+
+    public LocalDateTime getDeadLetterAt() {
+        return deadLetterAt;
+    }
+
+    public void setDeadLetterAt(LocalDateTime deadLetterAt) {
+        this.deadLetterAt = deadLetterAt;
+    }
+
     public LocalDateTime getStartedAt() {
         return startedAt;
     }
@@ -362,4 +458,3 @@ public class AsyncTaskEntity {
         this.updatedAt = updatedAt;
     }
 }
-

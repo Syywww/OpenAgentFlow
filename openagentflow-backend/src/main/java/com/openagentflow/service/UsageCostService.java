@@ -3,7 +3,9 @@ package com.openagentflow.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.chat.ChatMessage;
+import com.openagentflow.domain.task.AsyncTaskDtos;
 import com.openagentflow.domain.usage.UsageDtos;
+import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.entity.ModelProviderEntity;
 import com.openagentflow.entity.ModelUsageQuotaEntity;
@@ -37,7 +39,7 @@ import java.util.UUID;
  * <p>统一负责 Token 成本计算、配额拦截、日报累计和前端统计查询。</p>
  */
 @Service
-public class UsageCostService {
+public class UsageCostService implements DistributedTaskHandler {
 
     /** 金额计算保留小数位。 */
     private static final int COST_SCALE = 6;
@@ -54,12 +56,22 @@ public class UsageCostService {
     /** JDBC 工具，用于聚合查询和原子更新。 */
     private final JdbcTemplate jdbcTemplate;
 
+    /** 异步任务服务。 */
+    private final AsyncTaskService asyncTaskService;
+
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
     public UsageCostService(ModelUsageQuotaMapper modelUsageQuotaMapper,
                             RuntimeCostDailyMapper runtimeCostDailyMapper,
-                            JdbcTemplate jdbcTemplate) {
+                            JdbcTemplate jdbcTemplate,
+                            AsyncTaskService asyncTaskService,
+                            KafkaTaskClient kafkaTaskClient) {
         this.modelUsageQuotaMapper = modelUsageQuotaMapper;
         this.runtimeCostDailyMapper = runtimeCostDailyMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.asyncTaskService = asyncTaskService;
+        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -490,6 +502,49 @@ public class UsageCostService {
         rebuildCostDaily();
         rebuildQuotaUsage();
         return updatedCalls;
+    }
+
+    /**
+     * 提交历史成本重算任务到 Kafka。
+     *
+     * @return 异步任务详情
+     */
+    public AsyncTaskDtos.Detail submitHistoricalCostRecalculation() {
+        AsyncTaskEntity task = asyncTaskService.createTask(
+                "按当前模型价格重算历史成本",
+                "USAGE_COST_RECALCULATION",
+                "usage_cost",
+                null,
+                "runtime_llm_call",
+                null,
+                null,
+                Map.of("scope", "all_llm_calls"));
+        try {
+            kafkaTaskClient.publish(task);
+        } catch (Exception exception) {
+            String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
+                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", error), 0);
+        }
+        return asyncTaskService.getTask(task.getId());
+    }
+
+    /**
+     * 返回成本重算任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "USAGE_COST_RECALCULATION";
+    }
+
+    /**
+     * 在 Kafka Worker 中重算历史成本。
+     */
+    @Override
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity task) {
+        asyncTaskService.updateProgress(task.getId(), "cost_recalculation", "正在重算 LLM 调用和运行成本", 30, null);
+        int updatedCalls = recalculateHistoricalCosts();
+        return Map.of("updatedCalls", updatedCalls);
     }
 
     /**

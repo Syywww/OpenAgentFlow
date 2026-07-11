@@ -146,6 +146,21 @@ public final class AsyncTaskDtos {
         /** 错误消息。 */
         private String errorMessage;
 
+        /** 当前 Kafka Topic。 */
+        private String queueTopic;
+
+        /** 当前 Worker ID。 */
+        private String lockedBy;
+
+        /** Worker 最近心跳时间。 */
+        private LocalDateTime heartbeatAt;
+
+        /** 下次重试时间。 */
+        private LocalDateTime nextRetryAt;
+
+        /** 死信入队时间。 */
+        private LocalDateTime deadLetterAt;
+
         /** 开始时间。 */
         private LocalDateTime startedAt;
 
@@ -308,6 +323,46 @@ public final class AsyncTaskDtos {
 
         public void setErrorMessage(String errorMessage) {
             this.errorMessage = errorMessage;
+        }
+
+        public String getQueueTopic() {
+            return queueTopic;
+        }
+
+        public void setQueueTopic(String queueTopic) {
+            this.queueTopic = queueTopic;
+        }
+
+        public String getLockedBy() {
+            return lockedBy;
+        }
+
+        public void setLockedBy(String lockedBy) {
+            this.lockedBy = lockedBy;
+        }
+
+        public LocalDateTime getHeartbeatAt() {
+            return heartbeatAt;
+        }
+
+        public void setHeartbeatAt(LocalDateTime heartbeatAt) {
+            this.heartbeatAt = heartbeatAt;
+        }
+
+        public LocalDateTime getNextRetryAt() {
+            return nextRetryAt;
+        }
+
+        public void setNextRetryAt(LocalDateTime nextRetryAt) {
+            this.nextRetryAt = nextRetryAt;
+        }
+
+        public LocalDateTime getDeadLetterAt() {
+            return deadLetterAt;
+        }
+
+        public void setDeadLetterAt(LocalDateTime deadLetterAt) {
+            this.deadLetterAt = deadLetterAt;
         }
 
         public LocalDateTime getStartedAt() {
@@ -499,6 +554,9 @@ public final class AsyncTaskDtos {
         /** 取消任务数。 */
         private Long canceledCount;
 
+        /** 进入死信队列的任务数。 */
+        private Long deadLetterCount;
+
         public Long getTotalCount() {
             return totalCount;
         }
@@ -546,6 +604,13 @@ public final class AsyncTaskDtos {
         public void setCanceledCount(Long canceledCount) {
             this.canceledCount = canceledCount;
         }
+
+        public Long getDeadLetterCount() {
+            return deadLetterCount;
+        }
+
+        public void setDeadLetterCount(Long deadLetterCount) {
+            this.deadLetterCount = deadLetterCount;
+        }
     }
 }
-

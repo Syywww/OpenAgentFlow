@@ -1,4 +1,5 @@
 import { request } from './http';
+import type { AsyncTaskDetail } from './tasks';
 
 export interface PageResult<T> {
   records: T[];
@@ -119,5 +120,5 @@ export async function recallMemories(payload: { agentId?: string; sessionId?: st
 }
 
 export async function cleanupMemories() {
-  return request<MemoryCleanupResult>('/memories/cleanup', { method: 'POST' });
+  return request<AsyncTaskDetail>('/memories/cleanup', { method: 'POST' });
 }

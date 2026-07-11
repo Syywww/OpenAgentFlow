@@ -116,6 +116,22 @@ services:
       OAF_REDIS_PORT: 6379
       OAF_REDIS_DATABASE: ${OAF_REDIS_DATABASE:-0}
       OAF_REDIS_PASSWORD: ${OAF_REDIS_PASSWORD:?请配置 Redis 密码}
+      OAF_KAFKA_BOOTSTRAP_SERVERS: ${OAF_KAFKA_BOOTSTRAP_SERVERS:?请配置生产 Kafka Broker 地址}
+      OAF_KAFKA_CONSUMER_GROUP: ${OAF_KAFKA_CONSUMER_GROUP:-openagentflow-async-workers}
+      OAF_KAFKA_CONCURRENCY: ${OAF_KAFKA_CONCURRENCY:-8}
+      OAF_KAFKA_TASK_ENABLED: ${OAF_KAFKA_TASK_ENABLED:-true}
+      OAF_KAFKA_TASK_TOPIC: ${OAF_KAFKA_TASK_TOPIC:-openagentflow.async-task}
+      OAF_KAFKA_RETRY_TOPIC_5S: ${OAF_KAFKA_RETRY_TOPIC_5S:-openagentflow.async-task.retry-5s}
+      OAF_KAFKA_RETRY_TOPIC_30S: ${OAF_KAFKA_RETRY_TOPIC_30S:-openagentflow.async-task.retry-30s}
+      OAF_KAFKA_DLT_TOPIC: ${OAF_KAFKA_DLT_TOPIC:-openagentflow.async-task.dlt}
+      OAF_KAFKA_TASK_PARTITIONS: ${OAF_KAFKA_TASK_PARTITIONS:-12}
+      OAF_KAFKA_TASK_MAX_RETRIES: ${OAF_KAFKA_TASK_MAX_RETRIES:-3}
+      OAF_KAFKA_TASK_STALE_SECONDS: ${OAF_KAFKA_TASK_STALE_SECONDS:-300}
+      OAF_OBJECT_STORAGE_ENABLED: ${OAF_OBJECT_STORAGE_ENABLED:-true}
+      OAF_MINIO_ENDPOINT: http://minio:9000
+      OAF_MINIO_ACCESS_KEY: ${OAF_MINIO_ACCESS_KEY:-openagentflow_minio}
+      OAF_MINIO_SECRET_KEY: ${OAF_MINIO_SECRET_KEY:?请配置 MinIO 访问密钥}
+      OAF_MINIO_BUCKET: ${OAF_MINIO_BUCKET:-openagentflow}
       OAF_MILVUS_HOST: milvus
       OAF_MILVUS_PORT: 19530
       OAF_MILVUS_DATABASE: ${OAF_MILVUS_DATABASE:-default}
@@ -134,6 +150,8 @@ services:
       redis:
         condition: service_healthy
       milvus:
+        condition: service_started
+      minio:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/actuator/health | grep -q 'UP'"]

@@ -98,8 +98,7 @@ async function scanIssues() {
   successMessage.value = '';
   try {
     const result = await scanKnowledgeGovernanceIssues();
-    successMessage.value = `扫描完成，新生成 ${result.createdIssueCount} 个问题，当前打开 ${result.openIssueCount} 个问题`;
-    await loadData();
+    successMessage.value = `${result.message}，任务 ID：${result.asyncTaskId}，可前往异步任务中心查看进度`;
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '知识库治理扫描失败';
   } finally {

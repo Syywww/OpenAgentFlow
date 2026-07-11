@@ -223,8 +223,7 @@ async function runCleanup() {
   successMessage.value = '';
   try {
     const result = await cleanupMemories();
-    successMessage.value = result.messages.join('，');
-    await reloadList();
+    successMessage.value = `Memory 清理任务已提交：${result.taskCode}，可在异步任务中心查看进度`;
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '记忆清理失败';
   } finally {

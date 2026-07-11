@@ -19,6 +19,12 @@ public class OpenAgentFlowProperties {
     /** RAG 检索默认配置。 */
     private Rag rag = new Rag();
 
+    /** Kafka 分布式异步任务配置。 */
+    private AsyncTask asyncTask = new AsyncTask();
+
+    /** MinIO 共享对象存储配置。 */
+    private ObjectStorage objectStorage = new ObjectStorage();
+
     public Milvus getMilvus() {
         return milvus;
     }
@@ -41,6 +47,188 @@ public class OpenAgentFlowProperties {
 
     public void setRag(Rag rag) {
         this.rag = rag;
+    }
+
+    public AsyncTask getAsyncTask() {
+        return asyncTask;
+    }
+
+    public void setAsyncTask(AsyncTask asyncTask) {
+        this.asyncTask = asyncTask;
+    }
+
+    public ObjectStorage getObjectStorage() {
+        return objectStorage;
+    }
+
+    public void setObjectStorage(ObjectStorage objectStorage) {
+        this.objectStorage = objectStorage;
+    }
+
+    /**
+     * Kafka 分布式任务配置。
+     */
+    public static class AsyncTask {
+
+        /** 是否启用 Kafka 任务生产和消费。 */
+        private Boolean enabled = true;
+
+        /** 主任务 Topic。 */
+        private String topic = "openagentflow.async-task";
+
+        /** 第一级五秒重试 Topic。 */
+        private String retryTopic5s = "openagentflow.async-task.retry-5s";
+
+        /** 第二级三十秒重试 Topic。 */
+        private String retryTopic30s = "openagentflow.async-task.retry-30s";
+
+        /** 最终失败死信 Topic。 */
+        private String deadLetterTopic = "openagentflow.async-task.dlt";
+
+        /** Kafka 消费组名称。 */
+        private String consumerGroup = "openagentflow-async-workers";
+
+        /** Topic 分区数量。 */
+        private Integer partitions = 6;
+
+        /** 最大自动重试次数。 */
+        private Integer maxRetries = 3;
+
+        /** 运行任务失联判定秒数。 */
+        private Long staleSeconds = 300L;
+
+        public Boolean getEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(Boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getTopic() {
+            return topic;
+        }
+
+        public void setTopic(String topic) {
+            this.topic = topic;
+        }
+
+        public String getRetryTopic5s() {
+            return retryTopic5s;
+        }
+
+        public void setRetryTopic5s(String retryTopic5s) {
+            this.retryTopic5s = retryTopic5s;
+        }
+
+        public String getRetryTopic30s() {
+            return retryTopic30s;
+        }
+
+        public void setRetryTopic30s(String retryTopic30s) {
+            this.retryTopic30s = retryTopic30s;
+        }
+
+        public String getDeadLetterTopic() {
+            return deadLetterTopic;
+        }
+
+        public void setDeadLetterTopic(String deadLetterTopic) {
+            this.deadLetterTopic = deadLetterTopic;
+        }
+
+        public String getConsumerGroup() {
+            return consumerGroup;
+        }
+
+        public void setConsumerGroup(String consumerGroup) {
+            this.consumerGroup = consumerGroup;
+        }
+
+        public Integer getPartitions() {
+            return partitions;
+        }
+
+        public void setPartitions(Integer partitions) {
+            this.partitions = partitions;
+        }
+
+        public Integer getMaxRetries() {
+            return maxRetries;
+        }
+
+        public void setMaxRetries(Integer maxRetries) {
+            this.maxRetries = maxRetries;
+        }
+
+        public Long getStaleSeconds() {
+            return staleSeconds;
+        }
+
+        public void setStaleSeconds(Long staleSeconds) {
+            this.staleSeconds = staleSeconds;
+        }
+    }
+
+    /**
+     * MinIO 共享对象存储配置。
+     */
+    public static class ObjectStorage {
+
+        /** 是否启用 MinIO。 */
+        private Boolean enabled = true;
+
+        /** MinIO 服务地址。 */
+        private String endpoint = "http://localhost:9000";
+
+        /** MinIO 访问账号。 */
+        private String accessKey = "minioadmin";
+
+        /** MinIO 访问密钥。 */
+        private String secretKey = "minioadmin";
+
+        /** OpenAgentFlow 对象桶名称。 */
+        private String bucket = "openagentflow";
+
+        public Boolean getEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(Boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getEndpoint() {
+            return endpoint;
+        }
+
+        public void setEndpoint(String endpoint) {
+            this.endpoint = endpoint;
+        }
+
+        public String getAccessKey() {
+            return accessKey;
+        }
+
+        public void setAccessKey(String accessKey) {
+            this.accessKey = accessKey;
+        }
+
+        public String getSecretKey() {
+            return secretKey;
+        }
+
+        public void setSecretKey(String secretKey) {
+            this.secretKey = secretKey;
+        }
+
+        public String getBucket() {
+            return bucket;
+        }
+
+        public void setBucket(String bucket) {
+            this.bucket = bucket;
+        }
     }
 
     /**

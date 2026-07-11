@@ -41,6 +41,9 @@ const taskTypes = [
   { value: 'KNOWLEDGE_VECTOR_REBUILD', label: '知识库向量重建' },
   { value: 'EVALUATION_RUN', label: '评测批量运行' },
   { value: 'MCP_DISCOVERY', label: 'MCP 能力发现' },
+  { value: 'KNOWLEDGE_GOVERNANCE_SCAN', label: '知识治理扫描' },
+  { value: 'MEMORY_CLEANUP', label: 'Memory 治理清理' },
+  { value: 'USAGE_COST_RECALCULATION', label: '历史成本重算' },
   { value: 'DATA_IMPORT', label: '数据导入' },
 ];
 
@@ -50,6 +53,7 @@ const statusOptions = [
   { value: 'running', label: '运行中' },
   { value: 'success', label: '成功' },
   { value: 'failed', label: '失败' },
+  { value: 'dead_letter', label: '死信' },
   { value: 'canceled', label: '已取消' },
 ];
 
@@ -156,7 +160,8 @@ function canCancel(task: AsyncTaskSummary) {
 }
 
 function canRetry(task: AsyncTaskSummary) {
-  return ['failed', 'canceled'].includes(task.status) && task.retryCount < task.maxRetries;
+  return task.status === 'dead_letter'
+    || (['failed', 'canceled'].includes(task.status) && task.retryCount < task.maxRetries);
 }
 
 function statusLabel(status?: string) {
@@ -165,6 +170,7 @@ function statusLabel(status?: string) {
     running: '运行中',
     success: '成功',
     failed: '失败',
+    dead_letter: '死信',
     canceled: '已取消',
   };
   return map[status || ''] || status || '未知';
@@ -172,7 +178,7 @@ function statusLabel(status?: string) {
 
 function statusTone(status?: string) {
   if (status === 'success') return 'success';
-  if (status === 'failed') return 'danger';
+  if (status === 'failed' || status === 'dead_letter') return 'danger';
   if (status === 'running') return 'info';
   if (status === 'pending') return 'warning';
   return 'neutral';
@@ -203,8 +209,8 @@ function formatJson(value?: Record<string, unknown>) {
   <section class="metric-grid">
     <StatCard label="全部任务" :value="String(overview?.totalCount || 0)" detail="当前可见任务" icon="Gauge" tone="neutral" />
     <StatCard label="运行中" :value="String(overview?.runningCount || 0)" detail="正在执行" icon="Activity" tone="info" />
-    <StatCard label="排队中" :value="String(overview?.pendingCount || 0)" detail="等待线程池调度" icon="Timer" tone="warning" />
-    <StatCard label="失败任务" :value="String(overview?.failedCount || 0)" detail="可进入详情重试" icon="ShieldAlert" tone="danger" />
+    <StatCard label="排队中" :value="String(overview?.pendingCount || 0)" detail="等待 Kafka Worker" icon="Timer" tone="warning" />
+    <StatCard label="异常任务" :value="String((overview?.failedCount || 0) + (overview?.deadLetterCount || 0))" :detail="`失败 ${overview?.failedCount || 0} / 死信 ${overview?.deadLetterCount || 0}`" icon="ShieldAlert" tone="danger" />
   </section>
 
   <section class="section-block">
@@ -299,6 +305,11 @@ function formatJson(value?: Record<string, unknown>) {
           <span>当前阶段</span><b>{{ selectedTask.currentStage || '-' }}</b>
           <span>进度</span><b>{{ selectedTask.progressPercent || 0 }}%</b>
           <span>重试</span><b>{{ selectedTask.retryCount || 0 }} / {{ selectedTask.maxRetries || 0 }}</b>
+          <span>Kafka 队列</span><b>{{ selectedTask.queueTopic || '-' }}</b>
+          <span>执行 Worker</span><b>{{ selectedTask.lockedBy || '-' }}</b>
+          <span>Worker 心跳</span><b>{{ formatTime(selectedTask.heartbeatAt) }}</b>
+          <span>下次重试</span><b>{{ formatTime(selectedTask.nextRetryAt) }}</b>
+          <span>进入死信</span><b>{{ formatTime(selectedTask.deadLetterAt) }}</b>
           <span>开始</span><b>{{ formatTime(selectedTask.startedAt) }}</b>
           <span>结束</span><b>{{ formatTime(selectedTask.finishedAt) }}</b>
         </div>

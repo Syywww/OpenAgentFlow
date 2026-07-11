@@ -36,7 +36,6 @@ import com.openagentflow.mapper.KnowledgeEmbeddingMapper;
 import com.openagentflow.mapper.KnowledgeRetrievalLogMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
 import com.openagentflow.security.AuthUserDetails;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -65,13 +64,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 
 /**
  * 知识库应用服务。
  */
 @Service
-public class KnowledgeBaseService {
+public class KnowledgeBaseService implements DistributedTaskHandler {
 
     /** 日志对象，用于输出文档处理进度和模型调用结果。 */
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseService.class);
@@ -112,8 +110,8 @@ public class KnowledgeBaseService {
     /** 异步任务中心服务。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** 平台异步任务线程池。 */
-    private final Executor asyncTaskExecutor;
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
 
     /** 模型配置 Mapper。 */
     private final ModelConfigMapper modelConfigMapper;
@@ -149,7 +147,7 @@ public class KnowledgeBaseService {
                                 AgentAccessService agentAccessService,
                                 WorkspaceGovernanceService workspaceGovernanceService,
                                 AsyncTaskService asyncTaskService,
-                                @Qualifier("oafAsyncTaskExecutor") Executor asyncTaskExecutor,
+                                KafkaTaskClient kafkaTaskClient,
                                 ModelConfigMapper modelConfigMapper,
                                 DocumentParseService documentParseService,
                                 KnowledgeChunkingService chunkingService,
@@ -168,7 +166,7 @@ public class KnowledgeBaseService {
         this.agentAccessService = agentAccessService;
         this.workspaceGovernanceService = workspaceGovernanceService;
         this.asyncTaskService = asyncTaskService;
-        this.asyncTaskExecutor = asyncTaskExecutor;
+        this.kafkaTaskClient = kafkaTaskClient;
         this.modelConfigMapper = modelConfigMapper;
         this.documentParseService = documentParseService;
         this.chunkingService = chunkingService;
@@ -609,7 +607,12 @@ public class KnowledgeBaseService {
                 kb.getId(),
                 kb.getWorkspaceId(),
                 Map.of("kbId", kb.getId(), "kbName", kb.getKbName(), "chunkCount", chunkCount));
-        asyncTaskExecutor.execute(() -> rebuildKnowledgeVectorsTask(task.getId(), kb.getId()));
+        try {
+            kafkaTaskClient.publish(task);
+        } catch (Exception exception) {
+            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
+                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
+        }
 
         KnowledgeVectorRebuildResult result = new KnowledgeVectorRebuildResult();
         result.setKbId(kb.getId());
@@ -980,13 +983,11 @@ public class KnowledgeBaseService {
      * @param taskId 异步任务 ID
      * @param kbId 知识库 ID
      */
-    private void rebuildKnowledgeVectorsTask(String taskId, String kbId) {
+    private Map<String, Object> rebuildKnowledgeVectorsTask(String taskId, String kbId) {
         try {
-            asyncTaskService.markRunning(taskId);
             KnowledgeBaseEntity kb = knowledgeBaseMapper.selectById(kbId);
             if (kb == null || kb.getDeletedAt() != null) {
-                asyncTaskService.markFailed(taskId, "KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在，无法重建向量");
-                return;
+                throw new BusinessException("KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在，无法重建向量");
             }
             List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
                     .eq(KnowledgeChunkEntity::getKbId, kbId)
@@ -994,8 +995,7 @@ public class KnowledgeBaseService {
                     .and(wrapper -> wrapper.ne(KnowledgeChunkEntity::getChunkLevel, "parent").or().isNull(KnowledgeChunkEntity::getChunkLevel))
                     .orderByAsc(KnowledgeChunkEntity::getChunkNo));
             if (chunks.isEmpty()) {
-                asyncTaskService.markSuccess(taskId, "知识库暂无可重建分片", Map.of("chunkCount", 0));
-                return;
+                return Map.of("chunkCount", 0, "embeddingCount", 0, "milvusSynced", false);
             }
 
             ModelConfigEntity embeddingModel = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
@@ -1006,7 +1006,7 @@ public class KnowledgeBaseService {
             for (int start = 0; start < chunks.size(); start += batchSize) {
                 if (asyncTaskService.isCancelRequested(taskId)) {
                     asyncTaskService.markCanceled(taskId, "用户取消向量重建任务");
-                    return;
+                    return Map.of("canceled", true, "kbId", kbId);
                 }
                 int end = Math.min(start + batchSize, chunks.size());
                 List<KnowledgeChunkEntity> batchChunks = chunks.subList(start, end);
@@ -1030,14 +1030,30 @@ public class KnowledgeBaseService {
             }
 
             boolean milvusSynced = syncRebuiltVectors(taskId, kb, savedEmbeddings, savedChunks, savedVectors);
-            asyncTaskService.markSuccess(taskId, "向量重建完成", Map.of(
+            return Map.of(
                     "chunkCount", chunks.size(),
                     "embeddingCount", savedEmbeddings.size(),
                     "milvusSynced", milvusSynced
-            ));
+            );
         } catch (Exception exception) {
-            asyncTaskService.markFailed(taskId, "KNOWLEDGE_VECTOR_REBUILD_FAILED", exception.getMessage());
+            throw new IllegalStateException("知识库向量重建失败：" + exception.getMessage(), exception);
         }
+    }
+
+    /**
+     * 返回 Kafka 任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "KNOWLEDGE_VECTOR_REBUILD";
+    }
+
+    /**
+     * 执行 Kafka 知识库向量重建任务。
+     */
+    @Override
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity task) {
+        return rebuildKnowledgeVectorsTask(task.getId(), task.getSourceId());
     }
 
     /**

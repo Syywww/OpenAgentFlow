@@ -42,6 +42,9 @@ server:
     max-connections: ${OAF_TOMCAT_MAX_CONNECTIONS:8192}
 
 openagentflow:
+  async-task:
+    enabled: true
+  object-storage:
+    enabled: true
   security:
     allowed-origins: ${OAF_CORS_ALLOWED_ORIGINS}
-

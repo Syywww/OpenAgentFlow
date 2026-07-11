@@ -54,6 +54,27 @@ public class AuthUserDetailsService implements UserDetailsService {
             throw new UsernameNotFoundException("用户不存在");
         }
 
+        return buildUserDetails(user);
+    }
+
+    /**
+     * 根据用户ID加载异步任务创建人，用于 Kafka Worker 恢复资源权限上下文。
+     *
+     * @param userId 用户ID
+     * @return 认证用户详情
+     */
+    public AuthUserDetails loadUserById(String userId) {
+        IamUserEntity user = iamUserMapper.selectById(userId);
+        if (user == null || user.getDeletedAt() != null) {
+            throw new UsernameNotFoundException("异步任务创建用户不存在");
+        }
+        return buildUserDetails(user);
+    }
+
+    /**
+     * 为用户加载角色和权限集合。
+     */
+    private AuthUserDetails buildUserDetails(IamUserEntity user) {
         // 角色统一加 ROLE_ 前缀，权限编码保持原值，兼容 Spring Security 的角色判断习惯。
         List<GrantedAuthority> authorities = new ArrayList<>();
         iamRoleMapper.selectRoleCodesByUserId(user.getId())

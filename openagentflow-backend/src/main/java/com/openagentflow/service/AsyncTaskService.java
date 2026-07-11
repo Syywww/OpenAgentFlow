@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.api.PageResult;
+import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.domain.task.AsyncTaskDtos;
 import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.AsyncTaskLogEntity;
@@ -45,14 +46,19 @@ public class AsyncTaskService {
     /** JDBC 工具，用于轻量统计和工作空间名称查询。 */
     private final JdbcTemplate jdbcTemplate;
 
+    /** 平台配置，用于读取 Kafka 任务重试策略。 */
+    private final OpenAgentFlowProperties properties;
+
     public AsyncTaskService(AsyncTaskMapper asyncTaskMapper,
                             AsyncTaskLogMapper asyncTaskLogMapper,
                             ObjectMapper objectMapper,
-                            JdbcTemplate jdbcTemplate) {
+                            JdbcTemplate jdbcTemplate,
+                            OpenAgentFlowProperties properties) {
         this.asyncTaskMapper = asyncTaskMapper;
         this.asyncTaskLogMapper = asyncTaskLogMapper;
         this.objectMapper = objectMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.properties = properties;
     }
 
     /**
@@ -97,7 +103,7 @@ public class AsyncTaskService {
         task.setTotalSteps(6);
         task.setFinishedSteps(0);
         task.setRetryCount(0);
-        task.setMaxRetries(1);
+        task.setMaxRetries(Math.max(0, properties.getAsyncTask().getMaxRetries()));
         task.setCancelRequested(false);
         task.setRequestPayload(toJson(payload));
         task.setCreatedBy(userId);
@@ -179,6 +185,7 @@ public class AsyncTaskService {
         overview.setSuccessCount(countByStatus("success"));
         overview.setFailedCount(countByStatus("failed"));
         overview.setCanceledCount(countByStatus("canceled"));
+        overview.setDeadLetterCount(countByStatus("dead_letter"));
         return overview;
     }
 
@@ -220,6 +227,8 @@ public class AsyncTaskService {
         task.setProgressPercent(BigDecimal.valueOf(Math.max(0, Math.min(100, progress))));
         task.setFinishedSteps(Math.max(valueOf(task.getFinishedSteps()), Math.min(valueOf(task.getTotalSteps()), progress / 16)));
         asyncTaskMapper.updateById(task);
+        // 任务推进即代表 Worker 仍然存活，同时刷新心跳防止其他实例错误接管。
+        jdbcTemplate.update("UPDATE async_task SET heartbeat_at = NOW(3) WHERE id = ? AND status = 'running'", taskId);
         appendLog(taskId, "info", stage, message, detail, progress);
     }
 
@@ -244,6 +253,10 @@ public class AsyncTaskService {
         task.setErrorCode(null);
         task.setErrorMessage(null);
         task.setFinishedAt(LocalDateTime.now());
+        task.setLockedBy(null);
+        task.setLockedAt(null);
+        task.setHeartbeatAt(null);
+        task.setNextRetryAt(null);
         asyncTaskMapper.updateById(task);
         appendLog(taskId, "info", "done", message, result, 100);
     }
@@ -266,6 +279,9 @@ public class AsyncTaskService {
         task.setErrorCode(errorCode);
         task.setErrorMessage(errorMessage);
         task.setFinishedAt(LocalDateTime.now());
+        task.setLockedBy(null);
+        task.setLockedAt(null);
+        task.setHeartbeatAt(null);
         asyncTaskMapper.updateById(task);
         appendLog(taskId, "error", "failed", errorMessage, Map.of("errorCode", errorCode), valueOf(task.getProgressPercent()));
     }
@@ -287,6 +303,9 @@ public class AsyncTaskService {
         task.setCurrentStage("canceled");
         task.setCurrentMessage("用户已请求取消任务");
         task.setFinishedAt(LocalDateTime.now());
+        task.setLockedBy(null);
+        task.setLockedAt(null);
+        task.setHeartbeatAt(null);
         asyncTaskMapper.updateById(task);
         appendLog(taskId, "warn", "canceled", "用户已请求取消任务，运行中的步骤会在下一个检查点停止", null, valueOf(task.getProgressPercent()));
         return getTask(taskId);
@@ -308,6 +327,9 @@ public class AsyncTaskService {
         task.setCurrentStage("canceled");
         task.setCurrentMessage(message);
         task.setFinishedAt(LocalDateTime.now());
+        task.setLockedBy(null);
+        task.setLockedAt(null);
+        task.setHeartbeatAt(null);
         asyncTaskMapper.updateById(task);
         appendLog(taskId, "warn", "canceled", message, null, valueOf(task.getProgressPercent()));
     }
@@ -321,17 +343,19 @@ public class AsyncTaskService {
     public AsyncTaskEntity prepareRetry(String taskId) {
         AsyncTaskEntity task = requireTask(taskId);
         assertCanManage(task);
-        if (!"failed".equals(task.getStatus()) && !"canceled".equals(task.getStatus())) {
-            throw new BusinessException("TASK_RETRY_NOT_ALLOWED", "只有失败或已取消的任务可以重试");
+        if (!"failed".equals(task.getStatus()) && !"canceled".equals(task.getStatus()) && !"dead_letter".equals(task.getStatus())) {
+            throw new BusinessException("TASK_RETRY_NOT_ALLOWED", "只有失败、已取消或死信任务可以重试");
         }
         int retryCount = valueOf(task.getRetryCount());
         int maxRetries = valueOf(task.getMaxRetries());
-        if (retryCount >= maxRetries) {
+        boolean deadLetterRedrive = "dead_letter".equals(task.getStatus());
+        if (retryCount >= maxRetries && !deadLetterRedrive) {
             throw new BusinessException("TASK_RETRY_LIMIT", "任务已达到最大重试次数");
         }
         task.setStatus("pending");
         task.setCancelRequested(false);
-        task.setRetryCount(retryCount + 1);
+        // 死信人工重投开启一轮新的自动重试周期，其他人工重试沿用累计次数。
+        task.setRetryCount(deadLetterRedrive ? 0 : retryCount + 1);
         task.setProgressPercent(BigDecimal.ZERO);
         task.setCurrentStage("retrying");
         task.setCurrentMessage("任务已重新进入队列");
@@ -339,6 +363,11 @@ public class AsyncTaskService {
         task.setErrorMessage(null);
         task.setStartedAt(null);
         task.setFinishedAt(null);
+        task.setLockedBy(null);
+        task.setLockedAt(null);
+        task.setHeartbeatAt(null);
+        task.setNextRetryAt(null);
+        task.setDeadLetterAt(null);
         asyncTaskMapper.updateById(task);
         appendLog(taskId, "info", "retrying", "任务已重新进入队列", null, 0);
         return task;
@@ -363,6 +392,166 @@ public class AsyncTaskService {
      */
     public AsyncTaskEntity findById(String taskId) {
         return asyncTaskMapper.selectById(taskId);
+    }
+
+    /**
+     * 使用 MySQL 条件更新原子领取任务，保证 Kafka 重复投递时只有一个 Worker 执行。
+     *
+     * @param taskId 任务ID
+     * @param workerId Worker 实例ID
+     * @return 是否领取成功
+     */
+    public boolean tryClaim(String taskId, String workerId) {
+        long staleSeconds = Math.max(30L, properties.getAsyncTask().getStaleSeconds());
+        int changed = jdbcTemplate.update("""
+                UPDATE async_task
+                SET status = 'running',
+                    locked_by = ?,
+                    locked_at = NOW(3),
+                    heartbeat_at = NOW(3),
+                    started_at = COALESCE(started_at, NOW(3)),
+                    current_stage = 'running',
+                    current_message = 'Kafka Worker 已领取任务',
+                    next_retry_at = NULL
+                WHERE id = ?
+                  AND cancel_requested = 0
+                  AND (
+                    status = 'pending'
+                    OR (status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < DATE_SUB(NOW(3), INTERVAL ? SECOND)))
+                  )
+                """, workerId, taskId, staleSeconds);
+        if (changed > 0) {
+            appendLog(taskId, "info", "claimed", "Kafka Worker 已领取任务", Map.of("workerId", workerId), null);
+        }
+        return changed > 0;
+    }
+
+    /**
+     * 刷新当前 Worker 的任务心跳。
+     *
+     * @param taskId 任务ID
+     * @param workerId Worker 实例ID
+     */
+    public void heartbeat(String taskId, String workerId) {
+        jdbcTemplate.update("""
+                UPDATE async_task
+                SET heartbeat_at = NOW(3)
+                WHERE id = ? AND locked_by = ? AND status = 'running'
+                """, taskId, workerId);
+    }
+
+    /**
+     * 保存 Kafka 成功投递信息。
+     *
+     * @param taskId 任务ID
+     * @param topic Topic 名称
+     * @param messageId 消息ID
+     */
+    public void markEnqueued(String taskId, String topic, String messageId) {
+        jdbcTemplate.update("""
+                UPDATE async_task
+                SET queue_topic = ?, kafka_message_id = ?, last_enqueued_at = NOW(3)
+                WHERE id = ?
+                """, topic, messageId, taskId);
+    }
+
+    /**
+     * 标记任务等待下一次 Kafka 重试。
+     *
+     * @param taskId 任务ID
+     * @param nextRetryAt 下次执行时间
+     * @param errorMessage 本次错误
+     */
+    public void markRetryPending(String taskId, LocalDateTime nextRetryAt, String errorMessage) {
+        jdbcTemplate.update("""
+                UPDATE async_task
+                SET status = 'pending',
+                    retry_count = retry_count + 1,
+                    current_stage = 'retry_waiting',
+                    current_message = '任务执行失败，等待 Kafka 重试',
+                    error_message = ?,
+                    next_retry_at = ?,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    heartbeat_at = NULL,
+                    finished_at = NULL
+                WHERE id = ?
+                """, limitText(errorMessage, 4000), nextRetryAt, taskId);
+        appendLog(taskId, "warn", "retry_waiting", "任务执行失败，等待 Kafka 重试",
+                Map.of("nextRetryAt", nextRetryAt.toString(), "error", safeText(errorMessage)), null);
+    }
+
+    /**
+     * 标记消息已进入死信队列。
+     *
+     * @param taskId 任务ID
+     * @param errorMessage 最终错误
+     */
+    public void markDeadLetter(String taskId, String errorMessage) {
+        jdbcTemplate.update("""
+                UPDATE async_task
+                SET status = 'dead_letter',
+                    current_stage = 'dead_letter',
+                    current_message = '任务超过最大重试次数，已进入死信队列',
+                    error_code = 'KAFKA_TASK_DEAD_LETTER',
+                    error_message = ?,
+                    dead_letter_at = NOW(3),
+                    finished_at = NOW(3),
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    heartbeat_at = NULL
+                WHERE id = ?
+                """, limitText(errorMessage, 4000), taskId);
+        appendLog(taskId, "error", "dead_letter", "任务超过最大重试次数，已进入死信队列",
+                Map.of("error", safeText(errorMessage)), null);
+    }
+
+    /**
+     * 查询需要补偿投递的待执行或失联任务。
+     *
+     * @param limit 最大返回数量
+     * @return 待补偿任务
+     */
+    public List<AsyncTaskEntity> findRecoverableTasks(int limit) {
+        long staleSeconds = Math.max(30L, properties.getAsyncTask().getStaleSeconds());
+        return asyncTaskMapper.selectList(new LambdaQueryWrapper<AsyncTaskEntity>()
+                .in(AsyncTaskEntity::getTaskType, List.of(
+                        "DOCUMENT_PROCESS",
+                        "KNOWLEDGE_VECTOR_REBUILD",
+                        "EVALUATION_RUN",
+                        "MCP_DISCOVERY",
+                        "KNOWLEDGE_GOVERNANCE_SCAN",
+                        "MEMORY_CLEANUP",
+                        "USAGE_COST_RECALCULATION"))
+                .and(wrapper -> wrapper
+                        .and(pending -> pending.eq(AsyncTaskEntity::getStatus, "pending")
+                                .and(item -> item.isNull(AsyncTaskEntity::getNextRetryAt)
+                                        .or()
+                                        .le(AsyncTaskEntity::getNextRetryAt, LocalDateTime.now()))
+                                .and(item -> item.isNull(AsyncTaskEntity::getLastEnqueuedAt)
+                                        .or()
+                                        .apply("last_enqueued_at < DATE_SUB(NOW(3), INTERVAL 60 SECOND)")))
+                        .or(stale -> stale.eq(AsyncTaskEntity::getStatus, "running")
+                                .apply("(heartbeat_at IS NULL OR heartbeat_at < DATE_SUB(NOW(3), INTERVAL {0} SECOND))", staleSeconds)))
+                .orderByAsc(AsyncTaskEntity::getCreatedAt)
+                .last("limit " + Math.max(1, Math.min(limit, 500))));
+    }
+
+    /**
+     * 截断数据库错误字段，避免外部异常返回过长。
+     */
+    private String limitText(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength);
+    }
+
+    /**
+     * 把空错误转换为空字符串，供不可空 Map 使用。
+     */
+    private String safeText(String text) {
+        return text == null ? "" : text;
     }
 
     /**
@@ -469,6 +658,11 @@ public class AsyncTaskService {
         item.setMaxRetries(task.getMaxRetries());
         item.setCancelRequested(task.getCancelRequested());
         item.setErrorMessage(task.getErrorMessage());
+        item.setQueueTopic(task.getQueueTopic());
+        item.setLockedBy(task.getLockedBy());
+        item.setHeartbeatAt(task.getHeartbeatAt());
+        item.setNextRetryAt(task.getNextRetryAt());
+        item.setDeadLetterAt(task.getDeadLetterAt());
         item.setStartedAt(task.getStartedAt());
         item.setFinishedAt(task.getFinishedAt());
         item.setCreatedAt(task.getCreatedAt());
@@ -502,6 +696,11 @@ public class AsyncTaskService {
         target.setMaxRetries(source.getMaxRetries());
         target.setCancelRequested(source.getCancelRequested());
         target.setErrorMessage(source.getErrorMessage());
+        target.setQueueTopic(source.getQueueTopic());
+        target.setLockedBy(source.getLockedBy());
+        target.setHeartbeatAt(source.getHeartbeatAt());
+        target.setNextRetryAt(source.getNextRetryAt());
+        target.setDeadLetterAt(source.getDeadLetterAt());
         target.setStartedAt(source.getStartedAt());
         target.setFinishedAt(source.getFinishedAt());
         target.setCreatedAt(source.getCreatedAt());
@@ -561,6 +760,15 @@ public class AsyncTaskService {
         }
         if ("MCP_DISCOVERY".equals(taskType)) {
             return "MCP 能力发现";
+        }
+        if ("KNOWLEDGE_GOVERNANCE_SCAN".equals(taskType)) {
+            return "知识治理扫描";
+        }
+        if ("MEMORY_CLEANUP".equals(taskType)) {
+            return "Memory 治理清理";
+        }
+        if ("USAGE_COST_RECALCULATION".equals(taskType)) {
+            return "历史成本重算";
         }
         if ("DATA_IMPORT".equals(taskType)) {
             return "数据导入";

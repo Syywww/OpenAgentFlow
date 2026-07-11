@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, Download, RefreshCw } from 'lucide-vue-next';
 import PageHeader from '../../components/PageHeader.vue';
@@ -16,6 +16,7 @@ const errorMessage = ref('');
 const tasks = ref<EvaluationTaskSummary[]>([]);
 const task = ref<EvaluationTaskDetail | null>(null);
 const activePanel = ref<'compare' | 'runs' | 'lowScore'>('compare');
+let refreshTimer: number | undefined;
 
 const summary = computed(() => task.value?.summary ?? {});
 const runs = computed(() => task.value?.runs ?? []);
@@ -67,9 +68,11 @@ function judgeTypeLabel(run: EvaluationTaskDetail['runs'][number]) {
 
 function statusLabel(status?: string) {
   const map: Record<string, string> = {
+    pending: '排队中',
     running: '运行中',
     success: '成功',
     failed: '失败',
+    canceled: '已取消',
   };
   return map[status ?? ''] ?? status ?? '-';
 }
@@ -87,8 +90,22 @@ function exportJson() {
   URL.revokeObjectURL(url);
 }
 
-async function loadTask() {
-  loading.value = true;
+function stopAutoRefresh() {
+  if (refreshTimer !== undefined) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+  }
+}
+
+function scheduleAutoRefresh() {
+  stopAutoRefresh();
+  if (task.value && ['pending', 'running'].includes(task.value.status)) {
+    refreshTimer = window.setTimeout(() => void loadTask(true), 2000);
+  }
+}
+
+async function loadTask(silent = false) {
+  if (!silent) loading.value = true;
   errorMessage.value = '';
   try {
     const taskId = route.params.id ? String(route.params.id) : '';
@@ -103,7 +120,8 @@ async function loadTask() {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载评测结果失败';
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
+    scheduleAutoRefresh();
   }
 }
 
@@ -112,15 +130,18 @@ onMounted(() => {
 });
 
 watch(() => route.params.id, () => {
+  stopAutoRefresh();
   void loadTask();
 });
+
+onUnmounted(stopAutoRefresh);
 </script>
 
 <template>
   <PageHeader :title="task?.taskName || '评测结果'" :description="task ? `任务 ID：${task.taskCode}｜评测集：${task.datasetName}` : '选择一次真实评测任务查看明细'">
     <template #actions>
       <button class="secondary-button" type="button" @click="router.push('/eval')"><ArrowLeft :size="16" /> 返回</button>
-      <button class="secondary-button" type="button" :disabled="loading" @click="loadTask"><RefreshCw :size="16" /> 刷新</button>
+      <button class="secondary-button" type="button" :disabled="loading" @click="loadTask()"><RefreshCw :size="16" /> 刷新</button>
       <button class="primary-button" type="button" :disabled="!task" @click="exportJson"><Download :size="16" /> 导出 JSON</button>
     </template>
   </PageHeader>
@@ -128,6 +149,10 @@ watch(() => route.params.id, () => {
   <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>
 
   <template v-if="task">
+    <section v-if="['pending', 'running'].includes(task.status)" class="section-block">
+      <StatusBadge :label="statusLabel(task.status)" />
+      <span class="muted">评测已由 Kafka Worker 后台执行，页面每 2 秒自动刷新。</span>
+    </section>
     <section class="metric-grid">
       <StatCard label="综合得分" :value="String(summary.overallScore ?? task.overallScore ?? 0)" detail="优先采用 LLM-as-Judge" icon="ShieldCheck" tone="success" />
       <StatCard label="准确率" :value="percent(summary.accuracy)" detail="标准答案覆盖" icon="Activity" tone="info" />

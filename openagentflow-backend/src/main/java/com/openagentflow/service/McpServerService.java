@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.domain.mcp.McpDtos;
+import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.McpCapabilityEntity;
 import com.openagentflow.entity.McpConnectionTestEntity;
 import com.openagentflow.entity.McpDiscoveryTaskEntity;
@@ -35,7 +36,7 @@ import java.util.UUID;
  * MCP Server 应用服务。
  */
 @Service
-public class McpServerService {
+public class McpServerService implements DistributedTaskHandler {
 
     /** MCP Server Mapper。 */
     private final McpServerMapper mcpServerMapper;
@@ -58,13 +59,21 @@ public class McpServerService {
     /** JSON 工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 统一异步任务中心。 */
+    private final AsyncTaskService asyncTaskService;
+
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
     public McpServerService(McpServerMapper mcpServerMapper,
                             McpCapabilityMapper mcpCapabilityMapper,
                             McpConnectionTestMapper mcpConnectionTestMapper,
                             McpDiscoveryTaskMapper mcpDiscoveryTaskMapper,
                             ToolDefinitionMapper toolDefinitionMapper,
                             McpClientService mcpClientService,
-                            ObjectMapper objectMapper) {
+                            ObjectMapper objectMapper,
+                            AsyncTaskService asyncTaskService,
+                            KafkaTaskClient kafkaTaskClient) {
         this.mcpServerMapper = mcpServerMapper;
         this.mcpCapabilityMapper = mcpCapabilityMapper;
         this.mcpConnectionTestMapper = mcpConnectionTestMapper;
@@ -72,6 +81,8 @@ public class McpServerService {
         this.toolDefinitionMapper = toolDefinitionMapper;
         this.mcpClientService = mcpClientService;
         this.objectMapper = objectMapper;
+        this.asyncTaskService = asyncTaskService;
+        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -214,14 +225,53 @@ public class McpServerService {
         McpDiscoveryTaskEntity task = new McpDiscoveryTaskEntity();
         task.setId(newId());
         task.setServerId(id);
-        task.setStatus("running");
+        task.setStatus("pending");
         task.setDiscoveredTools(0);
         task.setDiscoveredPrompts(0);
         task.setDiscoveredResources(0);
-        task.setStartedAt(LocalDateTime.now());
         task.setCreatedAt(LocalDateTime.now());
         mcpDiscoveryTaskMapper.insert(task);
+        AsyncTaskEntity asyncTask = asyncTaskService.createTask(
+                "发现 MCP 能力：" + entity.getServerName(),
+                "MCP_DISCOVERY",
+                "mcp_server",
+                entity.getId(),
+                "mcp_discovery_task",
+                task.getId(),
+                null,
+                Map.of("serverId", entity.getId(), "discoveryTaskId", task.getId()));
+        try {
+            kafkaTaskClient.publish(asyncTask);
+        } catch (Exception exception) {
+            asyncTaskService.appendLog(asyncTask.getId(), "warn", "enqueue_failed",
+                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
+        }
+        return toDiscoveryResult(task, List.of(), null);
+    }
 
+    /**
+     * 返回 Kafka 任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "MCP_DISCOVERY";
+    }
+
+    /**
+     * 在 Kafka Worker 中发现 MCP 能力并同步工具中心。
+     */
+    @Override
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity asyncTask) {
+        McpDiscoveryTaskEntity task = mcpDiscoveryTaskMapper.selectById(asyncTask.getSourceId());
+        if (task == null) {
+            throw new BusinessException("MCP_DISCOVERY_TASK_NOT_FOUND", "MCP 发现任务不存在");
+        }
+        McpServerEntity entity = requireServer(task.getServerId());
+        task.setStatus("running");
+        task.setStartedAt(LocalDateTime.now());
+        task.setFinishedAt(null);
+        task.setErrorMessage(null);
+        mcpDiscoveryTaskMapper.updateById(task);
         try {
             McpClientService.McpDiscoveryPayload payload = mcpClientService.discover(entity);
             List<McpCapabilityEntity> saved = saveCapabilities(entity, payload);
@@ -237,16 +287,21 @@ public class McpServerService {
             entity.setStatus("running");
             entity.setLastHeartbeatAt(LocalDateTime.now());
             mcpServerMapper.updateById(entity);
-            return toDiscoveryResult(task, saved, null);
+            return Map.of(
+                    "serverId", entity.getId(),
+                    "discoveryTaskId", task.getId(),
+                    "toolsCount", payload.getTools().size(),
+                    "promptsCount", payload.getPrompts().size(),
+                    "resourcesCount", payload.getResources().size(),
+                    "capabilityCount", saved.size());
         } catch (Exception exception) {
             task.setStatus("failed");
             task.setErrorMessage(exception.getMessage());
             task.setFinishedAt(LocalDateTime.now());
             mcpDiscoveryTaskMapper.updateById(task);
-
             entity.setStatus("error");
             mcpServerMapper.updateById(entity);
-            return toDiscoveryResult(task, List.of(), exception.getMessage());
+            throw new IllegalStateException("MCP 能力发现失败：" + exception.getMessage(), exception);
         }
     }
 

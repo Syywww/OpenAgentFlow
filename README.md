@@ -27,6 +27,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台支持流式生成暂停、保留部分回答并引入补充说明继续，长对话内容、引用来源和工具调用在独立区域内滚动展示。
 - **Memory 记忆中心**：支持短期会话记忆、长期记忆、任务记忆、向量记忆、Prompt 同款管理布局、弹框维护、召回测试、过期清理、客服助手长期记忆模板、Agent 调试链路自动沉淀和 SSE 异步登录态传递。
+- **分布式异步任务**：基于 Kafka 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持多实例消费、MySQL 幂等抢占、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
 - **开源工程化**：Docker Compose、`.env.example`、CI、脚本、License、Issue/PR 模板和开源文档。
 
 ## 技术栈
@@ -35,9 +36,9 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 | --- | --- |
 | 前端 | Vue 3.5、TypeScript、Vite、Vue Router、Vue Flow、lucide-vue-next |
 | 后端 | Java 21、Spring Boot 3.3、Spring Security、JWT、MyBatis-Plus |
-| 数据 | MySQL 8、Redis 7、Milvus 2.4 |
+| 数据 | MySQL 8、Redis 7、Milvus 2.4、MinIO |
 | AI | OpenAI-compatible Chat、Embedding、Function Calling、MCP |
-| 工程 | Docker Compose、GitHub Actions、PowerShell scripts |
+| 工程 | Kafka、Docker Compose、GitHub Actions、PowerShell scripts |
 
 ## 界面预览
 
@@ -59,11 +60,14 @@ Copy-Item .env.example .env
 docker compose up -d --build
 ```
 
+执行前需要先启动 Kafka，并保证宿主机 `localhost:9092` 可用；Compose 中的后端通过 `host.docker.internal:9092` 访问该 Broker。
+
 访问地址：
 
 - 前端：http://localhost:5173
 - 后端：http://localhost:8080/api
 - Swagger：http://localhost:8080/api/swagger-ui.html
+- MinIO 控制台：http://localhost:9001
 
 默认账号：
 
@@ -126,10 +130,30 @@ dm/
 - Redis：`localhost:6379`
 - Milvus：`localhost:19530`
 - Milvus 开关：`OAF_MILVUS_ENABLED`，本地开发脚本会在 19530 未监听时自动设置为 `false`，后端使用 MySQL 向量兜底启动。
+- Kafka：IDEA 本地启动默认连接 `localhost:9092`；Docker Compose 默认连接 `host.docker.internal:9092`。
+- Kafka Worker：默认消费组 `openagentflow-async-workers`，并发数由 `OAF_KAFKA_CONCURRENCY` 控制。
+- MinIO：默认连接 `http://localhost:9000`，存储桶为 `openagentflow`，用于分布式文档任务共享原始文件。
 - 后端上下文路径：`/api`
 - JWT Secret：生产环境必须通过 `OAF_JWT_SECRET` 覆盖
 
 真实模型 API Key 不会写入源码、SQL 或 README。SQL 只初始化模型供应商和模型接入点，真实 Key 请在系统设置页或本地数据库中配置。
+
+## Kafka 分布式任务
+
+后端通过 `KafkaTaskClient` 统一封装消息序列化、任务 Key、Broker ACK、重试 Topic 和死信 Topic。API 先写入 MySQL `async_task`，再以任务 ID 作为 Kafka Key 投递；Worker 使用 MySQL 条件更新原子领取任务，并恢复任务创建人的 Spring Security 权限上下文。
+
+默认 Topic：
+
+```text
+openagentflow.async-task
+openagentflow.async-task.retry-5s
+openagentflow.async-task.retry-30s
+openagentflow.async-task.dlt
+```
+
+已接入的任务类型：知识文档处理、知识库向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 治理清理、历史成本重算。Worker 每 20 秒刷新心跳；执行失败后进入 5 秒和 30 秒重试 Topic，超过最大次数后进入死信 Topic；补偿调度器会重新投递首次发送失败或心跳超时的任务。调试台 SSE、单次 Agent、多 Agent 和工作流运行保留实时响应链路。
+
+文档上传后先写入 MinIO，Kafka 消费组内任意 Worker 都能读取原文件。生产环境应使用 Kafka 多 Broker 集群和独立 MinIO/S3 服务，并为每套环境使用不同消费组。
 
 ## SQL 初始化
 
@@ -177,6 +201,7 @@ V032__demo_workflow_node_conditions.sql
 V033__demo_order_summary_tool_intent.sql
 V034__recursive_knowledge_chunking.sql
 V035__enterprise_rag_metadata_parent_child.sql
+V036__kafka_distributed_async_tasks.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -230,7 +255,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P9 Agent 历史会话 | 已完成 | 会话列表、消息持久化、继续对话、调试台历史面板 |
 | P10 成本与用量中心 | 已完成 | 用量统计、成本明细、模型价格、配额拦截、日报、导出、Trace 跳转 |
 | P11 组织/空间/资源治理 | 已完成 | 组织、工作空间、成员、资源归属、空间权限和前端管理页 |
-| P12 异步任务中心 | 已完成 | 统一任务队列、进度、日志、取消、重试，知识库文档处理已接入 |
+| P12 异步任务中心 | 已完成 | Kafka 分布式执行、文档处理、向量重建、批量评测、MCP 发现、知识治理扫描、Memory 清理、历史成本重算、MySQL 幂等锁、心跳、补偿、延迟重试、死信回放、MinIO 文件共享 |
 | P13 审计与风险治理中心 | 已完成 | 操作审计采集、风险事件归集、高风险确认审批、处置闭环 |
 | P14 生产部署加固 | 已完成 | prod Profile、Secret 校验、安全头、生产 Compose、非 root 容器、部署文档 |
 | P15 模型网关与模型治理 | 已完成 | 路由策略、候选模型、健康统计、失败回退、网关调用观测 |
@@ -267,7 +292,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 15. 打开任务中心，查看知识库文档解析、切片、Embedding、Milvus 写入的实时进度和日志。
 16. 打开风险治理，查看审计日志、高风险工具、MCP 风险、护栏事件和待确认请求，并完成处置闭环。
 17. 使用 `.env.prod` 和 `docker-compose.prod.yml` 检查生产部署配置，确认默认密钥不能启动生产后端。
-18. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
+18. 打开运营监控，点击立即巡检，查看 MySQL、Redis、Kafka、Milvus、模型供应商、任务队列、API 质量和模型质量状态，并处理告警事件。
 19. 打开交付验收中心，点击一键验收，查看环境、权限、核心链路、配置风险和交付清单。
 20. 打开工作流编排，使用模板创建流程，配置节点策略，在调试面板运行并查看 Trace。
 21. 执行 `scripts/init-demo-data.ps1`，使用推荐问题体验客服助手的 RAG、工具、工作流、Trace 和交付验收链路。

@@ -12,6 +12,7 @@ import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.eval.EvaluationDtos;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.entity.AgentEntity;
+import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.EvalDatasetEntity;
 import com.openagentflow.entity.EvalMetricEntity;
 import com.openagentflow.entity.EvalReportEntity;
@@ -56,7 +57,7 @@ import java.util.stream.Collectors;
  * <p>负责评测集 CRUD、样本导入、批量调用 Agent、指标评分、结果聚合和 Trace 关联。</p>
  */
 @Service
-public class EvaluationService {
+public class EvaluationService implements DistributedTaskHandler {
 
     /** 默认单次评测最多执行样本数，避免误操作一次性消耗过多模型额度。 */
     private static final int DEFAULT_MAX_SAMPLES = 50;
@@ -106,6 +107,12 @@ public class EvaluationService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 统一异步任务中心。 */
+    private final AsyncTaskService asyncTaskService;
+
+    /** Kafka 任务工具类。 */
+    private final KafkaTaskClient kafkaTaskClient;
+
     public EvaluationService(EvalDatasetMapper evalDatasetMapper,
                              EvalSampleMapper evalSampleMapper,
                              EvalMetricMapper evalMetricMapper,
@@ -119,7 +126,9 @@ public class EvaluationService {
                              AgentService agentService,
                              ModelProviderService modelProviderService,
                              OpenAiCompatibleClient openAiCompatibleClient,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             AsyncTaskService asyncTaskService,
+                             KafkaTaskClient kafkaTaskClient) {
         this.evalDatasetMapper = evalDatasetMapper;
         this.evalSampleMapper = evalSampleMapper;
         this.evalMetricMapper = evalMetricMapper;
@@ -134,6 +143,8 @@ public class EvaluationService {
         this.modelProviderService = modelProviderService;
         this.openAiCompatibleClient = openAiCompatibleClient;
         this.objectMapper = objectMapper;
+        this.asyncTaskService = asyncTaskService;
+        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -263,7 +274,7 @@ public class EvaluationService {
     }
 
     /**
-     * 创建并同步运行评测任务。
+     * 创建评测任务并投递 Kafka 异步执行。
      *
      * @param request 运行请求
      * @return 任务详情
@@ -286,24 +297,86 @@ public class EvaluationService {
 
         EvalTaskEntity task = createTaskEntity(request, samples.size() * modelIds.size());
         evalTaskMapper.insert(task);
-
-        int finished = 0;
-        for (EvalSampleEntity sample : samples) {
-            for (String modelId : modelIds) {
-                runSingleSample(task, sample, modelId, request);
-                finished++;
-                // 每跑完一条就更新进度，前端刷新时能看到真实推进情况。
-                task.setFinishedSamples(finished);
-                evalTaskMapper.updateById(task);
-            }
+        AsyncTaskEntity asyncTask = asyncTaskService.createTask(
+                "批量评测：" + task.getTaskName(),
+                "EVALUATION_RUN",
+                "eval_task",
+                task.getId(),
+                "eval_task",
+                task.getId(),
+                null,
+                Map.of("evalTaskId", task.getId(), "datasetId", task.getDatasetId(), "totalRuns", task.getTotalSamples()));
+        try {
+            kafkaTaskClient.publish(asyncTask);
+        } catch (Exception exception) {
+            asyncTaskService.appendLog(asyncTask.getId(), "warn", "enqueue_failed",
+                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
         }
-
-        task.setStatus("success");
-        task.setFinishedAt(LocalDateTime.now());
-        task.setUpdatedAt(LocalDateTime.now());
-        evalTaskMapper.updateById(task);
-        upsertReport(task);
         return getTask(task.getId());
+    }
+
+    /**
+     * 返回 Kafka 任务类型。
+     */
+    @Override
+    public String taskType() {
+        return "EVALUATION_RUN";
+    }
+
+    /**
+     * 在 Kafka Worker 中批量执行评测样本。
+     */
+    @Override
+    public Map<String, Object> executeDistributedTask(AsyncTaskEntity asyncTask) {
+        EvalTaskEntity task = requireTask(asyncTask.getSourceId());
+        EvaluationDtos.RunTaskRequest request = restoreRunTaskRequest(task);
+        try {
+            if (value(asyncTask.getRetryCount()) > 0) {
+                // 自动重试前清理上次不完整结果，确保任务重放后结果唯一。
+                jdbcDeleteEvaluationRuns(task.getId());
+            }
+            task.setStatus("running");
+            task.setStartedAt(LocalDateTime.now());
+            task.setFinishedAt(null);
+            task.setFinishedSamples(0);
+            evalTaskMapper.updateById(task);
+
+            List<EvalSampleEntity> samples = listRunnableSamples(task.getDatasetId(), request.getMaxSamples());
+            AgentEntity agent = requireAgent(task.getAgentId());
+            List<String> modelIds = resolveModelIds(request, agent);
+            int total = samples.size() * modelIds.size();
+            int finished = 0;
+            for (EvalSampleEntity sample : samples) {
+                for (String modelId : modelIds) {
+                    if (asyncTaskService.isCancelRequested(asyncTask.getId())) {
+                        task.setStatus("canceled");
+                        task.setFinishedAt(LocalDateTime.now());
+                        evalTaskMapper.updateById(task);
+                        asyncTaskService.markCanceled(asyncTask.getId(), "用户取消批量评测任务");
+                        return Map.of("canceled", true, "finishedRuns", finished, "totalRuns", total);
+                    }
+                    runSingleSample(task, sample, modelId, request);
+                    finished++;
+                    task.setFinishedSamples(finished);
+                    evalTaskMapper.updateById(task);
+                    int progress = total == 0 ? 100 : Math.min(99, (int) (finished * 100D / total));
+                    asyncTaskService.updateProgress(asyncTask.getId(), "evaluating",
+                            "已完成评测 " + finished + " / " + total, progress,
+                            Map.of("finishedRuns", finished, "totalRuns", total));
+                }
+            }
+            task.setStatus("success");
+            task.setFinishedAt(LocalDateTime.now());
+            task.setUpdatedAt(LocalDateTime.now());
+            evalTaskMapper.updateById(task);
+            upsertReport(task);
+            return Map.of("evalTaskId", task.getId(), "finishedRuns", finished, "totalRuns", total);
+        } catch (Exception exception) {
+            task.setStatus("failed");
+            task.setFinishedAt(LocalDateTime.now());
+            evalTaskMapper.updateById(task);
+            throw new IllegalStateException("批量评测执行失败：" + exception.getMessage(), exception);
+        }
     }
 
     /**
@@ -716,12 +789,52 @@ public class EvaluationService {
         task.setBaselineModelId(request.getBaselineModelId());
         task.setCompareModelIds(toJson(request.getCompareModelIds() == null ? List.of() : request.getCompareModelIds()));
         task.setEvalConfig(toJson(evalConfigMap(request)));
-        task.setStatus("running");
+        task.setStatus("pending");
         task.setTotalSamples(totalRuns);
         task.setFinishedSamples(0);
         task.setCreatedBy(currentUserIdOrThrow());
-        task.setStartedAt(LocalDateTime.now());
+        task.setStartedAt(null);
         return task;
+    }
+
+    /**
+     * 从评测任务快照恢复 Kafka Worker 所需的运行请求。
+     */
+    private EvaluationDtos.RunTaskRequest restoreRunTaskRequest(EvalTaskEntity task) {
+        try {
+            Map<String, Object> config = objectMapper.readValue(task.getEvalConfig(), new TypeReference<>() {
+            });
+            config.put("evalConfig", config.remove("extra"));
+            EvaluationDtos.RunTaskRequest request = objectMapper.convertValue(config, EvaluationDtos.RunTaskRequest.class);
+            request.setTaskName(task.getTaskName());
+            request.setDatasetId(task.getDatasetId());
+            request.setAgentId(task.getAgentId());
+            request.setBaselineModelId(task.getBaselineModelId());
+            request.setCompareModelIds(objectMapper.readValue(task.getCompareModelIds(), new TypeReference<>() {
+            }));
+            return request;
+        } catch (Exception exception) {
+            throw new IllegalStateException("评测任务配置快照解析失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    /**
+     * 删除评测任务上一次未完整执行的运行与评分数据。
+     */
+    private void jdbcDeleteEvaluationRuns(String taskId) {
+        List<String> runIds = evalTaskRunMapper.selectList(new LambdaQueryWrapper<EvalTaskRunEntity>()
+                        .eq(EvalTaskRunEntity::getTaskId, taskId))
+                .stream().map(EvalTaskRunEntity::getId).toList();
+        if (!runIds.isEmpty()) {
+            evalScoreMapper.delete(new LambdaQueryWrapper<EvalScoreEntity>()
+                    .in(EvalScoreEntity::getTaskRunId, runIds));
+        }
+        evalTaskRunMapper.delete(new LambdaQueryWrapper<EvalTaskRunEntity>()
+                .eq(EvalTaskRunEntity::getTaskId, taskId));
+    }
+
+    private int value(Integer value) {
+        return value == null ? 0 : value;
     }
 
     /**

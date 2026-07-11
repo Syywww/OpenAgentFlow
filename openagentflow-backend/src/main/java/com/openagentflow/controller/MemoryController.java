@@ -3,6 +3,7 @@ package com.openagentflow.controller;
 import com.openagentflow.api.ApiResponse;
 import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.memory.MemoryDtos;
+import com.openagentflow.domain.task.AsyncTaskDtos;
 import com.openagentflow.service.MemoryService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -114,7 +115,7 @@ public class MemoryController {
      * @return 清理结果
      */
     @PostMapping("/cleanup")
-    public ApiResponse<MemoryDtos.CleanupResult> cleanup() {
-        return ApiResponse.ok(memoryService.cleanup());
+    public ApiResponse<AsyncTaskDtos.Detail> cleanup() {
+        return ApiResponse.ok(memoryService.submitCleanupTask());
     }
 }

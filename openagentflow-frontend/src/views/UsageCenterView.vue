@@ -29,6 +29,7 @@ import {
 const router = useRouter();
 const loading = ref(false);
 const errorMessage = ref('');
+const successMessage = ref('');
 const consoleData = ref<UsageConsoleData | null>(null);
 const calls = ref<UsageCallDetail[]>([]);
 const quotas = ref<QuotaSummary[]>([]);
@@ -219,9 +220,10 @@ async function downloadCalls() {
 async function recalculateCosts() {
   loading.value = true;
   errorMessage.value = '';
+  successMessage.value = '';
   try {
-    await recalculateUsageCosts();
-    await loadData();
+    const task = await recalculateUsageCosts();
+    successMessage.value = `历史成本重算任务已提交：${task.taskCode}，可在异步任务中心查看进度`;
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '历史成本重算失败';
   } finally {
@@ -276,6 +278,7 @@ function riskTone(quota: QuotaSummary) {
   </PageHeader>
 
   <p v-if="errorMessage" class="form-error">{{ errorMessage }}</p>
+  <p v-if="successMessage" class="form-success">{{ successMessage }}</p>
   <div v-if="Number(consoleData?.overview.totalTokens || 0) > 0 && Number(consoleData?.overview.totalCost || 0) === 0" class="insight-strip">
     <b>模型价格未配置</b>
     <p>当前已有 Token 消耗，但模型输入/输出每千 Token 单价仍为 0。请到系统设置中填写模型单价，再点击“重算历史成本”。</p>

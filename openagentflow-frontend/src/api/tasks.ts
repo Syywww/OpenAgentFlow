@@ -20,6 +20,11 @@ export interface AsyncTaskSummary {
   retryCount: number;
   maxRetries: number;
   cancelRequested: boolean;
+  queueTopic?: string;
+  lockedBy?: string;
+  heartbeatAt?: string;
+  nextRetryAt?: string;
+  deadLetterAt?: string;
   errorMessage?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -51,6 +56,7 @@ export interface AsyncTaskOverview {
   successCount: number;
   failedCount: number;
   canceledCount: number;
+  deadLetterCount: number;
 }
 
 export function taskQuery(params: Record<string, string | number | undefined> = {}) {
@@ -82,4 +88,3 @@ export async function cancelTask(id: string) {
 export async function retryTask(id: string) {
   return request<AsyncTaskDetail>(`/tasks/${id}/retry`, { method: 'POST' });
 }
-

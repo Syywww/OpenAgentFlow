@@ -21,6 +21,7 @@ import com.openagentflow.mapper.OpsNotifyChannelMapper;
 import com.openagentflow.security.AuthUserDetails;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -64,6 +65,12 @@ public class OpsMonitorService {
     /** Redis 客户端，用于健康巡检。 */
     private final StringRedisTemplate redisTemplate;
 
+    /** Kafka 客户端，用于检查任务 Topic 连通性。 */
+    private final KafkaTemplate<String, String> kafkaTemplate;
+
+    /** 平台配置，用于获取 Kafka 主任务 Topic。 */
+    private final com.openagentflow.config.OpenAgentFlowProperties properties;
+
     /** 向量库状态服务。 */
     private final VectorStoreService vectorStoreService;
 
@@ -77,6 +84,8 @@ public class OpsMonitorService {
                              ModelProviderMapper modelProviderMapper,
                              JdbcTemplate jdbcTemplate,
                              StringRedisTemplate redisTemplate,
+                             KafkaTemplate<String, String> kafkaTemplate,
+                             com.openagentflow.config.OpenAgentFlowProperties properties,
                              VectorStoreService vectorStoreService,
                              ObjectMapper objectMapper) {
         this.alertRuleMapper = alertRuleMapper;
@@ -86,6 +95,8 @@ public class OpsMonitorService {
         this.modelProviderMapper = modelProviderMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.redisTemplate = redisTemplate;
+        this.kafkaTemplate = kafkaTemplate;
+        this.properties = properties;
         this.vectorStoreService = vectorStoreService;
         this.objectMapper = objectMapper;
     }
@@ -142,6 +153,7 @@ public class OpsMonitorService {
         LocalDateTime now = LocalDateTime.now();
         updateHealthCheck(checkMysql(now));
         updateHealthCheck(checkRedis(now));
+        updateHealthCheck(checkKafka(now));
         updateHealthCheck(checkMilvus(now));
         updateHealthCheck(checkModelProviders(now));
         updateHealthCheck(checkTaskQueue(now));
@@ -469,7 +481,7 @@ public class OpsMonitorService {
                     count("select count(1) from runtime_llm_call where created_at >= date_sub(now(), interval ? minute)", minutes));
             case "model_avg_latency_ms" -> decimal("select coalesce(avg(latency_ms), 0) from runtime_llm_call where created_at >= date_sub(now(), interval ? minute)", minutes);
             case "task_backlog_count" -> decimal("select count(1) from async_task where status in ('pending', 'running')");
-            case "task_failed_count" -> decimal("select count(1) from async_task where status = 'failed' and created_at >= date_sub(now(), interval ? minute)", minutes);
+            case "task_failed_count" -> decimal("select count(1) from async_task where status in ('failed', 'dead_letter') and created_at >= date_sub(now(), interval ? minute)", minutes);
             case "open_risk_count" -> decimal("select count(1) from risk_governance_event where status in ('open', 'reviewing')");
             case "knowledge_issue_open_count" -> decimal("select count(1) from knowledge_governance_issue where status = 'open'");
             case "today_cost" -> decimal("select coalesce(sum(total_cost), 0) from runtime_cost_daily where stat_date = ?", LocalDate.now());
@@ -537,6 +549,27 @@ public class OpsMonitorService {
         } catch (Exception exception) {
             entity.setStatus("unhealthy");
             entity.setMessage("Redis 连接失败：" + exception.getMessage());
+        }
+        entity.setLatencyMs((int) (System.currentTimeMillis() - start));
+        return entity;
+    }
+
+    /**
+     * Kafka 主任务 Topic 巡检。
+     */
+    private OpsHealthCheckEntity checkKafka(LocalDateTime now) {
+        long start = System.currentTimeMillis();
+        String topic = properties.getAsyncTask().getTopic();
+        OpsHealthCheckEntity entity = baseCheck("kafka", "Kafka 消息队列", "queue", topic, now);
+        try {
+            int partitions = kafkaTemplate.partitionsFor(topic).size();
+            entity.setStatus(partitions > 0 ? "healthy" : "warning");
+            entity.setMessage("Kafka 连接正常，主任务 Topic 分区数 " + partitions);
+            entity.setMetadataJson(toJson(Map.of("topic", topic, "partitions", partitions)));
+        } catch (Exception exception) {
+            entity.setStatus("unhealthy");
+            entity.setMessage("Kafka 连接失败：" + exception.getMessage());
+            entity.setMetadataJson(toJson(Map.of("topic", topic)));
         }
         entity.setLatencyMs((int) (System.currentTimeMillis() - start));
         return entity;
