@@ -62,9 +62,6 @@ public class McpServerService implements DistributedTaskHandler {
     /** 统一异步任务中心。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 任务工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
-
     public McpServerService(McpServerMapper mcpServerMapper,
                             McpCapabilityMapper mcpCapabilityMapper,
                             McpConnectionTestMapper mcpConnectionTestMapper,
@@ -72,8 +69,7 @@ public class McpServerService implements DistributedTaskHandler {
                             ToolDefinitionMapper toolDefinitionMapper,
                             McpClientService mcpClientService,
                             ObjectMapper objectMapper,
-                            AsyncTaskService asyncTaskService,
-                            KafkaTaskClient kafkaTaskClient) {
+                            AsyncTaskService asyncTaskService) {
         this.mcpServerMapper = mcpServerMapper;
         this.mcpCapabilityMapper = mcpCapabilityMapper;
         this.mcpConnectionTestMapper = mcpConnectionTestMapper;
@@ -82,7 +78,6 @@ public class McpServerService implements DistributedTaskHandler {
         this.mcpClientService = mcpClientService;
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -240,12 +235,6 @@ public class McpServerService implements DistributedTaskHandler {
                 task.getId(),
                 null,
                 Map.of("serverId", entity.getId(), "discoveryTaskId", task.getId()));
-        try {
-            kafkaTaskClient.publish(asyncTask);
-        } catch (Exception exception) {
-            asyncTaskService.appendLog(asyncTask.getId(), "warn", "enqueue_failed",
-                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
-        }
         return toDiscoveryResult(task, List.of(), null);
     }
 

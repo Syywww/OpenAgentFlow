@@ -1,5 +1,5 @@
 import { readSseStream, type ChatCompletionRequest, type ChatCompletionResponse, type StreamHandlers, type StreamResult } from './chat';
-import { API_BASE_URL, getAccessToken, request } from './http';
+import { API_BASE_URL, applyAuthHeaders, request } from './http';
 
 export interface AgentSummary {
   id: string;
@@ -107,10 +107,7 @@ export async function streamAgent(
 ): Promise<StreamResult> {
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
-  const token = getAccessToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
+  applyAuthHeaders(headers);
 
   const response = await fetch(`${API_BASE_URL}/agents/${id}/run/stream`, {
     method: 'POST',

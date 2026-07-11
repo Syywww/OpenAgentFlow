@@ -23,6 +23,10 @@ spring:
   kafka:
     # IDEA 本地启动连接宿主机 9092；Docker 环境通过环境变量覆盖为 kafka:19092。
     bootstrap-servers: ${OAF_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    properties:
+      security.protocol: ${OAF_KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
+      sasl.mechanism: ${OAF_KAFKA_SASL_MECHANISM:PLAIN}
+      sasl.jaas.config: ${OAF_KAFKA_SASL_JAAS_CONFIG:}
     producer:
       acks: all
       retries: 10
@@ -30,6 +34,7 @@ spring:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
         delivery.timeout.ms: 120000
+        compression.type: lz4
     consumer:
       group-id: ${OAF_KAFKA_CONSUMER_GROUP:openagentflow-async-workers}
       enable-auto-commit: false
@@ -45,13 +50,26 @@ spring:
     date-format: yyyy-MM-dd HH:mm:ss
 
 management:
+  otlp:
+    tracing:
+      endpoint: ${OAF_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
+      probes:
+        enabled: true
       show-details: always
+  metrics:
+    tags:
+      application: openagentflow-backend
+  tracing:
+    # 本地默认不导出Trace，避免未启动OpenTelemetry Collector时持续连接4318端口。
+    enabled: ${OAF_TRACING_ENABLED:false}
+    sampling:
+      probability: ${OAF_TRACE_SAMPLING_PROBABILITY:0.1}
 
 springdoc:
   swagger-ui:
@@ -67,6 +85,33 @@ mybatis-plus:
       id-type: input
 
 openagentflow:
+  tenancy:
+    require-workspace-context: ${OAF_REQUIRE_WORKSPACE_CONTEXT:false}
+  vector-store:
+    strict-write: ${OAF_VECTOR_STRICT_WRITE:true}
+  observability:
+    refresh-ms: ${OAF_METRICS_REFRESH_MS:15000}
+  lifecycle:
+    retention-enabled: ${OAF_RETENTION_ENABLED:true}
+    cleanup-batch-size: ${OAF_RETENTION_BATCH_SIZE:2000}
+    trace-retention-days: ${OAF_TRACE_RETENTION_DAYS:90}
+    task-log-retention-days: ${OAF_TASK_LOG_RETENTION_DAYS:30}
+  document-pipeline:
+    embedding-shard-size: ${OAF_DOCUMENT_EMBEDDING_SHARD_SIZE:128}
+  runtime:
+    accept-traffic: ${OAF_RUNTIME_ACCEPT_TRAFFIC:true}
+    cancel-watch-ms: ${OAF_RUNTIME_CANCEL_WATCH_MS:500}
+    executor:
+      core-size: ${OAF_RUNTIME_CORE_SIZE:16}
+      max-size: ${OAF_RUNTIME_MAX_SIZE:64}
+      queue-capacity: ${OAF_RUNTIME_QUEUE_CAPACITY:200}
+  opensearch:
+    enabled: ${OAF_OPENSEARCH_ENABLED:false}
+    endpoint: ${OAF_OPENSEARCH_ENDPOINT:http://localhost:9200}
+    username: ${OAF_OPENSEARCH_USERNAME:}
+    password: ${OAF_OPENSEARCH_PASSWORD:}
+  slo:
+    evaluate-ms: ${OAF_SLO_EVALUATE_MS:60000}
   async-task:
     # Kafka 分布式任务开关，关闭时仅允许任务入库，不启动消费者。
     enabled: ${OAF_KAFKA_TASK_ENABLED:true}
@@ -76,12 +121,23 @@ openagentflow:
     dead-letter-topic: ${OAF_KAFKA_DLT_TOPIC:openagentflow.async-task.dlt}
     consumer-group: ${OAF_KAFKA_CONSUMER_GROUP:openagentflow-async-workers}
     partitions: ${OAF_KAFKA_TASK_PARTITIONS:6}
+    replication-factor: ${OAF_KAFKA_REPLICATION_FACTOR:1}
+    min-in-sync-replicas: ${OAF_KAFKA_MIN_INSYNC_REPLICAS:1}
     max-retries: ${OAF_KAFKA_TASK_MAX_RETRIES:3}
     stale-seconds: ${OAF_KAFKA_TASK_STALE_SECONDS:300}
+    outbox-batch-size: ${OAF_KAFKA_OUTBOX_BATCH_SIZE:100}
+    outbox-max-attempts: ${OAF_KAFKA_OUTBOX_MAX_ATTEMPTS:20}
+    outbox-retention-days: ${OAF_KAFKA_OUTBOX_RETENTION_DAYS:7}
+    outbox-poll-ms: ${OAF_KAFKA_OUTBOX_POLL_MS:500}
+    worker-role: ${OAF_KAFKA_WORKER_ROLE:all}
+    consumer-enabled: ${OAF_KAFKA_CONSUMER_ENABLED:true}
+    publisher-enabled: ${OAF_KAFKA_PUBLISHER_ENABLED:true}
+    max-running-tasks: ${OAF_KAFKA_MAX_RUNNING_TASKS:32}
   object-storage:
     # 分布式 Worker 必须从共享对象存储读取上传文档。
     enabled: ${OAF_OBJECT_STORAGE_ENABLED:true}
     endpoint: ${OAF_MINIO_ENDPOINT:http://localhost:9000}
+    public-endpoint: ${OAF_MINIO_PUBLIC_ENDPOINT:${OAF_MINIO_ENDPOINT:http://localhost:9000}}
     access-key: ${OAF_MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${OAF_MINIO_SECRET_KEY:minioadmin}
     bucket: ${OAF_MINIO_BUCKET:openagentflow}
@@ -97,13 +153,22 @@ openagentflow:
     default-knowledge-collection: ${OAF_MILVUS_KNOWLEDGE_COLLECTION:oaf_knowledge_chunks}
     default-memory-collection: ${OAF_MILVUS_MEMORY_COLLECTION:oaf_agent_memory}
   security:
+    secret-encryption-key: ${OAF_SECRET_ENCRYPTION_KEY:}
     # 登录与基础权限已接入 JWT，默认启用接口鉴权。
     auth-enabled: ${OAF_AUTH_ENABLED:true}
     # JWT 签名密钥，生产环境请通过环境变量覆盖。
     jwt-secret: ${OAF_JWT_SECRET:openagentflow-local-dev-secret-change-me}
     # JWT 有效期，默认 24 小时。
     jwt-expire-minutes: ${OAF_JWT_EXPIRE_MINUTES:1440}
+    # 需要访问企业内网API时按主机名显式配置，多个值用逗号分隔。
+    tool-private-network-allowlist: ${OAF_TOOL_PRIVATE_NETWORK_ALLOWLIST:}
   rag:
     # 默认召回数量，与前端调试面板和知识库检索配置保持一致。
     default-top-k: 5
     default-score-threshold: 0.65
+    embedding-qps: ${OAF_EMBEDDING_QPS:8}
+    embedding-concurrency: ${OAF_EMBEDDING_CONCURRENCY:4}
+    embedding-acquire-timeout-ms: ${OAF_EMBEDDING_ACQUIRE_TIMEOUT_MS:10000}
+    allow-local-embedding-fallback: ${OAF_ALLOW_LOCAL_EMBEDDING_FALLBACK:true}
+    # 生产环境保持关闭，避免 Milvus 故障时扫描 MySQL embedding_json 放大数据库压力。
+    allow-mysql-vector-fallback: ${OAF_ALLOW_MYSQL_VECTOR_FALLBACK:false}

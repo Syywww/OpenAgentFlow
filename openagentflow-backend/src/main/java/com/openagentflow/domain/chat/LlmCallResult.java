@@ -25,6 +25,9 @@ public class LlmCallResult {
     /** 调用耗时毫秒。 */
     private Integer latencyMs = 0;
 
+    /** 流式调用首个有效分片到达耗时。 */
+    private Integer firstTokenLatencyMs = 0;
+
     /** 模型请求调用的工具列表。 */
     private List<ToolCallRequest> toolCalls = List.of();
 
@@ -74,6 +77,14 @@ public class LlmCallResult {
 
     public void setLatencyMs(Integer latencyMs) {
         this.latencyMs = latencyMs;
+    }
+
+    public Integer getFirstTokenLatencyMs() {
+        return firstTokenLatencyMs;
+    }
+
+    public void setFirstTokenLatencyMs(Integer firstTokenLatencyMs) {
+        this.firstTokenLatencyMs = firstTokenLatencyMs;
     }
 
     public List<ToolCallRequest> getToolCalls() {

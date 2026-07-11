@@ -10,6 +10,9 @@ import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import com.openagentflow.service.AsyncTaskTopicRouter;
+
+import java.util.List;
 
 /**
  * Kafka 分布式异步任务基础配置。
@@ -27,15 +30,16 @@ public class KafkaAsyncTaskConfig {
      * @return Topic 定义数组
      */
     @Bean
-    public KafkaAdmin.NewTopics asyncTaskTopics(OpenAgentFlowProperties properties) {
+    public KafkaAdmin.NewTopics asyncTaskTopics(OpenAgentFlowProperties properties,
+                                                AsyncTaskTopicRouter topicRouter) {
         OpenAgentFlowProperties.AsyncTask task = properties.getAsyncTask();
         int partitions = Math.max(1, task.getPartitions());
-        return new KafkaAdmin.NewTopics(
-                topic(task.getTopic(), partitions, "604800000"),
-                topic(task.getRetryTopic5s(), partitions, "604800000"),
-                topic(task.getRetryTopic30s(), partitions, "604800000"),
-                topic(task.getDeadLetterTopic(), partitions, "2592000000")
-        );
+        int replicationFactor = Math.max(1, task.getReplicationFactor());
+        int minInSyncReplicas = Math.max(1, Math.min(replicationFactor, task.getMinInSyncReplicas()));
+        List<NewTopic> topics = topicRouter.topicDefinitions().stream()
+                .map(definition -> topic(definition.name(), partitions, replicationFactor, minInSyncReplicas, definition.retentionMs()))
+                .toList();
+        return new KafkaAdmin.NewTopics(topics.toArray(NewTopic[]::new));
     }
 
     /**
@@ -46,11 +50,16 @@ public class KafkaAsyncTaskConfig {
      * @param retentionMs 消息保留毫秒数
      * @return Topic 定义
      */
-    private NewTopic topic(String name, int partitions, String retentionMs) {
+    private NewTopic topic(String name,
+                           int partitions,
+                           int replicationFactor,
+                           int minInSyncReplicas,
+                           String retentionMs) {
         return TopicBuilder.name(name)
                 .partitions(partitions)
-                .replicas(1)
+                .replicas(replicationFactor)
                 .config("retention.ms", retentionMs)
+                .config("min.insync.replicas", String.valueOf(minInSyncReplicas))
                 .build();
     }
 

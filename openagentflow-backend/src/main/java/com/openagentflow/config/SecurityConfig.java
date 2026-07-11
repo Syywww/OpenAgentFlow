@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.api.ApiResponse;
 import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.security.JwtAuthenticationFilter;
+import com.openagentflow.security.WorkspaceIsolationFilter;
 import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,6 +22,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -54,6 +56,7 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    JwtAuthenticationFilter jwtAuthenticationFilter,
+                                                   WorkspaceIsolationFilter workspaceIsolationFilter,
                                                    ObjectMapper objectMapper) throws Exception {
         http.csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -66,7 +69,7 @@ public class SecurityConfig {
                         // 登录、Swagger 和健康检查允许匿名访问。
                         .requestMatchers(HttpMethod.GET, "/auth/captcha").permitAll()
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // SSE 异步完成后容器可能内部转发到 /error，放行可避免响应已提交后再次触发 403。
                         .requestMatchers("/error").permitAll()
@@ -107,9 +110,19 @@ public class SecurityConfig {
                 )
                 // JWT 过滤器放在用户名密码过滤器之前，确保业务接口先尝试解析 token。
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                // 工作空间过滤器必须在JWT认证之后执行，才能校验当前用户成员关系。
+                .addFilterAfter(workspaceIsolationFilter, JwtAuthenticationFilter.class)
                 // 明确禁用默认 logout 端点，退出登录由 AuthController 处理 Redis token 删除。
                 .logout(logout -> logout.logoutRequestMatcher(new AntPathRequestMatcher("/security-disabled-logout")));
         return http.build();
+    }
+
+    /** 禁止Servlet容器重复注册工作空间过滤器，仅由Spring Security过滤链管理顺序。 */
+    @Bean
+    public FilterRegistrationBean<WorkspaceIsolationFilter> workspaceIsolationFilterRegistration(WorkspaceIsolationFilter filter) {
+        FilterRegistrationBean<WorkspaceIsolationFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     /**

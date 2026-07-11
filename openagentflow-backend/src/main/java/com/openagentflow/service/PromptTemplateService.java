@@ -52,14 +52,19 @@ public class PromptTemplateService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 发布质量门禁服务。 */
+    private final ReleaseGateService releaseGateService;
+
     public PromptTemplateService(PromptTemplateMapper promptTemplateMapper,
                                  PromptTemplateVersionMapper promptTemplateVersionMapper,
                                  JdbcTemplate jdbcTemplate,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper,
+                                 ReleaseGateService releaseGateService) {
         this.promptTemplateMapper = promptTemplateMapper;
         this.promptTemplateVersionMapper = promptTemplateVersionMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.releaseGateService = releaseGateService;
     }
 
     /**
@@ -175,6 +180,7 @@ public class PromptTemplateService {
                 ? request.versionNo.trim()
                 : nextVersionNo(entity.getId());
         ensureVersionNoAvailable(entity.getId(), versionNo);
+        releaseGateService.assertCanRelease("prompt", entity.getId(), null, versionNo);
         saveVersion(entity, versionNo, request == null ? null : request.changeNote);
         entity.setStatus("published");
         entity.setVersion(entity.getVersion() == null ? 1L : entity.getVersion() + 1);

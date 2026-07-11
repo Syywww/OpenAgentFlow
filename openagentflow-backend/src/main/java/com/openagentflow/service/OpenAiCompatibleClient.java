@@ -30,6 +30,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ConcurrentHashMap;
+import java.io.Closeable;
 import java.util.function.Consumer;
 
 /**
@@ -37,6 +39,12 @@ import java.util.function.Consumer;
  */
 @Service
 public class OpenAiCompatibleClient {
+
+    /** 运行ID到活动HTTP请求的映射，用于用户停止时主动中断阻塞模型调用。 */
+    private final Map<String, CompletableFuture<?>> activeRequests = new ConcurrentHashMap<>();
+
+    /** 运行ID到活动流的映射，用于立即关闭SSE模型响应。 */
+    private final Map<String, Closeable> activeStreams = new ConcurrentHashMap<>();
 
     /** 豆包多模态 Embedding 单请求只返回单条向量，使用小并发降低大文档等待时间并避免过度触发限流。 */
     private static final int MULTIMODAL_EMBEDDING_CONCURRENCY = 4;
@@ -66,7 +74,7 @@ public class OpenAiCompatibleClient {
         ObjectNode payload = buildPayload(context, false, temperature, maxTokens);
         try {
             HttpRequest request = buildRequest(context, payload);
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponse<String> response = sendCancelable(context, request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int latencyMs = (int) Duration.between(startedAt, Instant.now()).toMillis();
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new BusinessException("MODEL_CALL_FAILED", response.body());
@@ -95,7 +103,7 @@ public class OpenAiCompatibleClient {
         ObjectNode payload = buildPayload(context, false, temperature, maxTokens, context.getTools());
         try {
             HttpRequest request = buildRequest(context, payload);
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponse<String> response = sendCancelable(context, request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int latencyMs = (int) Duration.between(startedAt, Instant.now()).toMillis();
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new BusinessException("MODEL_CALL_FAILED", response.body());
@@ -131,13 +139,14 @@ public class OpenAiCompatibleClient {
         LlmCallResult result = new LlmCallResult();
         try {
             HttpRequest request = buildRequest(context, payload);
-            HttpResponse<java.io.InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            HttpResponse<java.io.InputStream> response = sendCancelable(context, request, HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 String errorBody = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
                 throw new BusinessException("MODEL_CALL_FAILED", errorBody);
             }
 
             // 按 SSE 行解析模型流式响应，逐段把 delta.content 推给前端。
+            registerStream(context, response.body());
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -156,6 +165,7 @@ public class OpenAiCompatibleClient {
                     }
                 }
             }
+            unregisterStream(context);
             result.setContent(contentBuilder.toString());
             result.setRawResponse(rawBuilder.toString());
             result.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
@@ -164,7 +174,60 @@ public class OpenAiCompatibleClient {
             throw exception;
         } catch (Exception exception) {
             throw new BusinessException("MODEL_STREAM_FAILED", exception.getMessage());
+        } finally {
+            unregisterStream(context);
         }
+    }
+
+    /**
+     * 主动取消指定Runtime运行关联的HTTP请求和响应流。
+     *
+     * @param runId 运行ID
+     * @return 是否找到活动调用
+     */
+    public boolean cancel(String runId) {
+        boolean found = false;
+        CompletableFuture<?> request = activeRequests.remove(runId);
+        if (request != null) {
+            found = request.cancel(true);
+        }
+        Closeable stream = activeStreams.remove(runId);
+        if (stream != null) {
+            try { stream.close(); } catch (Exception ignored) { }
+            found = true;
+        }
+        return found;
+    }
+
+    /** 返回当前JVM正在调用模型的运行ID快照。 */
+    public java.util.Set<String> activeRunIds() {
+        java.util.Set<String> result = new java.util.HashSet<>(activeRequests.keySet());
+        result.addAll(activeStreams.keySet());
+        return java.util.Set.copyOf(result);
+    }
+
+    /** 使用可取消异步请求替代阻塞send。 */
+    private <T> HttpResponse<T> sendCancelable(ChatRunContext context,
+                                               HttpRequest request,
+                                               HttpResponse.BodyHandler<T> bodyHandler) throws Exception {
+        CompletableFuture<HttpResponse<T>> future = httpClient.sendAsync(request, bodyHandler);
+        String runId = context == null ? null : context.getRunId();
+        if (StringUtils.hasText(runId)) activeRequests.put(runId, future);
+        try {
+            return future.get();
+        } finally {
+            if (StringUtils.hasText(runId)) activeRequests.remove(runId, future);
+        }
+    }
+
+    /** 登记活动模型响应流。 */
+    private void registerStream(ChatRunContext context, Closeable stream) {
+        if (context != null && StringUtils.hasText(context.getRunId())) activeStreams.put(context.getRunId(), stream);
+    }
+
+    /** 清理活动模型响应流。 */
+    private void unregisterStream(ChatRunContext context) {
+        if (context != null && StringUtils.hasText(context.getRunId())) activeStreams.remove(context.getRunId());
     }
 
     /**

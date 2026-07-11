@@ -19,6 +19,7 @@ import com.openagentflow.mapper.ModelApiKeyMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
 import com.openagentflow.mapper.ModelConnectivityTestMapper;
 import com.openagentflow.mapper.ModelProviderMapper;
+import com.openagentflow.security.SecretCryptoService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -54,18 +55,23 @@ public class ModelProviderService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** API Key加解密服务。 */
+    private final SecretCryptoService secretCryptoService;
+
     public ModelProviderService(ModelProviderMapper modelProviderMapper,
                                 ModelConfigMapper modelConfigMapper,
                                 ModelApiKeyMapper modelApiKeyMapper,
                                 ModelConnectivityTestMapper modelConnectivityTestMapper,
                                 OpenAiCompatibleClient openAiCompatibleClient,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper,
+                                SecretCryptoService secretCryptoService) {
         this.modelProviderMapper = modelProviderMapper;
         this.modelConfigMapper = modelConfigMapper;
         this.modelApiKeyMapper = modelApiKeyMapper;
         this.modelConnectivityTestMapper = modelConnectivityTestMapper;
         this.openAiCompatibleClient = openAiCompatibleClient;
         this.objectMapper = objectMapper;
+        this.secretCryptoService = secretCryptoService;
     }
 
     /**
@@ -204,7 +210,7 @@ public class ModelProviderService {
                 .stream()
                 .max(Comparator.comparing(modelConfig -> Boolean.TRUE.equals(modelConfig.getIsDefault())))
                 .orElseThrow(() -> new BusinessException("MODEL_NOT_FOUND", "请先配置可用的 Chat 模型"));
-        String apiKey = findEnabledKey(providerId).map(ModelApiKeyEntity::getKeyCipher).orElse("");
+        String apiKey = findEnabledKey(providerId).map(ModelApiKeyEntity::getKeyCipher).map(secretCryptoService::decrypt).orElse("");
 
         ChatRunContext context = new ChatRunContext();
         context.setProvider(provider);
@@ -281,7 +287,7 @@ public class ModelProviderService {
      * @return API Key 明文
      */
     public String findApiKeyValue(String providerId) {
-        return findEnabledKey(providerId).map(ModelApiKeyEntity::getKeyCipher).orElse("");
+        return findEnabledKey(providerId).map(ModelApiKeyEntity::getKeyCipher).map(secretCryptoService::decrypt).orElse("");
     }
 
     /**
@@ -363,7 +369,7 @@ public class ModelProviderService {
         entity.setId(newId());
         entity.setProviderId(providerId);
         entity.setKeyName("default");
-        entity.setKeyCipher(apiKey);
+        entity.setKeyCipher(secretCryptoService.encrypt(apiKey));
         entity.setKeyMask(maskApiKey(apiKey));
         entity.setStatus("enabled");
         entity.setQuotaUsed(0L);

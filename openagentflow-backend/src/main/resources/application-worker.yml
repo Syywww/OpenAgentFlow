@@ -1,0 +1,6 @@
+openagentflow:
+  runtime:
+    accept-traffic: false
+  async-task:
+    consumer-enabled: true
+    publisher-enabled: false

@@ -1,0 +1,20 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openagentflow
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /api/chat
+            pathType: Prefix
+            backend:
+              service: { name: openagentflow-runtime, port: { number: 8080 } }
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: openagentflow-api, port: { number: 8080 } }
+{{- end }}

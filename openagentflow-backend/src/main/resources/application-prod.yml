@@ -11,10 +11,13 @@ spring:
       timeout: ${OAF_REDIS_TIMEOUT:5s}
 
 management:
+  tracing:
+    # 生产环境默认启用OTLP，由部署配置提供Collector地址。
+    enabled: ${OAF_TRACING_ENABLED:true}
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: never
@@ -42,9 +45,25 @@ server:
     max-connections: ${OAF_TOMCAT_MAX_CONNECTIONS:8192}
 
 openagentflow:
+  tenancy:
+    require-workspace-context: ${OAF_REQUIRE_WORKSPACE_CONTEXT:true}
+  runtime:
+    executor:
+      core-size: ${OAF_RUNTIME_CORE_SIZE:32}
+      max-size: ${OAF_RUNTIME_MAX_SIZE:128}
+      queue-capacity: ${OAF_RUNTIME_QUEUE_CAPACITY:500}
+  vector-store:
+    strict-write: ${OAF_VECTOR_STRICT_WRITE:true}
+  observability:
+    refresh-ms: ${OAF_METRICS_REFRESH_MS:15000}
   async-task:
     enabled: true
+    replication-factor: ${OAF_KAFKA_REPLICATION_FACTOR:3}
+    min-in-sync-replicas: ${OAF_KAFKA_MIN_INSYNC_REPLICAS:2}
   object-storage:
     enabled: true
+  rag:
+    allow-local-embedding-fallback: ${OAF_ALLOW_LOCAL_EMBEDDING_FALLBACK:false}
+    allow-mysql-vector-fallback: ${OAF_ALLOW_MYSQL_VECTOR_FALLBACK:false}
   security:
     allowed-origins: ${OAF_CORS_ALLOWED_ORIGINS}

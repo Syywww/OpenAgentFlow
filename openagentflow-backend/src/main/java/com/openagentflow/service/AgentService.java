@@ -74,6 +74,9 @@ public class AgentService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** Agent生产发布质量门禁。 */
+    private final ReleaseGateService releaseGateService;
+
     public AgentService(AgentMapper agentMapper,
                         ModelConfigMapper modelConfigMapper,
                         IamUserMapper iamUserMapper,
@@ -84,7 +87,8 @@ public class AgentService {
                         AgentSessionService agentSessionService,
                         WorkspaceGovernanceService workspaceGovernanceService,
                         JdbcTemplate jdbcTemplate,
-                        ObjectMapper objectMapper) {
+                        ObjectMapper objectMapper,
+                        ReleaseGateService releaseGateService) {
         this.agentMapper = agentMapper;
         this.modelConfigMapper = modelConfigMapper;
         this.iamUserMapper = iamUserMapper;
@@ -96,6 +100,7 @@ public class AgentService {
         this.workspaceGovernanceService = workspaceGovernanceService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.releaseGateService = releaseGateService;
     }
 
     /**
@@ -180,6 +185,7 @@ public class AgentService {
         String versionNo = StringUtils.hasText(request.getVersionNo())
                 ? request.getVersionNo()
                 : "v" + DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now());
+        releaseGateService.assertCanRelease("agent", entity.getId(), entity.getWorkspaceId(), versionNo);
         entity.setStatus("published");
         entity.setPublishedVersion(versionNo);
         agentMapper.updateById(entity);

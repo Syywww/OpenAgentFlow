@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.domain.knowledge.KnowledgeDocumentSummary;
+import com.openagentflow.domain.knowledge.KnowledgeDirectUploadRequest;
+import com.openagentflow.domain.knowledge.KnowledgeDirectUploadTicket;
 import com.openagentflow.domain.knowledge.KnowledgeUploadResult;
 import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.KnowledgeBaseEntity;
@@ -24,11 +26,17 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.DigestUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.io.InputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -45,6 +53,10 @@ import java.util.UUID;
  */
 @Service
 public class KnowledgeDocumentProcessingService implements DistributedTaskHandler {
+
+    /** 生产严格模式下Milvus写入失败必须重试，不能把降级结果标记为成功。 */
+    @org.springframework.beans.factory.annotation.Value("${openagentflow.vector-store.strict-write:true}")
+    private boolean strictVectorWrite;
 
     /** 日志对象，用于输出处理进度和模型调用结果。 */
     private static final Logger log = LoggerFactory.getLogger(KnowledgeDocumentProcessingService.class);
@@ -85,11 +97,17 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
     /** 异步任务中心服务。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 任务工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
+    /** 结构化任务阶段服务。 */
+    private final AsyncTaskStageService taskStageService;
 
     /** 共享对象存储服务。 */
     private final SharedObjectStorageService objectStorageService;
+
+    /** 工作空间资源配额与文件安全服务。 */
+    private final TenantResourceQuotaService tenantResourceQuotaService;
+
+    /** OpenSearch关键词索引服务。 */
+    private final KeywordSearchService keywordSearchService;
 
     public KnowledgeDocumentProcessingService(KnowledgeBaseMapper knowledgeBaseMapper,
                                               KnowledgeDocumentMapper knowledgeDocumentMapper,
@@ -102,8 +120,10 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                                               JdbcTemplate jdbcTemplate,
                                               ObjectMapper objectMapper,
                                               AsyncTaskService asyncTaskService,
-                                              KafkaTaskClient kafkaTaskClient,
-                                              SharedObjectStorageService objectStorageService) {
+                                              AsyncTaskStageService taskStageService,
+                                              SharedObjectStorageService objectStorageService,
+                                              TenantResourceQuotaService tenantResourceQuotaService,
+                                              KeywordSearchService keywordSearchService) {
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
@@ -115,8 +135,10 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
+        this.taskStageService = taskStageService;
         this.objectStorageService = objectStorageService;
+        this.tenantResourceQuotaService = tenantResourceQuotaService;
+        this.keywordSearchService = keywordSearchService;
     }
 
     /**
@@ -133,12 +155,18 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             throw new BusinessException("DOCUMENT_EMPTY", "上传文件不能为空");
         }
         try {
-            byte[] bytes = file.getBytes();
             String fileName = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "document.txt";
+            tenantResourceQuotaService.assertSafeDocumentType(fileName);
+            tenantResourceQuotaService.assertDocumentUploadAllowed(kb.getWorkspaceId(), file.getSize());
             String fileExt = fileExt(fileName);
-            String fileHash = DigestUtils.md5DigestAsHex(bytes);
+            String documentId = newId();
+            String storageKey = knowledgeObjectKey(kbId, documentId, fileName);
+            SharedObjectStorageService.StoredObject storedObject = objectStorageService.putStream(
+                    storageKey, file.getInputStream(), file.getSize(), file.getContentType());
+            String fileHash = storedObject.contentHash();
             KnowledgeDocumentEntity duplicate = findParsedDuplicateDocument(kbId, fileHash);
             if (duplicate != null) {
+                objectStorageService.delete(storedObject.bucket(), storageKey);
                 KnowledgeUploadResult result = new KnowledgeUploadResult();
                 result.setDocument(toSummary(duplicate));
                 result.setChunkCount(count("knowledge_chunk", "document_id", duplicate.getId()));
@@ -148,10 +176,6 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                 result.setMessage("检测到相同文件已解析，已复用已有分片和向量结果");
                 return result;
             }
-            String documentId = newId();
-            String storageKey = knowledgeObjectKey(kbId, documentId, fileName);
-            String storageBucket = objectStorageService.put(storageKey, bytes, file.getContentType());
-
             KnowledgeDocumentEntity document = new KnowledgeDocumentEntity();
             document.setId(documentId);
             document.setKbId(kbId);
@@ -160,7 +184,7 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             document.setFileExt(fileExt);
             document.setFileSize(file.getSize());
             document.setFileHash(fileHash);
-            document.setStorageBucket(storageBucket);
+            document.setStorageBucket(storedObject.bucket());
             document.setStorageKey(storageKey);
             document.setSourceType("upload");
             document.setParseStatus("processing");
@@ -168,29 +192,9 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             document.setUploadedBy(currentUserId());
             knowledgeDocumentMapper.insert(document);
 
-            AsyncTaskEntity asyncTask = asyncTaskService.createTask(
-                    "处理知识文档：" + fileName,
-                    "DOCUMENT_PROCESS",
-                    "knowledge_document",
-                    documentId,
-                    "knowledge_document",
-                    documentId,
-                    kb.getWorkspaceId(),
-                    Map.of("kbId", kbId, "documentId", documentId, "fileName", fileName, "fileSize", file.getSize(), "fileExt", fileExt)
-            );
-            Map<String, Object> metadata = parseMetadata(document.getMetadata());
-            metadata.put("asyncTaskId", asyncTask.getId());
-            document.setMetadata(toJson(metadata));
-            knowledgeDocumentMapper.updateById(document);
+            AsyncTaskEntity asyncTask = submitDocumentTask(kb, document);
 
-            // MySQL 已保存任务和对象键，再投递 Kafka；发送异常由补偿调度器继续投递。
-            try {
-                kafkaTaskClient.publish(asyncTask);
-            } catch (Exception exception) {
-                asyncTaskService.appendLog(asyncTask.getId(), "warn", "enqueue_failed",
-                        "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 5);
-            }
-            log.info("知识库文档已接收并投递 Kafka：kbId={}, documentId={}, taskId={}, fileName={}", kbId, documentId, asyncTask.getId(), fileName);
+            log.info("知识库文档已接收并写入 Outbox：kbId={}, documentId={}, taskId={}, fileName={}", kbId, documentId, asyncTask.getId(), fileName);
 
             KnowledgeUploadResult result = new KnowledgeUploadResult();
             result.setDocument(toSummary(document));
@@ -206,6 +210,112 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         } catch (Exception exception) {
             throw new BusinessException("DOCUMENT_UPLOAD_FAILED", exception.getMessage());
         }
+    }
+
+    /**
+     * 申请 MinIO 预签名地址，浏览器可绕过后端直接上传大文件。
+     */
+    public KnowledgeDirectUploadTicket prepareDirectUpload(String kbId, KnowledgeDirectUploadRequest request) {
+        KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
+        assertCanManage(kb);
+        String documentId = newId();
+        String fileName = request.getFileName().trim();
+        tenantResourceQuotaService.assertSafeDocumentType(fileName);
+        tenantResourceQuotaService.assertDocumentUploadAllowed(kb.getWorkspaceId(), request.getFileSize());
+        String fileExt = fileExt(fileName);
+        String storageKey = knowledgeObjectKey(kbId, documentId, fileName);
+
+        KnowledgeDocumentEntity document = new KnowledgeDocumentEntity();
+        document.setId(documentId);
+        document.setKbId(kbId);
+        document.setDocName(fileName);
+        document.setDocType(fileExt);
+        document.setFileExt(fileExt);
+        document.setFileSize(request.getFileSize());
+        document.setStorageBucket(objectStorageService.bucketName());
+        document.setStorageKey(storageKey);
+        document.setSourceType("direct_upload");
+        document.setParseStatus("uploading");
+        document.setMetadata(toJson(progressMetadata("uploading", "文件直传", 1, "等待浏览器直传 MinIO")));
+        document.setUploadedBy(currentUserId());
+        knowledgeDocumentMapper.insert(document);
+
+        KnowledgeDirectUploadTicket ticket = new KnowledgeDirectUploadTicket();
+        ticket.setDocumentId(documentId);
+        ticket.setBucket(objectStorageService.bucketName());
+        ticket.setObjectKey(storageKey);
+        ticket.setUploadUrl(objectStorageService.presignedPutUrl(storageKey, 30));
+        ticket.setExpiresAt(LocalDateTime.now().plusMinutes(30));
+        return ticket;
+    }
+
+    /**
+     * 确认浏览器已经完成 MinIO 直传，并原子创建文档处理任务与 Outbox。
+     */
+    public KnowledgeUploadResult completeDirectUpload(String kbId, String documentId) {
+        KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
+        assertCanManage(kb);
+        KnowledgeDocumentEntity document = knowledgeDocumentMapper.selectById(documentId);
+        if (document == null || !kbId.equals(document.getKbId()) || !"uploading".equals(document.getParseStatus())) {
+            throw new BusinessException("DOCUMENT_UPLOAD_TICKET_INVALID", "直传文档不存在或状态不允许确认");
+        }
+        SharedObjectStorageService.StoredObject stored = objectStorageService.stat(document.getStorageKey());
+        if (document.getFileSize() != null && document.getFileSize() != stored.size()) {
+            throw new BusinessException("DOCUMENT_UPLOAD_SIZE_MISMATCH", "MinIO 对象大小与申请大小不一致");
+        }
+        document.setFileHash(stored.contentHash());
+        KnowledgeDocumentEntity duplicate = findParsedDuplicateDocument(kbId, stored.contentHash());
+        if (duplicate != null && !duplicate.getId().equals(documentId)) {
+            objectStorageService.delete(stored.bucket(), stored.objectKey());
+            knowledgeDocumentMapper.deleteById(documentId);
+            KnowledgeUploadResult reused = new KnowledgeUploadResult();
+            reused.setDocument(toSummary(duplicate));
+            reused.setChunkCount(count("knowledge_chunk", "document_id", duplicate.getId()));
+            reused.setEmbeddingCount(countByDocument(duplicate.getId()));
+            reused.setMilvusSynced(true);
+            reused.setAsyncAccepted(false);
+            reused.setMessage("检测到相同文件已解析，已复用已有分片和向量结果");
+            return reused;
+        }
+        document.setParseStatus("processing");
+        document.setMetadata(toJson(progressMetadata("accepted", "直传完成", 5, "文件已直传 MinIO，等待后台解析")));
+        knowledgeDocumentMapper.updateById(document);
+        AsyncTaskEntity task = submitDocumentTask(kb, document);
+
+        KnowledgeUploadResult result = new KnowledgeUploadResult();
+        result.setDocument(toSummary(document));
+        result.setChunkCount(0);
+        result.setEmbeddingCount(0);
+        result.setMilvusSynced(false);
+        result.setAsyncAccepted(true);
+        result.setAsyncTaskId(task.getId());
+        result.setMessage("文件已直传 MinIO，后台分布式流水线开始处理");
+        return result;
+    }
+
+    /**
+     * 创建文档处理任务；AsyncTaskService 会在同一事务写入 Outbox。
+     */
+    private AsyncTaskEntity submitDocumentTask(KnowledgeBaseEntity kb, KnowledgeDocumentEntity document) {
+        AsyncTaskEntity task = asyncTaskService.createTask(
+                "处理知识文档：" + document.getDocName(),
+                "DOCUMENT_DAG_ORCHESTRATE",
+                "knowledge_document",
+                document.getId(),
+                "knowledge_document",
+                document.getId(),
+                kb.getWorkspaceId(),
+                Map.of(
+                        "kbId", kb.getId(),
+                        "documentId", document.getId(),
+                        "fileName", document.getDocName(),
+                        "fileSize", document.getFileSize() == null ? 0L : document.getFileSize(),
+                        "fileExt", safeValue(document.getFileExt())));
+        Map<String, Object> metadata = parseMetadata(document.getMetadata());
+        metadata.put("asyncTaskId", task.getId());
+        document.setMetadata(toJson(metadata));
+        knowledgeDocumentMapper.updateById(document);
+        return task;
     }
 
     /**
@@ -226,29 +336,113 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
     }
 
     /**
+     * 清理旧解析产物并重新提交完整文档流水线。
+     *
+     * @param kbId 知识库ID
+     * @param documentId 文档ID
+     * @return 新任务受理结果
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public KnowledgeUploadResult reprocessDocument(String kbId, String documentId) {
+        KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
+        assertCanManage(kb);
+        KnowledgeDocumentEntity document = knowledgeDocumentMapper.selectById(documentId);
+        if (document == null || !kbId.equals(document.getKbId())) {
+            throw new BusinessException("DOCUMENT_NOT_FOUND", "文档不存在");
+        }
+        if ("processing".equalsIgnoreCase(document.getParseStatus())) {
+            throw new BusinessException("DOCUMENT_PROCESSING", "文档正在处理中，请等待当前任务结束");
+        }
+        if (!objectStorageService.exists(document.getStorageBucket(), document.getStorageKey())) {
+            throw new BusinessException("DOCUMENT_OBJECT_MISSING", "原始PDF文件已不存在，无法重新解析");
+        }
+
+        List<Map<String, Object>> vectorTargets = jdbcTemplate.queryForList("""
+                SELECT DISTINCT COALESCE(e.milvus_collection_name,?) collection_name,e.embedding_dim
+                FROM knowledge_embedding e JOIN knowledge_chunk c ON c.id=e.chunk_id
+                WHERE c.document_id=? AND e.embedding_dim IS NOT NULL
+                """, kb.getMilvusCollectionName(), documentId);
+        // 先删除外部索引，确认成功后再删除MySQL分片，防止留下无法定位的孤儿向量。
+        for (Map<String, Object> target : vectorTargets) {
+            Number dimension = (Number) target.get("embedding_dim");
+            if (dimension != null && dimension.intValue() > 0) {
+                milvusKnowledgeVectorService.deleteDocument(String.valueOf(target.get("collection_name")),
+                        dimension.intValue(), documentId);
+            }
+        }
+        keywordSearchService.deleteDocument(kbId, documentId);
+        jdbcTemplate.update("DELETE e FROM knowledge_embedding e JOIN knowledge_chunk c ON c.id=e.chunk_id WHERE c.document_id=?", documentId);
+        jdbcTemplate.update("DELETE FROM knowledge_chunk WHERE document_id=?", documentId);
+
+        document.setParseStatus("processing");
+        document.setParseError(null);
+        document.setMetadata(toJson(progressMetadata("accepted", "等待重新解析", 5,
+                "旧分片与索引已清理，文档已提交PDFBox重新解析")));
+        knowledgeDocumentMapper.updateById(document);
+        AsyncTaskEntity task = submitDocumentTask(kb, document);
+
+        KnowledgeUploadResult result = new KnowledgeUploadResult();
+        result.setDocument(toSummary(document));
+        result.setChunkCount(0);
+        result.setEmbeddingCount(0);
+        result.setMilvusSynced(false);
+        result.setAsyncAccepted(true);
+        result.setAsyncTaskId(task.getId());
+        result.setMessage("文档重新解析任务已提交");
+        return result;
+    }
+
+    /**
      * 后台处理文档。
      *
      * @param kbId 知识库 ID
      * @param documentId 文档 ID
-     * @param bytes 文件字节
+     * @param localFile Worker 本地临时文件
      * @param fileExt 文件扩展名
      */
-    private Map<String, Object> processDocument(String taskId, String kbId, String documentId, byte[] bytes, String fileExt) {
+    private Map<String, Object> processDocument(String taskId, String kbId, String documentId, Path localFile, String fileExt) {
         KnowledgeBaseEntity kb = knowledgeBaseMapper.selectById(kbId);
         KnowledgeDocumentEntity document = knowledgeDocumentMapper.selectById(documentId);
         if (kb == null || document == null) {
             throw new BusinessException("DOCUMENT_NOT_FOUND", "知识库或文档不存在，无法执行分布式任务");
         }
+        String activeStage = null;
         try {
+            Map<String, Object> checkpoint = parseMetadata(asyncTaskService.findById(taskId).getCheckpointJson());
             checkCanceled(taskId);
             if (value(asyncTaskService.findById(taskId).getRetryCount()) > 0) {
                 // 重试前清理上一次未完整提交的分片，防止重复分片污染召回结果。
                 knowledgeChunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunkEntity>()
                         .eq(KnowledgeChunkEntity::getDocumentId, documentId));
             }
+            activeStage = "parse";
+            taskStageService.start(taskId, activeStage, "解析文档", 1,
+                    Map.of("documentId", documentId, "fileExt", safeValue(fileExt)));
             updateProgress(taskId, documentId, "parsing", "解析文档", 15, "开始解析文档内容", null);
-            String text = documentParseService.parse(bytes, fileExt);
+            String parsedObjectKey = asString(checkpoint.get("parsedObjectKey"));
+            String text;
+            if (StringUtils.hasText(parsedObjectKey)) {
+                text = readTextArtifact(document.getStorageBucket(), parsedObjectKey);
+                updateProgress(taskId, documentId, "parsing_resumed", "恢复解析产物", 20,
+                        "已从检查点恢复解析文本，无需再次解析原文件", null);
+            } else {
+                text = documentParseService.parse(localFile, fileExt);
+                parsedObjectKey = saveTextArtifact(document, taskId, text);
+            }
+            Map<String, Object> parsedCheckpoint = new LinkedHashMap<>();
+            parsedCheckpoint.put("stage", "parsed");
+            parsedCheckpoint.put("documentId", documentId);
+            parsedCheckpoint.put("textLength", text.length());
+            parsedCheckpoint.put("parsedObjectKey", parsedObjectKey);
+            asyncTaskService.saveCheckpoint(taskId, parsedCheckpoint);
+            checkpoint = parsedCheckpoint;
+            taskStageService.succeed(taskId, activeStage,
+                    Map.of("textLength", text.length(), "parsedObjectKey", parsedObjectKey));
+            activeStage = null;
             checkCanceled(taskId);
+            activeStage = "chunk";
+            taskStageService.start(taskId, activeStage, "文档切片", 2,
+                    Map.of("strategy", safeValue(kb.getChunkStrategy()), "chunkSize", kb.getChunkSize()));
             updateProgress(taskId, documentId, "chunking", "文档切片", 30, "文档解析完成，开始切片", Map.of("textLength", text.length()));
 
             List<KnowledgeChunkingService.ChunkSegment> segments = chunkingService.splitSegments(text, kb.getChunkStrategy(), kb.getChunkSize(), kb.getChunkOverlap());
@@ -258,7 +452,19 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             if (embeddingSegments.isEmpty()) {
                 throw new BusinessException("DOCUMENT_CHUNK_EMPTY", "文档没有生成有效分片");
             }
+            Map<String, Object> chunkCheckpoint = new LinkedHashMap<>(checkpoint);
+            chunkCheckpoint.put("stage", "chunked");
+            chunkCheckpoint.put("chunkCount", segments.size());
+            chunkCheckpoint.put("embeddingChunkCount", embeddingSegments.size());
+            asyncTaskService.saveCheckpoint(taskId, chunkCheckpoint);
+            checkpoint = chunkCheckpoint;
+            taskStageService.succeed(taskId, activeStage,
+                    Map.of("chunkCount", segments.size(), "embeddingChunkCount", embeddingSegments.size()));
+            activeStage = null;
             checkCanceled(taskId);
+            activeStage = "embedding";
+            taskStageService.start(taskId, activeStage, "生成向量", 3,
+                    Map.of("embeddingChunkCount", embeddingSegments.size()));
             updateProgress(taskId, documentId, "embedding", "调用向量模型", 45, "已生成 " + segments.size() + " 个分片，其中 " + embeddingSegments.size() + " 个子分片需要向量化", Map.of("chunkCount", segments.size(), "embeddingChunkCount", embeddingSegments.size()));
 
             ModelConfigEntity embeddingModel = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
@@ -268,8 +474,30 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             }
 
             Instant embeddingStartedAt = Instant.now();
-            EmbeddingBatchResult embeddingResult = embeddingService.embedWithTrace(embeddingModel, embeddingSegments.stream().map(KnowledgeChunkingService.ChunkSegment::content).toList());
-            List<List<Double>> vectors = embeddingResult.getVectors();
+            String vectorsObjectKey = asString(checkpoint.get("vectorsObjectKey"));
+            EmbeddingBatchResult embeddingResult;
+            List<List<Double>> vectors;
+            if (StringUtils.hasText(vectorsObjectKey)) {
+                vectors = readVectorArtifact(document.getStorageBucket(), vectorsObjectKey);
+                embeddingResult = restoredEmbeddingResult(embeddingModel, vectors);
+                updateProgress(taskId, documentId, "embedding_resumed", "恢复向量产物", 60,
+                        "已从检查点恢复 " + vectors.size() + " 条向量，无需再次调用模型", null);
+            } else {
+                embeddingResult = embeddingService.embedWithTrace(embeddingModel,
+                        embeddingSegments.stream().map(KnowledgeChunkingService.ChunkSegment::content).toList());
+                vectors = embeddingResult.getVectors();
+                vectorsObjectKey = saveVectorArtifact(document, taskId, vectors);
+            }
+            Map<String, Object> embeddingCheckpoint = new LinkedHashMap<>(checkpoint);
+            embeddingCheckpoint.put("stage", "embedded");
+            embeddingCheckpoint.put("embeddingCount", vectors.size());
+            embeddingCheckpoint.put("embeddingDimension", embeddingResult.getDimension());
+            embeddingCheckpoint.put("vectorsObjectKey", vectorsObjectKey);
+            asyncTaskService.saveCheckpoint(taskId, embeddingCheckpoint);
+            checkpoint = embeddingCheckpoint;
+            taskStageService.succeed(taskId, activeStage,
+                    Map.of("embeddingCount", vectors.size(), "dimension", embeddingResult.getDimension(), "vectorsObjectKey", vectorsObjectKey));
+            activeStage = null;
             String embeddingMessage = Boolean.TRUE.equals(embeddingResult.getFallbackUsed())
                     ? "真实 Embedding 调用失败，已使用本地兜底向量：" + embeddingResult.getErrorMessage()
                     : "真实 Embedding 调用成功，接口 " + embeddingResult.getEmbeddingApi() + "，向量维度 " + embeddingResult.getDimension();
@@ -286,6 +514,9 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                     documentId, embeddingResult.getModelCode(), embeddingResult.getEmbeddingApi(), embeddingResult.getDimension(), embeddingResult.getFallbackUsed());
 
             checkCanceled(taskId);
+            activeStage = "persist";
+            taskStageService.start(taskId, activeStage, "持久化分片", 4,
+                    Map.of("chunkCount", segments.size(), "embeddingCount", vectors.size()));
             updateProgress(taskId, documentId, "saving", "保存分片", 70,
                     "开始保存 " + segments.size() + " 个分片和 " + embeddingSegments.size() + " 条向量记录到 MySQL", Map.of("milvusSynced", false));
             List<KnowledgeChunkEntity> savedChunks = new ArrayList<>(embeddingSegments.size());
@@ -305,11 +536,17 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                 savedChunks.add(chunk);
                 savedEmbeddings.add(embedding);
             }
+            taskStageService.succeed(taskId, activeStage,
+                    Map.of("savedChunkCount", savedChunks.size(), "savedEmbeddingCount", savedEmbeddings.size()));
+            activeStage = null;
 
             boolean allMilvusSynced = true;
             String milvusMessage = "";
             try {
                 checkCanceled(taskId);
+                activeStage = "index";
+                taskStageService.start(taskId, activeStage, "写入 Milvus", 5,
+                        Map.of("embeddingCount", savedEmbeddings.size()));
                 updateProgress(taskId, documentId, "milvus", "批量写入 Milvus", 82,
                         "开始批量写入 " + savedChunks.size() + " 个分片向量到 Milvus", Map.of("milvusSynced", false));
                 milvusKnowledgeVectorService.upsertKnowledgeChunks(kb.getMilvusCollectionName(), savedEmbeddings, savedChunks, vectors);
@@ -322,7 +559,19 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                 }
                 updateProgress(taskId, documentId, "milvus", "批量写入 Milvus", 95,
                         "已批量写入 " + savedChunks.size() + " 个分片向量到 Milvus", Map.of("milvusSynced", true));
+                Map<String, Object> indexedCheckpoint = new LinkedHashMap<>(checkpoint);
+                indexedCheckpoint.put("stage", "indexed");
+                indexedCheckpoint.put("embeddingCount", savedEmbeddings.size());
+                indexedCheckpoint.put("milvusSynced", true);
+                asyncTaskService.saveCheckpoint(taskId, indexedCheckpoint);
+                taskStageService.succeed(taskId, activeStage,
+                        Map.of("milvusSynced", true, "embeddingCount", savedEmbeddings.size()));
+                activeStage = null;
             } catch (Exception exception) {
+                if (activeStage != null) {
+                    taskStageService.fail(taskId, activeStage, exception.getMessage());
+                    activeStage = null;
+                }
                 allMilvusSynced = false;
                 milvusMessage = exception.getMessage();
                 for (KnowledgeEmbeddingEntity embedding : savedEmbeddings) {
@@ -332,6 +581,10 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                 }
                 log.warn("Milvus 批量写入失败，保留 MySQL 向量兜底：documentId={}, chunkCount={}, error={}",
                         documentId, savedChunks.size(), exception.getMessage());
+                if (strictVectorWrite) {
+                    // 严格模式交由Kafka重试与死信机制处理，避免索引不完整却对外显示处理成功。
+                    throw new IllegalStateException("Milvus严格写入失败：" + milvusMessage, exception);
+                }
                 updateProgress(taskId, documentId, "milvus_fallback", "Milvus 兜底", 95,
                         "Milvus 批量写入失败，已保留 MySQL 向量兜底：" + milvusMessage, Map.of("milvusSynced", false));
             }
@@ -346,6 +599,13 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             updateProgress(taskId, documentId, "done", "处理完成", 100, doneMessage, result);
             return result;
         } catch (Exception exception) {
+            if (activeStage != null) {
+                try {
+                    taskStageService.fail(taskId, activeStage, exception.getMessage());
+                } catch (Exception ignored) {
+                    // 租约已经失效时由新 Worker 写入新的阶段状态。
+                }
+            }
             boolean canceled = "TASK_CANCELED".equals(exception.getMessage());
             KnowledgeDocumentEntity failed = knowledgeDocumentMapper.selectById(documentId);
             if (failed != null) {
@@ -382,11 +642,20 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         if (document == null) {
             throw new BusinessException("DOCUMENT_NOT_FOUND", "文档不存在，无法执行 Kafka 任务");
         }
-        byte[] bytes = objectStorageService.get(document.getStorageBucket(), document.getStorageKey());
         document.setParseStatus("processing");
         document.setParseError(null);
         knowledgeDocumentMapper.updateById(document);
-        return processDocument(task.getId(), document.getKbId(), document.getId(), bytes, document.getFileExt());
+        Path localFile = objectStorageService.materializeTempFile(
+                document.getStorageBucket(), document.getStorageKey(), document.getFileExt());
+        try {
+            return processDocument(task.getId(), document.getKbId(), document.getId(), localFile, document.getFileExt());
+        } finally {
+            try {
+                Files.deleteIfExists(localFile);
+            } catch (Exception exception) {
+                log.warn("清理文档临时文件失败：path={}, error={}", localFile, exception.getMessage());
+            }
+        }
     }
 
     /**
@@ -404,7 +673,6 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         document.setParseStatus("processing");
         document.setParseError(null);
         knowledgeDocumentMapper.updateById(document);
-        kafkaTaskClient.publish(task);
     }
 
     /**
@@ -467,6 +735,106 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         metadata.put("lastMessage", message);
         metadata.put("logs", new ArrayList<>(List.of(DateTimeFormatter.ofPattern("HH:mm:ss").format(LocalDateTime.now()) + " " + message)));
         return metadata;
+    }
+
+    /**
+     * 保存解析文本产物，任务重试时可跳过原文件解析。
+     */
+    private String saveTextArtifact(KnowledgeDocumentEntity document, String taskId, String text) {
+        String objectKey = "artifacts/knowledge/" + document.getKbId() + "/" + document.getId()
+                + "/" + taskId + "/parsed.txt";
+        Path temp = null;
+        try {
+            temp = Files.createTempFile("oaf-parsed-", ".txt");
+            Files.writeString(temp, text, StandardCharsets.UTF_8);
+            try (InputStream input = Files.newInputStream(temp)) {
+                objectStorageService.putStream(objectKey, input, Files.size(temp), "text/plain;charset=UTF-8");
+            }
+            return objectKey;
+        } catch (Exception exception) {
+            throw new IllegalStateException("保存解析检查点失败：" + exception.getMessage(), exception);
+        } finally {
+            deleteTempQuietly(temp);
+        }
+    }
+
+    /**
+     * 从对象存储恢复解析文本。
+     */
+    private String readTextArtifact(String bucket, String objectKey) {
+        try (InputStream input = objectStorageService.open(bucket, objectKey);
+             BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            StringBuilder text = new StringBuilder();
+            char[] buffer = new char[16 * 1024];
+            int length;
+            while ((length = reader.read(buffer)) >= 0) {
+                text.append(buffer, 0, length);
+            }
+            return text.toString();
+        } catch (Exception exception) {
+            throw new IllegalStateException("读取解析检查点失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    /**
+     * 保存向量批次产物，数据库或 Milvus 阶段重试时无需重复调用模型。
+     */
+    private String saveVectorArtifact(KnowledgeDocumentEntity document,
+                                      String taskId,
+                                      List<List<Double>> vectors) {
+        String objectKey = "artifacts/knowledge/" + document.getKbId() + "/" + document.getId()
+                + "/" + taskId + "/vectors.json";
+        Path temp = null;
+        try {
+            temp = Files.createTempFile("oaf-vectors-", ".json");
+            objectMapper.writeValue(temp.toFile(), vectors);
+            try (InputStream input = Files.newInputStream(temp)) {
+                objectStorageService.putStream(objectKey, input, Files.size(temp), "application/json");
+            }
+            return objectKey;
+        } catch (Exception exception) {
+            throw new IllegalStateException("保存向量检查点失败：" + exception.getMessage(), exception);
+        } finally {
+            deleteTempQuietly(temp);
+        }
+    }
+
+    /**
+     * 从对象存储恢复向量批次。
+     */
+    private List<List<Double>> readVectorArtifact(String bucket, String objectKey) {
+        try (InputStream input = objectStorageService.open(bucket, objectKey)) {
+            return objectMapper.readValue(input, new TypeReference<List<List<Double>>>() {
+            });
+        } catch (Exception exception) {
+            throw new IllegalStateException("读取向量检查点失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    /**
+     * 构建从检查点恢复后的 Embedding 摘要。
+     */
+    private EmbeddingBatchResult restoredEmbeddingResult(ModelConfigEntity model, List<List<Double>> vectors) {
+        EmbeddingBatchResult result = new EmbeddingBatchResult();
+        result.setModelId(model.getId());
+        result.setModelCode(model.getModelCode());
+        result.setModelName(model.getModelName());
+        result.setEmbeddingApi("checkpoint");
+        result.setFallbackUsed(false);
+        result.setVectors(vectors);
+        result.setDimension(vectors.isEmpty() ? 0 : vectors.getFirst().size());
+        return result;
+    }
+
+    private void deleteTempQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (Exception exception) {
+            log.warn("清理任务临时产物失败：path={}, error={}", path, exception.getMessage());
+        }
     }
 
     /**

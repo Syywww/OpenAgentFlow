@@ -71,6 +71,9 @@ public class OpsMonitorService {
     /** 平台配置，用于获取 Kafka 主任务 Topic。 */
     private final com.openagentflow.config.OpenAgentFlowProperties properties;
 
+    /** Kafka 分类 Topic 路由器。 */
+    private final AsyncTaskTopicRouter topicRouter;
+
     /** 向量库状态服务。 */
     private final VectorStoreService vectorStoreService;
 
@@ -86,6 +89,7 @@ public class OpsMonitorService {
                              StringRedisTemplate redisTemplate,
                              KafkaTemplate<String, String> kafkaTemplate,
                              com.openagentflow.config.OpenAgentFlowProperties properties,
+                             AsyncTaskTopicRouter topicRouter,
                              VectorStoreService vectorStoreService,
                              ObjectMapper objectMapper) {
         this.alertRuleMapper = alertRuleMapper;
@@ -97,6 +101,7 @@ public class OpsMonitorService {
         this.redisTemplate = redisTemplate;
         this.kafkaTemplate = kafkaTemplate;
         this.properties = properties;
+        this.topicRouter = topicRouter;
         this.vectorStoreService = vectorStoreService;
         this.objectMapper = objectMapper;
     }
@@ -562,10 +567,15 @@ public class OpsMonitorService {
         String topic = properties.getAsyncTask().getTopic();
         OpsHealthCheckEntity entity = baseCheck("kafka", "Kafka 消息队列", "queue", topic, now);
         try {
-            int partitions = kafkaTemplate.partitionsFor(topic).size();
+            int partitions = 0;
+            int topicCount = 0;
+            for (AsyncTaskTopicRouter.TopicDefinition definition : topicRouter.topicDefinitions()) {
+                partitions += kafkaTemplate.partitionsFor(definition.name()).size();
+                topicCount++;
+            }
             entity.setStatus(partitions > 0 ? "healthy" : "warning");
-            entity.setMessage("Kafka 连接正常，主任务 Topic 分区数 " + partitions);
-            entity.setMetadataJson(toJson(Map.of("topic", topic, "partitions", partitions)));
+            entity.setMessage("Kafka 连接正常，任务 Topic " + topicCount + " 个，总分区 " + partitions);
+            entity.setMetadataJson(toJson(Map.of("topicPrefix", topic, "topicCount", topicCount, "partitions", partitions)));
         } catch (Exception exception) {
             entity.setStatus("unhealthy");
             entity.setMessage("Kafka 连接失败：" + exception.getMessage());
@@ -614,10 +624,16 @@ public class OpsMonitorService {
         OpsHealthCheckEntity entity = baseCheck("async_tasks", "异步任务队列", "task", "async-task", now);
         BigDecimal backlog = metricValue("task_backlog_count", 60);
         BigDecimal failed = metricValue("task_failed_count", 1440);
-        entity.setStatus(backlog.compareTo(BigDecimal.valueOf(50)) >= 0 || failed.compareTo(BigDecimal.TEN) >= 0 ? "warning" : "healthy");
-        entity.setMessage("积压 " + backlog.longValue() + " 个，近 24 小时失败 " + failed.longValue() + " 个");
+        long outboxBacklog = count("SELECT COUNT(1) FROM async_task_outbox WHERE status IN ('pending', 'sending', 'failed')");
+        long outboxDead = count("SELECT COUNT(1) FROM async_task_outbox WHERE status = 'dead'");
+        entity.setStatus(backlog.compareTo(BigDecimal.valueOf(50)) >= 0
+                || failed.compareTo(BigDecimal.TEN) >= 0
+                || outboxBacklog >= 100
+                || outboxDead > 0 ? "warning" : "healthy");
+        entity.setMessage("任务积压 " + backlog.longValue() + " 个，Outbox 待发送 " + outboxBacklog + " 个，Outbox 终止 " + outboxDead + " 个");
         entity.setLatencyMs(0);
-        entity.setMetadataJson(toJson(Map.of("backlog", backlog, "failed24h", failed)));
+        entity.setMetadataJson(toJson(Map.of("backlog", backlog, "failed24h", failed,
+                "outboxBacklog", outboxBacklog, "outboxDead", outboxDead)));
         return entity;
     }
 

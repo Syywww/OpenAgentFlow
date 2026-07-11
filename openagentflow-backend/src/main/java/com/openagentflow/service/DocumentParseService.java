@@ -1,11 +1,21 @@
 package com.openagentflow.service;
 
 import com.openagentflow.exception.BusinessException;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.IOUtils;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.ByteArrayInputStream;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -29,21 +39,41 @@ public class DocumentParseService {
      * @return 可用于切片和向量化的纯文本
      */
     public String parse(byte[] bytes, String fileExt) {
+        return parse(new ByteArrayInputStream(bytes), fileExt);
+    }
+
+    /**
+     * 从 Worker 临时文件解析内容，避免对象存储文件整体进入 JVM 堆内存。
+     *
+     * @param path 临时文件路径
+     * @param fileExt 文件扩展名
+     * @return 可切片纯文本
+     */
+    public String parse(Path path, String fileExt) {
+        if ("pdf".equalsIgnoreCase(fileExt)) {
+            return normalizeAndValidate(parsePdf(path));
+        }
+        try (InputStream input = Files.newInputStream(path)) {
+            return parse(input, fileExt);
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException("DOCUMENT_PARSE_FAILED", "文档流式解析失败：" + exception.getMessage());
+        }
+    }
+
+    private String parse(InputStream input, String fileExt) {
         String ext = fileExt == null ? "" : fileExt.toLowerCase(Locale.ROOT);
         String text = switch (ext) {
-            case "txt", "md", "markdown", "csv", "json", "log", "yml", "yaml" -> new String(bytes, StandardCharsets.UTF_8);
-            case "html", "htm" -> stripHtml(new String(bytes, StandardCharsets.UTF_8));
-            case "docx" -> parseDocx(bytes);
-            case "xlsx", "xlsm" -> parseZipXmlText(bytes, "xl/worksheets/", "xl/sharedStrings.xml");
-            case "pptx" -> parseZipXmlText(bytes, "ppt/slides/", "");
-            case "pdf" -> parsePdfFallback(bytes);
-            default -> new String(bytes, StandardCharsets.UTF_8);
+            case "txt", "md", "markdown", "csv", "json", "log", "yml", "yaml" -> readUtf8(input);
+            case "html", "htm" -> stripHtml(readUtf8(input));
+            case "docx" -> parseDocx(input);
+            case "xlsx", "xlsm" -> parseZipXmlText(input, "xl/worksheets/", "xl/sharedStrings.xml");
+            case "pptx" -> parseZipXmlText(input, "ppt/slides/", "");
+            case "pdf" -> parsePdf(readAll(input));
+            default -> readUtf8(input);
         };
-        text = normalize(text);
-        if (!StringUtils.hasText(text)) {
-            throw new BusinessException("DOCUMENT_PARSE_EMPTY", "文档解析后没有可用文本");
-        }
-        return text;
+        return normalizeAndValidate(text);
     }
 
     /**
@@ -52,9 +82,9 @@ public class DocumentParseService {
      * @param bytes DOCX 文件字节
      * @return 纯文本
      */
-    private String parseDocx(byte[] bytes) {
+    private String parseDocx(InputStream input) {
         StringBuilder builder = new StringBuilder();
-        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+        try (ZipInputStream zip = new ZipInputStream(input)) {
             java.util.zip.ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
                 if (!"word/document.xml".equals(entry.getName())) {
@@ -84,10 +114,10 @@ public class DocumentParseService {
      * @param extraEntry 额外读取的共享字符串条目
      * @return 提取出的文本
      */
-    private String parseZipXmlText(byte[] bytes, String entryPrefix, String extraEntry) {
+    private String parseZipXmlText(InputStream input, String entryPrefix, String extraEntry) {
         StringBuilder builder = new StringBuilder();
         List<String> sharedStrings = new ArrayList<>();
-        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+        try (ZipInputStream zip = new ZipInputStream(input)) {
             java.util.zip.ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
                 String name = entry.getName();
@@ -151,14 +181,93 @@ public class DocumentParseService {
     }
 
     /**
-     * PDF 基础兜底提取。
+     * 从Worker临时文件解析PDF，PDFBox使用临时文件缓存控制大文档堆内存占用。
      *
-     * @param bytes PDF 文件字节
-     * @return 尽力提取出的可读文本
+     * @param path PDF临时文件
+     * @return 按阅读顺序提取的Unicode文本
      */
-    private String parsePdfFallback(byte[] bytes) {
-        String raw = new String(bytes, StandardCharsets.ISO_8859_1);
-        return raw.replaceAll("[^\\x20-\\x7E\\u4e00-\\u9fa5\\r\\n]+", " ");
+    private String parsePdf(Path path) {
+        try (PDDocument document = Loader.loadPDF(path.toFile(), IOUtils.createTempFileOnlyStreamCache())) {
+            return extractPdfText(document);
+        } catch (InvalidPasswordException exception) {
+            throw new BusinessException("PDF_PASSWORD_REQUIRED", "PDF已加密，请解除密码后重新上传");
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException("PDF_PARSE_FAILED", "PDF文本解析失败：" + exception.getMessage());
+        }
+    }
+
+    /**
+     * 解析内存中的PDF字节，兼容旧版直接传字节调用入口。
+     *
+     * @param bytes PDF文件字节
+     * @return Unicode文本
+     */
+    private String parsePdf(byte[] bytes) {
+        try (PDDocument document = Loader.loadPDF(bytes)) {
+            return extractPdfText(document);
+        } catch (InvalidPasswordException exception) {
+            throw new BusinessException("PDF_PASSWORD_REQUIRED", "PDF已加密，请解除密码后重新上传");
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException("PDF_PARSE_FAILED", "PDF文本解析失败：" + exception.getMessage());
+        }
+    }
+
+    /**
+     * 按页面和文字位置提取PDF文本，并识别扫描件或字体映射缺失场景。
+     *
+     * @param document PDFBox文档对象
+     * @return 提取文本
+     */
+    private String extractPdfText(PDDocument document) throws Exception {
+        PDFTextStripper stripper = new PDFTextStripper();
+        stripper.setSortByPosition(true);
+        stripper.setPageEnd("\n\n");
+        String text = stripper.getText(document);
+        if (!StringUtils.hasText(text) || visibleCharacterCount(text) < Math.max(8, document.getNumberOfPages() * 2)) {
+            throw new BusinessException("PDF_OCR_REQUIRED", "PDF没有可提取的文本层，可能是扫描件，请先执行OCR后重新上传");
+        }
+        if (replacementCharacterRate(text) > 0.02D) {
+            throw new BusinessException("PDF_TEXT_QUALITY_LOW", "PDF字体缺少Unicode映射，文本提取质量过低，请转换为可搜索PDF后重新上传");
+        }
+        return text;
+    }
+
+    /** 统计非空白可见字符数量。 */
+    private long visibleCharacterCount(String text) {
+        return text.codePoints().filter(codePoint -> !Character.isWhitespace(codePoint) && !Character.isISOControl(codePoint)).count();
+    }
+
+    /** 计算Unicode替换字符占比，用于识别字体映射失败。 */
+    private double replacementCharacterRate(String text) {
+        long visible = Math.max(1L, visibleCharacterCount(text));
+        long replacements = text.codePoints().filter(codePoint -> codePoint == 0xFFFD).count();
+        return replacements * 1D / visible;
+    }
+
+    private String readUtf8(InputStream input) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            StringBuilder builder = new StringBuilder();
+            char[] buffer = new char[16 * 1024];
+            int length;
+            while ((length = reader.read(buffer)) >= 0) {
+                builder.append(buffer, 0, length);
+            }
+            return builder.toString();
+        } catch (Exception exception) {
+            throw new BusinessException("DOCUMENT_PARSE_FAILED", "文本流式解析失败：" + exception.getMessage());
+        }
+    }
+
+    private byte[] readAll(InputStream input) {
+        try {
+            return input.readAllBytes();
+        } catch (Exception exception) {
+            throw new BusinessException("DOCUMENT_PARSE_FAILED", "二进制文档读取失败：" + exception.getMessage());
+        }
     }
 
     /**
@@ -199,5 +308,14 @@ public class DocumentParseService {
                 .replaceAll("[\\t\\x0B\\f]+", " ")
                 .replaceAll("\\n{3,}", "\n\n")
                 .trim();
+    }
+
+    /** 统一规整文本并检查空内容。 */
+    private String normalizeAndValidate(String text) {
+        String normalized = normalize(text);
+        if (!StringUtils.hasText(normalized)) {
+            throw new BusinessException("DOCUMENT_PARSE_EMPTY", "文档解析后没有可用文本");
+        }
+        return normalized;
     }
 }

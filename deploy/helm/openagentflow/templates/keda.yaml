@@ -1,0 +1,19 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata: { name: openagentflow-document-worker }
+spec:
+  scaleTargetRef: { name: openagentflow-document-worker }
+  minReplicaCount: {{ .Values.autoscaling.minReplicaCount }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicaCount }}
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.config.kafkaBootstrapServers | quote }}
+        consumerGroup: openagentflow-async-workers-document
+        topic: {{ .Values.config.workerTopic | quote }}
+        lagThreshold: {{ .Values.autoscaling.lagThreshold | quote }}
+        allowIdleConsumers: "false"
+{{- end }}

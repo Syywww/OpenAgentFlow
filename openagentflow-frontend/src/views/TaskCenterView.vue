@@ -58,6 +58,7 @@ const statusOptions = [
 ];
 
 const selectedLogs = computed(() => selectedTask.value?.logs || []);
+const selectedStages = computed(() => selectedTask.value?.stages || []);
 
 onMounted(() => {
   void loadData();
@@ -209,8 +210,8 @@ function formatJson(value?: Record<string, unknown>) {
   <section class="metric-grid">
     <StatCard label="全部任务" :value="String(overview?.totalCount || 0)" detail="当前可见任务" icon="Gauge" tone="neutral" />
     <StatCard label="运行中" :value="String(overview?.runningCount || 0)" detail="正在执行" icon="Activity" tone="info" />
-    <StatCard label="排队中" :value="String(overview?.pendingCount || 0)" detail="等待 Kafka Worker" icon="Timer" tone="warning" />
-    <StatCard label="异常任务" :value="String((overview?.failedCount || 0) + (overview?.deadLetterCount || 0))" :detail="`失败 ${overview?.failedCount || 0} / 死信 ${overview?.deadLetterCount || 0}`" icon="ShieldAlert" tone="danger" />
+    <StatCard label="排队中" :value="String(overview?.pendingCount || 0)" :detail="`Outbox 待发送 ${overview?.outboxPendingCount || 0}`" icon="Timer" tone="warning" />
+    <StatCard label="异常任务" :value="String((overview?.failedCount || 0) + (overview?.deadLetterCount || 0))" :detail="`任务死信 ${overview?.deadLetterCount || 0} / Outbox 终止 ${overview?.outboxDeadCount || 0}`" icon="ShieldAlert" tone="danger" />
   </section>
 
   <section class="section-block">
@@ -307,6 +308,7 @@ function formatJson(value?: Record<string, unknown>) {
           <span>重试</span><b>{{ selectedTask.retryCount || 0 }} / {{ selectedTask.maxRetries || 0 }}</b>
           <span>Kafka 队列</span><b>{{ selectedTask.queueTopic || '-' }}</b>
           <span>执行 Worker</span><b>{{ selectedTask.lockedBy || '-' }}</b>
+          <span>执行代次</span><b>{{ selectedTask.lockVersion || 0 }}</b>
           <span>Worker 心跳</span><b>{{ formatTime(selectedTask.heartbeatAt) }}</b>
           <span>下次重试</span><b>{{ formatTime(selectedTask.nextRetryAt) }}</b>
           <span>进入死信</span><b>{{ formatTime(selectedTask.deadLetterAt) }}</b>
@@ -319,6 +321,24 @@ function formatJson(value?: Record<string, unknown>) {
         </div>
         <p class="muted">{{ selectedTask.currentMessage || '-' }}</p>
         <p v-if="selectedTask.errorMessage" class="form-error">{{ selectedTask.errorMessage }}</p>
+
+        <div class="section-title compact-title">
+          <h2>处理阶段</h2>
+        </div>
+        <div v-if="selectedStages.length" class="mini-timeline task-log-list">
+          <div v-for="stage in selectedStages" :key="stage.stageCode">
+            <PlayCircle :size="15" />
+            <span>{{ formatTime(stage.startedAt) }}</span>
+            <b>{{ stage.stageName }} · {{ statusLabel(stage.status) }}</b>
+            <p>{{ stage.errorMessage || `Worker ${stage.workerId || '-'} / 执行代次 ${stage.lockVersion || 0}` }}</p>
+          </div>
+        </div>
+        <p v-else class="muted">当前任务暂无结构化阶段数据</p>
+
+        <div class="section-title compact-title">
+          <h2>恢复检查点</h2>
+        </div>
+        <pre class="json-preview">{{ formatJson(selectedTask.checkpoint) }}</pre>
 
         <div class="section-title compact-title">
           <h2>执行日志</h2>

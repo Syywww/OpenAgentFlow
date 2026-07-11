@@ -7,6 +7,10 @@ import com.openagentflow.domain.trace.RunStats;
 import com.openagentflow.domain.trace.RunSummary;
 import com.openagentflow.domain.trace.TraceStepDetail;
 import com.openagentflow.service.TraceService;
+import com.openagentflow.service.RuntimeEventStreamService;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -25,8 +29,12 @@ public class TraceController {
     /** Trace 查询服务。 */
     private final TraceService traceService;
 
-    public TraceController(TraceService traceService) {
+    /** Runtime事件续传服务。 */
+    private final RuntimeEventStreamService runtimeEventStreamService;
+
+    public TraceController(TraceService traceService, RuntimeEventStreamService runtimeEventStreamService) {
         this.traceService = traceService;
+        this.runtimeEventStreamService = runtimeEventStreamService;
     }
 
     /**
@@ -78,5 +86,15 @@ public class TraceController {
     @GetMapping("/{runId}/steps")
     public ApiResponse<List<TraceStepDetail>> listRunSteps(@PathVariable String runId) {
         return ApiResponse.ok(traceService.listRunSteps(runId));
+    }
+
+    /**
+     * 使用事件序号恢复中断的Runtime SSE流。
+     */
+    @GetMapping(value = "/{runId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter resumeEvents(@PathVariable String runId,
+                                   @RequestParam(defaultValue = "0") Long after,
+                                   @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
+        return runtimeEventStreamService.resume(runId, lastEventId == null ? after : lastEventId);
     }
 }

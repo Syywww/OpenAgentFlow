@@ -155,6 +155,12 @@ public final class AsyncTaskDtos {
         /** Worker 最近心跳时间。 */
         private LocalDateTime heartbeatAt;
 
+        /** Worker 执行代次。 */
+        private Long lockVersion;
+
+        /** 可恢复任务检查点。 */
+        private Map<String, Object> checkpoint;
+
         /** 下次重试时间。 */
         private LocalDateTime nextRetryAt;
 
@@ -349,6 +355,22 @@ public final class AsyncTaskDtos {
             this.heartbeatAt = heartbeatAt;
         }
 
+        public Long getLockVersion() {
+            return lockVersion;
+        }
+
+        public void setLockVersion(Long lockVersion) {
+            this.lockVersion = lockVersion;
+        }
+
+        public Map<String, Object> getCheckpoint() {
+            return checkpoint;
+        }
+
+        public void setCheckpoint(Map<String, Object> checkpoint) {
+            this.checkpoint = checkpoint;
+        }
+
         public LocalDateTime getNextRetryAt() {
             return nextRetryAt;
         }
@@ -415,6 +437,9 @@ public final class AsyncTaskDtos {
         /** 任务日志列表。 */
         private List<LogItem> logs;
 
+        /** 结构化阶段时间线。 */
+        private List<StageItem> stages;
+
         public Map<String, Object> getRequestPayload() {
             return requestPayload;
         }
@@ -446,6 +471,54 @@ public final class AsyncTaskDtos {
         public void setLogs(List<LogItem> logs) {
             this.logs = logs;
         }
+
+        public List<StageItem> getStages() {
+            return stages;
+        }
+
+        public void setStages(List<StageItem> stages) {
+            this.stages = stages;
+        }
+    }
+
+    /**
+     * 异步任务结构化阶段。
+     */
+    public static class StageItem {
+        /** 阶段编码。 */ private String stageCode;
+        /** 阶段名称。 */ private String stageName;
+        /** 阶段顺序。 */ private Integer stageOrder;
+        /** 阶段状态。 */ private String status;
+        /** Worker ID。 */ private String workerId;
+        /** 执行代次。 */ private Long lockVersion;
+        /** 阶段输入。 */ private Map<String, Object> input;
+        /** 阶段输出。 */ private Map<String, Object> output;
+        /** 错误摘要。 */ private String errorMessage;
+        /** 开始时间。 */ private LocalDateTime startedAt;
+        /** 完成时间。 */ private LocalDateTime finishedAt;
+
+        public String getStageCode() { return stageCode; }
+        public void setStageCode(String stageCode) { this.stageCode = stageCode; }
+        public String getStageName() { return stageName; }
+        public void setStageName(String stageName) { this.stageName = stageName; }
+        public Integer getStageOrder() { return stageOrder; }
+        public void setStageOrder(Integer stageOrder) { this.stageOrder = stageOrder; }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+        public String getWorkerId() { return workerId; }
+        public void setWorkerId(String workerId) { this.workerId = workerId; }
+        public Long getLockVersion() { return lockVersion; }
+        public void setLockVersion(Long lockVersion) { this.lockVersion = lockVersion; }
+        public Map<String, Object> getInput() { return input; }
+        public void setInput(Map<String, Object> input) { this.input = input; }
+        public Map<String, Object> getOutput() { return output; }
+        public void setOutput(Map<String, Object> output) { this.output = output; }
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+        public LocalDateTime getStartedAt() { return startedAt; }
+        public void setStartedAt(LocalDateTime startedAt) { this.startedAt = startedAt; }
+        public LocalDateTime getFinishedAt() { return finishedAt; }
+        public void setFinishedAt(LocalDateTime finishedAt) { this.finishedAt = finishedAt; }
     }
 
     /**
@@ -557,6 +630,12 @@ public final class AsyncTaskDtos {
         /** 进入死信队列的任务数。 */
         private Long deadLetterCount;
 
+        /** Outbox 待发送数量。 */
+        private Long outboxPendingCount;
+
+        /** Outbox 终止数量。 */
+        private Long outboxDeadCount;
+
         public Long getTotalCount() {
             return totalCount;
         }
@@ -611,6 +690,22 @@ public final class AsyncTaskDtos {
 
         public void setDeadLetterCount(Long deadLetterCount) {
             this.deadLetterCount = deadLetterCount;
+        }
+
+        public Long getOutboxPendingCount() {
+            return outboxPendingCount;
+        }
+
+        public void setOutboxPendingCount(Long outboxPendingCount) {
+            this.outboxPendingCount = outboxPendingCount;
+        }
+
+        public Long getOutboxDeadCount() {
+            return outboxDeadCount;
+        }
+
+        public void setOutboxDeadCount(Long outboxDeadCount) {
+            this.outboxDeadCount = outboxDeadCount;
         }
     }
 }

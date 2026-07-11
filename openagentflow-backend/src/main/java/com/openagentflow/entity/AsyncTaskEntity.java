@@ -18,6 +18,26 @@ public class AsyncTaskEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 父任务ID，用于构建任务DAG。 */
+    @TableField("parent_task_id")
+    private String parentTaskId;
+
+    /** 根任务ID，用于聚合整条任务DAG。 */
+    @TableField("root_task_id")
+    private String rootTaskId;
+
+    /** 当前任务分片序号。 */
+    @TableField("shard_no")
+    private Integer shardNo;
+
+    /** 当前阶段分片总数。 */
+    @TableField("shard_total")
+    private Integer shardTotal;
+
+    /** 任务幂等键。 */
+    @TableField("idempotency_key")
+    private String idempotencyKey;
+
     /** 异步任务编码。 */
     @TableField("task_code")
     private String taskCode;
@@ -130,6 +150,18 @@ public class AsyncTaskEntity {
     @TableField("heartbeat_at")
     private LocalDateTime heartbeatAt;
 
+    /** Worker 执行代次，用于阻止失效 Worker 提交旧结果。 */
+    @TableField("lock_version")
+    private Long lockVersion;
+
+    /** 可恢复任务检查点JSON。 */
+    @TableField("checkpoint_json")
+    private String checkpointJson;
+
+    /** 跨API、Outbox、Kafka和Worker的Trace ID。 */
+    @TableField("trace_id")
+    private String traceId;
+
     /** 最近一次成功投递 Kafka 的时间。 */
     @TableField("last_enqueued_at")
     private LocalDateTime lastEnqueuedAt;
@@ -169,6 +201,17 @@ public class AsyncTaskEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getParentTaskId() { return parentTaskId; }
+    public void setParentTaskId(String parentTaskId) { this.parentTaskId = parentTaskId; }
+    public String getRootTaskId() { return rootTaskId; }
+    public void setRootTaskId(String rootTaskId) { this.rootTaskId = rootTaskId; }
+    public Integer getShardNo() { return shardNo; }
+    public void setShardNo(Integer shardNo) { this.shardNo = shardNo; }
+    public Integer getShardTotal() { return shardTotal; }
+    public void setShardTotal(Integer shardTotal) { this.shardTotal = shardTotal; }
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
 
     public String getTaskCode() {
         return taskCode;
@@ -393,6 +436,25 @@ public class AsyncTaskEntity {
     public void setHeartbeatAt(LocalDateTime heartbeatAt) {
         this.heartbeatAt = heartbeatAt;
     }
+
+    public Long getLockVersion() {
+        return lockVersion;
+    }
+
+    public void setLockVersion(Long lockVersion) {
+        this.lockVersion = lockVersion;
+    }
+
+    public String getCheckpointJson() {
+        return checkpointJson;
+    }
+
+    public void setCheckpointJson(String checkpointJson) {
+        this.checkpointJson = checkpointJson;
+    }
+
+    public String getTraceId() { return traceId; }
+    public void setTraceId(String traceId) { this.traceId = traceId; }
 
     public LocalDateTime getLastEnqueuedAt() {
         return lastEnqueuedAt;

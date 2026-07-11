@@ -32,6 +32,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -46,6 +47,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -102,6 +104,18 @@ public class ChatService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** Agent Runtime专用有界执行器。 */
+    private final TaskExecutor agentRuntimeExecutor;
+
+    /** Runtime分布式停止控制服务。 */
+    private final RuntimeControlService runtimeControlService;
+
+    /** AI输入输出安全护栏。 */
+    private final AiGuardrailService aiGuardrailService;
+
+    /** Runtime流式事件断线续传服务。 */
+    private final RuntimeEventStreamService runtimeEventStreamService;
+
     public ChatService(AgentMapper agentMapper,
                        AgentAccessService agentAccessService,
                        ModelConfigMapper modelConfigMapper,
@@ -116,7 +130,11 @@ public class ChatService {
                        UsageCostService usageCostService,
                        ModelGatewayService modelGatewayService,
                        MemoryService memoryService,
-                       ObjectMapper objectMapper) {
+                       ObjectMapper objectMapper,
+                       @org.springframework.beans.factory.annotation.Qualifier("agentRuntimeExecutor") TaskExecutor agentRuntimeExecutor,
+                       RuntimeControlService runtimeControlService,
+                       AiGuardrailService aiGuardrailService,
+                       RuntimeEventStreamService runtimeEventStreamService) {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
         this.modelConfigMapper = modelConfigMapper;
@@ -132,6 +150,10 @@ public class ChatService {
         this.modelGatewayService = modelGatewayService;
         this.memoryService = memoryService;
         this.objectMapper = objectMapper;
+        this.agentRuntimeExecutor = agentRuntimeExecutor;
+        this.runtimeControlService = runtimeControlService;
+        this.aiGuardrailService = aiGuardrailService;
+        this.runtimeEventStreamService = runtimeEventStreamService;
     }
 
     /**
@@ -142,9 +164,11 @@ public class ChatService {
      */
     @Transactional(rollbackFor = Exception.class)
     public ChatCompletionResponse complete(ChatCompletionRequest request) {
+        aiGuardrailService.inspectInput(request);
         ChatRunContext context = buildRunContext(request);
         attachSession(request, context);
         RuntimeRunEntity run = createRun(request, context);
+        context.setRunId(run.getId());
         enrichContextWithMemory(context, request);
         enrichContextWithRag(context, request, run.getId());
         if (shouldRejectByTrustedAnswer(context)) {
@@ -173,11 +197,15 @@ public class ChatService {
      * @return SSE 发射器
      */
     public SseEmitter completeStream(ChatCompletionRequest request) {
+        aiGuardrailService.inspectInput(request);
         SseEmitter emitter = new SseEmitter(180_000L);
         // SecurityContext 不会自动传入异步线程，因此先在请求线程完成权限判断、上下文构建和运行记录创建。
         ChatRunContext context = buildRunContext(request);
         attachSession(request, context);
         RuntimeRunEntity run = createRun(request, context);
+        context.setRunId(run.getId());
+        runtimeEventStreamService.bind(emitter, run.getId());
+        emitter.onTimeout(() -> runtimeControlService.cancel(run.getId()));
         enrichContextWithMemory(context, request);
         enrichContextWithRag(context, request, run.getId());
         if (shouldRejectByTrustedAnswer(context)) {
@@ -203,14 +231,24 @@ public class ChatService {
                         "sources", context.getSources() == null ? List.of() : context.getSources(),
                         "trustedAnswer", trustedAnswerPayload(context)
                 ));
+                long streamStartedAt = System.nanoTime();
+                AtomicLong firstTokenLatencyMs = new AtomicLong(0L);
                 LlmCallResult result = invokeWithGatewayFallback(context,
                         current -> openAiCompatibleClient.completeStream(
                                 current,
                                 request.getTemperature(),
                                 effectiveMaxTokens(request, current),
-                                delta -> sendSse(emitter, "delta", Map.of("content", delta))
+                                delta -> {
+                                    ensureRuntimeActive(run.getId());
+                                    if (StringUtils.hasText(delta)) {
+                                        firstTokenLatencyMs.compareAndSet(0L, java.util.concurrent.TimeUnit.NANOSECONDS
+                                                .toMillis(System.nanoTime() - streamStartedAt));
+                                    }
+                                    sendSse(emitter, "delta", Map.of("content", delta));
+                                }
                         ),
                         current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
+                result.setFirstTokenLatencyMs((int) Math.min(Integer.MAX_VALUE, firstTokenLatencyMs.get()));
                 finishSuccess(run, step, context, result, true);
                 sendSse(emitter, "done", Map.of(
                         "runId", run.getId(),
@@ -233,7 +271,7 @@ public class ChatService {
                 // 清理线程上下文，避免线程池复用时串到其他用户。
                 SecurityContextHolder.clearContext();
             }
-        });
+        }, agentRuntimeExecutor);
         return emitter;
     }
 
@@ -504,7 +542,10 @@ public class ChatService {
                                 current,
                                 request.getTemperature(),
                                 effectiveMaxTokens(request, current),
-                                delta -> sendSse(emitter, "delta", Map.of("content", delta))
+                                delta -> {
+                                    ensureRuntimeActive(run.getId());
+                                    sendSse(emitter, "delta", Map.of("content", delta));
+                                }
                         ),
                         current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
                 finishSuccess(run, finalStep, context, finalResult, true);
@@ -518,7 +559,7 @@ public class ChatService {
                 // 清理线程上下文，避免线程池复用时串到其他用户。
                 SecurityContextHolder.clearContext();
             }
-        });
+        }, agentRuntimeExecutor);
     }
 
     /**
@@ -608,6 +649,8 @@ public class ChatService {
             throw exception;
         }
         List<KnowledgeSource> sources = outcome.getSources() == null ? List.of() : outcome.getSources();
+        aiGuardrailService.inspectRetrievedContent(context.getAgent().getWorkspaceId(), runId,
+                context.getAgent().getId(), sources);
         context.setSources(sources);
         context.setRagTrustedAnswerMode(Boolean.TRUE.equals(outcome.getTrustedAnswerMode()));
         context.setRagAnswerable(outcome.getAnswerable() == null || Boolean.TRUE.equals(outcome.getAnswerable()));
@@ -822,7 +865,7 @@ public class ChatService {
                 // 清理线程上下文，避免线程池复用时串到其他用户。
                 SecurityContextHolder.clearContext();
             }
-        });
+        }, agentRuntimeExecutor);
     }
 
     /**
@@ -1019,6 +1062,8 @@ public class ChatService {
                               ChatRunContext context,
                               LlmCallResult result,
                               boolean stream) {
+        String workspaceId = context.getAgent() == null ? null : context.getAgent().getWorkspaceId();
+        result.setContent(aiGuardrailService.sanitizeOutput(workspaceId, run.getId(), run.getAgentId(), result.getContent()));
         LocalDateTime finishedAt = LocalDateTime.now();
         BigDecimal cost = usageCostService.calculateCost(context.getModel(), nullToZero(result.getPromptTokens()), nullToZero(result.getCompletionTokens()));
         run.setOutputText(result.getContent());
@@ -1035,6 +1080,9 @@ public class ChatService {
         run.setTotalTokens(nullToZero(run.getTotalTokens()) + nullToZero(result.getTotalTokens()));
         run.setTotalCost(safeCost(run.getTotalCost()).add(cost));
         run.setLatencyMs(nullToZero(result.getLatencyMs()));
+        if (nullToZero(result.getFirstTokenLatencyMs()) > 0) {
+            run.setFirstTokenLatencyMs(nullToZero(result.getFirstTokenLatencyMs()));
+        }
         run.setFinishedAt(finishedAt);
         runtimeRunMapper.updateById(run);
 
@@ -1186,6 +1234,7 @@ public class ChatService {
         call.setTotalTokens(nullToZero(result.getTotalTokens()));
         call.setCostAmount(cost == null ? BigDecimal.ZERO : cost);
         call.setLatencyMs(nullToZero(result.getLatencyMs()));
+        call.setFirstTokenLatencyMs(nullToZero(result.getFirstTokenLatencyMs()));
         call.setSuccess(success);
         call.setErrorMessage(errorMessage);
         runtimeLlmCallMapper.insert(call);
@@ -1237,12 +1286,18 @@ public class ChatService {
      * @param data 事件数据
      */
     private void sendSse(SseEmitter emitter, String name, Object data) {
-        try {
-            emitter.send(SseEmitter.event()
-                    .name(name)
-                    .data(data, MediaType.APPLICATION_JSON));
-        } catch (Exception ignored) {
-            // 前端断开连接时不再抛出异常，避免后台线程产生噪音日志。
+        runtimeEventStreamService.publish(emitter, name, data);
+    }
+
+    /**
+     * 在流式分片和多阶段工具调用边界检查分布式停止令牌。
+     *
+     * @param runId 运行ID
+     */
+    private void ensureRuntimeActive(String runId) {
+        if (runtimeControlService.isCancellationRequested(runId)) {
+            runtimeControlService.acknowledgeCancellation(runId, Thread.currentThread().getName());
+            throw new java.util.concurrent.CancellationException("运行已由用户停止");
         }
     }
 

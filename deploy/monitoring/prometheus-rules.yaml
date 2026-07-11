@@ -1,0 +1,23 @@
+groups:
+  - name: openagentflow-production
+    rules:
+      - alert: OpenAgentFlowOutboxStalled
+        expr: openagentflow_outbox_oldest_age_seconds > 30
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "OpenAgentFlow Outbox发送停滞" }
+      - alert: OpenAgentFlowDocumentDagBacklog
+        expr: openagentflow_document_dag_backlog > 1000
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "文档物理DAG积压过高" }
+      - alert: OpenAgentFlowConsistencyIssues
+        expr: openagentflow_consistency_issues > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "存在未解决的跨存储一致性问题" }
+      - alert: OpenAgentFlowSloViolation
+        expr: openagentflow_slo_violations > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "平台SLO未达标" }

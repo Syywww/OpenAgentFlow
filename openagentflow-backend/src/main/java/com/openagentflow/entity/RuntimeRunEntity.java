@@ -85,6 +85,10 @@ public class RuntimeRunEntity {
     @TableField("latency_ms")
     private Integer latencyMs;
 
+    /** 首Token延迟毫秒数。 */
+    @TableField("first_token_latency_ms")
+    private Integer firstTokenLatencyMs;
+
     /** 错误信息。 */
     @TableField("error_message")
     private String errorMessage;
@@ -247,6 +251,14 @@ public class RuntimeRunEntity {
 
     public void setLatencyMs(Integer latencyMs) {
         this.latencyMs = latencyMs;
+    }
+
+    public Integer getFirstTokenLatencyMs() {
+        return firstTokenLatencyMs;
+    }
+
+    public void setFirstTokenLatencyMs(Integer firstTokenLatencyMs) {
+        this.firstTokenLatencyMs = firstTokenLatencyMs;
     }
 
     public String getErrorMessage() {

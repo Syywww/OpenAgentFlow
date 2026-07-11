@@ -1,0 +1,31 @@
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    container_name: openagentflow-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  backend:
+    environment:
+      OAF_OPENSEARCH_ENABLED: "true"
+      OAF_OPENSEARCH_ENDPOINT: http://opensearch:9200
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+volumes:
+  opensearch-data:

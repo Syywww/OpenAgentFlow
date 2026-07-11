@@ -1,4 +1,4 @@
-import { API_BASE_URL, getAccessToken, request } from './http';
+import { API_BASE_URL, applyAuthHeaders, request } from './http';
 import type { PageResult } from './traces';
 import type { AsyncTaskDetail } from './tasks';
 
@@ -132,10 +132,7 @@ export async function recalculateUsageCosts() {
 
 export async function exportUsageCalls(params: Record<string, string | number | undefined> = {}) {
   const headers = new Headers();
-  const token = getAccessToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
+  applyAuthHeaders(headers);
   const response = await fetch(`${API_BASE_URL}/usage/calls/export${usageQuery(params)}`, { headers });
   if (!response.ok) {
     throw new Error('导出失败');

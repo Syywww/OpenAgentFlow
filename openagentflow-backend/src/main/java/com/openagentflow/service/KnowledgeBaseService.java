@@ -110,9 +110,6 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
     /** 异步任务中心服务。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 任务工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
-
     /** 模型配置 Mapper。 */
     private final ModelConfigMapper modelConfigMapper;
 
@@ -127,6 +124,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
 
     /** Milvus 写入服务。 */
     private final MilvusKnowledgeVectorService milvusKnowledgeVectorService;
+
+    /** OpenSearch BM25检索服务。 */
+    private final KeywordSearchService keywordSearchService;
 
     /** JDBC 工具。 */
     private final JdbcTemplate jdbcTemplate;
@@ -147,12 +147,12 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                                 AgentAccessService agentAccessService,
                                 WorkspaceGovernanceService workspaceGovernanceService,
                                 AsyncTaskService asyncTaskService,
-                                KafkaTaskClient kafkaTaskClient,
                                 ModelConfigMapper modelConfigMapper,
                                 DocumentParseService documentParseService,
                                 KnowledgeChunkingService chunkingService,
                                 EmbeddingService embeddingService,
                                 MilvusKnowledgeVectorService milvusKnowledgeVectorService,
+                                KeywordSearchService keywordSearchService,
                                 JdbcTemplate jdbcTemplate,
                                 ObjectMapper objectMapper,
                                 OpenAgentFlowProperties properties) {
@@ -166,12 +166,12 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         this.agentAccessService = agentAccessService;
         this.workspaceGovernanceService = workspaceGovernanceService;
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
         this.modelConfigMapper = modelConfigMapper;
         this.documentParseService = documentParseService;
         this.chunkingService = chunkingService;
         this.embeddingService = embeddingService;
         this.milvusKnowledgeVectorService = milvusKnowledgeVectorService;
+        this.keywordSearchService = keywordSearchService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -607,13 +607,6 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                 kb.getId(),
                 kb.getWorkspaceId(),
                 Map.of("kbId", kb.getId(), "kbName", kb.getKbName(), "chunkCount", chunkCount));
-        try {
-            kafkaTaskClient.publish(task);
-        } catch (Exception exception) {
-            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
-                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
-        }
-
         KnowledgeVectorRebuildResult result = new KnowledgeVectorRebuildResult();
         result.setKbId(kb.getId());
         result.setKbName(kb.getKbName());
@@ -723,6 +716,24 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                                                       RetrievalOptions options) {
         List<RetrievalCandidate> candidates = new ArrayList<>();
         if ("keyword".equals(options.searchMode)) {
+            if (keywordSearchService.isEnabled()) {
+                try {
+                    List<KeywordSearchService.KeywordHit> hits = keywordSearchService.search(kb.getId(), query, options.candidateK);
+                    if (!hits.isEmpty()) {
+                        Map<String, Double> scores = hits.stream().collect(java.util.stream.Collectors.toMap(
+                                KeywordSearchService.KeywordHit::chunkId, KeywordSearchService.KeywordHit::score, Math::max));
+                        List<KnowledgeChunkEntity> indexedChunks = knowledgeChunkMapper.selectBatchIds(scores.keySet());
+                        for (KnowledgeChunkEntity chunk : indexedChunks) {
+                            if (chunk != null && "active".equalsIgnoreCase(chunk.getStatus()) && matchesRetrievalFilters(chunk, options)) {
+                                candidates.add(buildCandidate(chunk, 0D, scores.getOrDefault(chunk.getId(), 0D), options));
+                            }
+                        }
+                        return candidates;
+                    }
+                } catch (Exception exception) {
+                    log.warn("OpenSearch关键词召回失败，回退MySQL轻量检索：kbId={}, error={}", kb.getId(), exception.getMessage());
+                }
+            }
             List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
                     .eq(KnowledgeChunkEntity::getKbId, kb.getId())
                     .eq(KnowledgeChunkEntity::getStatus, "active")
@@ -737,12 +748,84 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
             return candidates;
         }
 
+        Map<String, Double> externalKeywordScores = new LinkedHashMap<>();
+        Map<String, Integer> keywordRanks = new LinkedHashMap<>();
+        if ("hybrid".equals(options.searchMode) && keywordSearchService.isEnabled()) {
+            try {
+                List<KeywordSearchService.KeywordHit> keywordHits = keywordSearchService.search(kb.getId(), query, options.candidateK);
+                double maxKeywordScore = keywordHits.stream().mapToDouble(KeywordSearchService.KeywordHit::score).max().orElse(1D);
+                for (int index = 0; index < keywordHits.size(); index++) {
+                    KeywordSearchService.KeywordHit hit = keywordHits.get(index);
+                    externalKeywordScores.put(hit.chunkId(), hit.score() / Math.max(0.000001D, maxKeywordScore));
+                    keywordRanks.put(hit.chunkId(), index + 1);
+                }
+            } catch (Exception exception) {
+                log.warn("OpenSearch混合召回失败，回退本地关键词得分：kbId={}, error={}", kb.getId(), exception.getMessage());
+            }
+        }
+        try {
+            List<MilvusKnowledgeVectorService.VectorHit> vectorHits = milvusKnowledgeVectorService.searchKnowledgeChunks(
+                    kb.getMilvusCollectionName(), kb.getId(), queryVector, options.candidateK);
+            Map<String, MilvusKnowledgeVectorService.VectorHit> hitsByChunkId = new LinkedHashMap<>();
+            Map<String, Integer> vectorRanks = new LinkedHashMap<>();
+            for (int index = 0; index < vectorHits.size(); index++) {
+                MilvusKnowledgeVectorService.VectorHit hit = vectorHits.get(index);
+                if (StringUtils.hasText(hit.chunkId())) {
+                    hitsByChunkId.put(hit.chunkId(), hit);
+                    vectorRanks.put(hit.chunkId(), index + 1);
+                }
+            }
+            Set<String> candidateIds = new LinkedHashSet<>(hitsByChunkId.keySet());
+            candidateIds.addAll(externalKeywordScores.keySet());
+            if (candidateIds.isEmpty()) {
+                return candidates;
+            }
+            List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectBatchIds(candidateIds);
+            for (KnowledgeChunkEntity chunk : chunks) {
+                if (chunk == null || !"active".equalsIgnoreCase(chunk.getStatus())
+                        || "parent".equalsIgnoreCase(chunk.getChunkLevel())
+                        || !matchesRetrievalFilters(chunk, options)) {
+                    continue;
+                }
+                MilvusKnowledgeVectorService.VectorHit hit = hitsByChunkId.get(chunk.getId());
+                double vectorScore = hit == null ? 0D : hit.score();
+                double keywordScore = externalKeywordScores.getOrDefault(chunk.getId(), keywordScore(query, terms, chunk));
+                RetrievalCandidate candidate = buildCandidate(chunk, vectorScore, keywordScore, options);
+                if ("hybrid".equals(options.searchMode)) {
+                    // RRF 对不同检索引擎的分值尺度不敏感，适合融合 Milvus COSINE 与 BM25 排名。
+                    candidate.baseScore = reciprocalRankFusion(vectorRanks.get(chunk.getId()), keywordRanks.get(chunk.getId()));
+                    candidate.finalScore = candidate.baseScore;
+                }
+                candidates.add(candidate);
+            }
+            return candidates;
+        } catch (Exception exception) {
+            if (!Boolean.TRUE.equals(properties.getRag().getAllowMysqlVectorFallback())) {
+                throw new BusinessException("RAG_VECTOR_RECALL_FAILED", "Milvus 向量召回失败，请检查向量服务状态：" + exception.getMessage());
+            }
+            log.warn("Milvus向量召回失败，开发模式回退MySQL扫描：kbId={}, error={}", kb.getId(), exception.getMessage());
+        }
+        return recallFromMysqlVectors(kb, query, terms, queryVector, options, externalKeywordScores);
+    }
+
+    /**
+     * 仅供本地开发兼容的 MySQL 向量扫描逻辑，生产环境默认禁止。
+     */
+    private List<RetrievalCandidate> recallFromMysqlVectors(KnowledgeBaseEntity kb,
+                                                            String query,
+                                                            List<String> terms,
+                                                            List<Double> queryVector,
+                                                            RetrievalOptions options,
+                                                            Map<String, Double> externalKeywordScores) {
+        List<RetrievalCandidate> candidates = new ArrayList<>();
         List<KnowledgeEmbeddingEntity> embeddings = knowledgeEmbeddingMapper.selectList(new LambdaQueryWrapper<KnowledgeEmbeddingEntity>()
                 .eq(KnowledgeEmbeddingEntity::getKbId, kb.getId())
                 .isNotNull(KnowledgeEmbeddingEntity::getEmbeddingJson)
                 .last("limit 2000"));
-        for (KnowledgeEmbeddingEntity embedding : embeddings) {
-            KnowledgeChunkEntity chunk = knowledgeChunkMapper.selectById(embedding.getChunkId());
+        Map<String, KnowledgeEmbeddingEntity> embeddingByChunkId = new LinkedHashMap<>();
+        embeddings.forEach(item -> embeddingByChunkId.put(item.getChunkId(), item));
+        List<KnowledgeChunkEntity> chunks = knowledgeChunkMapper.selectBatchIds(embeddingByChunkId.keySet());
+        for (KnowledgeChunkEntity chunk : chunks) {
             if (chunk == null || !"active".equalsIgnoreCase(chunk.getStatus())) {
                 continue;
             }
@@ -752,11 +835,26 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
             if (!matchesRetrievalFilters(chunk, options)) {
                 continue;
             }
+            KnowledgeEmbeddingEntity embedding = embeddingByChunkId.get(chunk.getId());
             double vectorScore = cosine(queryVector, parseVector(embedding.getEmbeddingJson()));
-            double keywordScore = keywordScore(query, terms, chunk);
+            double keywordScore = externalKeywordScores.getOrDefault(chunk.getId(), keywordScore(query, terms, chunk));
             candidates.add(buildCandidate(chunk, vectorScore, keywordScore, options));
         }
         return candidates;
+    }
+
+    /**
+     * 使用 k=60 的倒数排名融合，并归一化到零到一范围。
+     */
+    private double reciprocalRankFusion(Integer vectorRank, Integer keywordRank) {
+        double score = 0D;
+        if (vectorRank != null) {
+            score += 1D / (60D + vectorRank);
+        }
+        if (keywordRank != null) {
+            score += 1D / (60D + keywordRank);
+        }
+        return clamp(score / (2D / 61D), 0D, 1D);
     }
 
     /**

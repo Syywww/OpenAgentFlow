@@ -14,6 +14,9 @@ import java.util.List;
  */
 public class ChatRunContext {
 
+    /** 当前Runtime运行ID，用于跨线程追踪和主动取消模型HTTP请求。 */
+    private String runId;
+
     /** 当前 Agent。 */
     private AgentEntity agent;
 
@@ -64,6 +67,14 @@ public class ChatRunContext {
 
     /** 模型网关路由决策。 */
     private ModelRouteDecision routeDecision;
+
+    public String getRunId() {
+        return runId;
+    }
+
+    public void setRunId(String runId) {
+        this.runId = runId;
+    }
 
     public AgentEntity getAgent() {
         return agent;

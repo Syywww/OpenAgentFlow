@@ -104,6 +104,9 @@ public class ToolService {
     /** 工作空间治理服务。 */
     private final WorkspaceGovernanceService workspaceGovernanceService;
 
+    /** AI工具参数安全护栏。 */
+    private final AiGuardrailService aiGuardrailService;
+
     public ToolService(ToolDefinitionMapper toolDefinitionMapper,
                        AgentToolBindingMapper agentToolBindingMapper,
                        AgentMapper agentMapper,
@@ -114,7 +117,8 @@ public class ToolService {
                        ObjectMapper objectMapper,
                        AgentAccessService agentAccessService,
                        McpClientService mcpClientService,
-                       WorkspaceGovernanceService workspaceGovernanceService) {
+                       WorkspaceGovernanceService workspaceGovernanceService,
+                       AiGuardrailService aiGuardrailService) {
         this.toolDefinitionMapper = toolDefinitionMapper;
         this.agentToolBindingMapper = agentToolBindingMapper;
         this.agentMapper = agentMapper;
@@ -126,6 +130,7 @@ public class ToolService {
         this.agentAccessService = agentAccessService;
         this.mcpClientService = mcpClientService;
         this.workspaceGovernanceService = workspaceGovernanceService;
+        this.aiGuardrailService = aiGuardrailService;
     }
 
     /**
@@ -325,7 +330,8 @@ public class ToolService {
                                               boolean testMode) {
         Instant startedAt = Instant.now();
         ToolExecutionResult result;
-        if (requiresManualConfirmation(tool) && !testMode) {
+        if ((requiresManualConfirmation(tool)
+                || aiGuardrailService.requiresToolConfirmation(tool.getToolCode(), inputParams)) && !testMode) {
             result = createPendingConfirmation(tool, inputParams, agentId, runId, callerUserId);
             result.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
         } else {
@@ -371,6 +377,8 @@ public class ToolService {
             }
             String method = StringUtils.hasText(tool.getRequestMethod()) ? tool.getRequestMethod().toUpperCase(Locale.ROOT) : "POST";
             String url = buildUrl(tool.getEndpointUrl(), inputParams, "GET".equals(method));
+            // URL完成参数渲染后再做DNS与私网校验，避免占位符绕过SSRF防护。
+            aiGuardrailService.assertSafeHttpTarget(url);
             HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofMillis(tool.getTimeoutMs() == null ? 30000 : tool.getTimeoutMs()));
@@ -546,8 +554,14 @@ public class ToolService {
         ToolExecutionResult result = new ToolExecutionResult();
         try {
             String sql = renderSql(resolveDbSqlTemplate(tool), inputParams);
-            if (!sql.trim().toLowerCase(Locale.ROOT).startsWith("select") || sql.contains(";")) {
+            String normalizedSql = sql.trim().toLowerCase(Locale.ROOT);
+            if (!normalizedSql.startsWith("select") || sql.contains(";")
+                    || List.of("--", "/*", "into outfile", "load_file", "sleep(", "benchmark(",
+                    "information_schema", "performance_schema", " mysql.").stream().anyMatch(normalizedSql::contains)) {
                 throw new BusinessException("TOOL_SQL_FORBIDDEN", "数据库查询工具只允许单条 SELECT 语句");
+            }
+            if (!normalizedSql.matches("(?s).*\\blimit\\s+\\d+.*")) {
+                sql = sql + " LIMIT 1000";
             }
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
             result.setSuccess(true);

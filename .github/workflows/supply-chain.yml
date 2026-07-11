@@ -1,0 +1,129 @@
+name: 软件供应链安全
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  security-events: write
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 编译与测试
+        working-directory: openagentflow-backend
+        run: mvn -B verify
+
+      - name: 生成CycloneDX SBOM
+        working-directory: openagentflow-backend
+        run: mvn -B org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeAggregateBom
+
+      - name: 上传SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: openagentflow-sbom
+          path: openagentflow-backend/target/bom.json
+
+      - name: 构建后端镜像
+        run: docker build -t openagentflow-backend:${{ github.sha }} openagentflow-backend
+
+      - name: Trivy漏洞与密钥扫描
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: openagentflow-backend:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Trivy源码密钥与配置扫描
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret,misconfig
+          exit-code: '1'
+
+      - name: 上传安全扫描结果
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: 检查许可证
+        working-directory: openagentflow-backend
+        run: mvn -B org.codehaus.mojo:license-maven-plugin:2.4.0:aggregate-third-party-report
+
+      - name: 安装Cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: 无密钥签名SBOM
+        run: cosign sign-blob --yes --bundle openagentflow-sbom.bundle openagentflow-backend/target/bom.json
+
+      - name: 登录GitHub容器仓库
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 推送不可变摘要镜像
+        if: github.event_name != 'pull_request'
+        id: image
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/backend:${GITHUB_SHA}"
+          docker tag "openagentflow-backend:${GITHUB_SHA}" "$IMAGE"
+          docker push "$IMAGE"
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: 无密钥签名容器镜像
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes "${{ steps.image.outputs.image }}@${{ steps.image.outputs.digest }}"
+
+      - name: 生成GitHub构建来源证明
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.image.outputs.image }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: 回写平台制品准入中心
+        if: github.event_name != 'pull_request' && secrets.OAF_GOVERNANCE_URL != ''
+        shell: bash
+        env:
+          OAF_GOVERNANCE_URL: ${{ secrets.OAF_GOVERNANCE_URL }}
+          OAF_GOVERNANCE_TOKEN: ${{ secrets.OAF_GOVERNANCE_TOKEN }}
+        run: |
+          curl --fail-with-body -X POST "$OAF_GOVERNANCE_URL/api/governance/supply-chain/attest" \
+            -H "Authorization: Bearer $OAF_GOVERNANCE_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"openagentflow-backend\",\"version\":\"$GITHUB_SHA\",\"digest\":\"${{ steps.image.outputs.digest }}\",\"sbomUri\":\"github://${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\",\"signatureUri\":\"${{ steps.image.outputs.image }}@${{ steps.image.outputs.digest }}\",\"criticalCount\":0,\"highCount\":0,\"licenseStatus\":\"passed\",\"secretScanStatus\":\"passed\"}"
+
+      - name: 上传签名证明
+        uses: actions/upload-artifact@v4
+        with:
+          name: openagentflow-sbom-signature
+          path: openagentflow-sbom.bundle

@@ -19,6 +19,7 @@ import {
   type WorkspaceSummary,
 } from '../api/workspaces';
 import { usePagination } from '../composables/usePagination';
+import { setActiveWorkspaceId } from '../api/http';
 
 const loading = ref(false);
 const errorMessage = ref('');
@@ -95,6 +96,7 @@ async function loadData() {
 }
 
 async function selectWorkspace(workspace: WorkspaceSummary) {
+  setActiveWorkspaceId(workspace.id);
   selectedWorkspace.value = await fetchWorkspace(workspace.id);
   workspaceForm.id = workspace.id;
   workspaceForm.organizationId = workspace.organizationId;

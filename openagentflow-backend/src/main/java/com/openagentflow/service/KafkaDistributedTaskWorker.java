@@ -7,8 +7,9 @@ import com.openagentflow.security.AuthUserDetails;
 import com.openagentflow.security.AuthUserDetailsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.scheduling.TaskScheduler;
@@ -25,14 +26,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
-import java.util.function.Function;
+import java.util.concurrent.Semaphore;
 import java.util.stream.Collectors;
 
 /**
  * Kafka 分布式异步任务消费者。
  */
 @Service
-@ConditionalOnProperty(prefix = "openagentflow.async-task", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnExpression("'${openagentflow.async-task.enabled:true}' == 'true' && '${openagentflow.async-task.consumer-enabled:true}' == 'true'")
 public class KafkaDistributedTaskWorker {
 
     /** 日志对象。 */
@@ -59,15 +60,20 @@ public class KafkaDistributedTaskWorker {
     /** 用户加载服务，用于恢复任务创建人的权限上下文。 */
     private final AuthUserDetailsService authUserDetailsService;
 
+    /** 单实例任务容量信号量，用于在下游拥塞时形成消费背压。 */
+    private final Semaphore workerCapacity;
+
     public KafkaDistributedTaskWorker(List<DistributedTaskHandler> handlers,
                                       KafkaTaskClient kafkaTaskClient,
                                       AsyncTaskService asyncTaskService,
                                       OpenAgentFlowProperties openAgentFlowProperties,
                                       @Qualifier("asyncTaskHeartbeatScheduler") TaskScheduler heartbeatScheduler,
                                       AuthUserDetailsService authUserDetailsService) {
-        this.handlers = handlers.stream().collect(Collectors.toMap(
-                DistributedTaskHandler::taskType,
-                Function.identity(),
+        this.handlers = handlers.stream()
+                .flatMap(handler -> handler.taskTypes().stream().map(type -> Map.entry(type, handler)))
+                .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                Map.Entry::getValue,
                 (left, right) -> {
                     throw new IllegalStateException("重复的分布式任务处理器：" + left.taskType());
                 },
@@ -77,6 +83,7 @@ public class KafkaDistributedTaskWorker {
         this.properties = openAgentFlowProperties.getAsyncTask();
         this.heartbeatScheduler = heartbeatScheduler;
         this.authUserDetailsService = authUserDetailsService;
+        this.workerCapacity = new Semaphore(Math.max(1, this.properties.getMaxRunningTasks()));
     }
 
     /**
@@ -86,7 +93,7 @@ public class KafkaDistributedTaskWorker {
      * @param acknowledgment Kafka 手动确认对象
      */
     @KafkaListener(
-            topics = {"${openagentflow.async-task.topic}", "${openagentflow.async-task.retry-topic-5s}", "${openagentflow.async-task.retry-topic-30s}"},
+            topics = "#{@asyncTaskTopicRouter.consumerTopics()}",
             groupId = "${openagentflow.async-task.consumer-group}")
     public void consume(String payload, Acknowledgment acknowledgment) {
         AsyncTaskMessage message;
@@ -109,24 +116,38 @@ public class KafkaDistributedTaskWorker {
             acknowledgment.acknowledge();
             return;
         }
-        if (!asyncTaskService.tryClaim(task.getId(), workerId)) {
+        if (!workerCapacity.tryAcquire()) {
+            // 当前实例已达到并发上限，暂停当前分区片刻，让任务留在 Kafka 中形成背压。
+            acknowledgment.nack(Duration.ofSeconds(1));
+            return;
+        }
+        Long lockVersion = asyncTaskService.tryClaim(task.getId(), workerId);
+        if (lockVersion == null) {
             // 其他 Worker 已经领取或任务状态已变化，重复消息直接确认。
+            workerCapacity.release();
             acknowledgment.acknowledge();
             return;
         }
 
         ScheduledFuture<?> heartbeat = heartbeatScheduler.scheduleAtFixedRate(
-                () -> asyncTaskService.heartbeat(task.getId(), workerId), Duration.ofSeconds(20));
+                () -> asyncTaskService.heartbeat(task.getId(), workerId, lockVersion), Duration.ofSeconds(20));
         try {
+            AsyncTaskExecutionContext.bind(task.getId(), workerId, lockVersion);
+            if (message.getTraceId() != null) {
+                MDC.put("traceId", message.getTraceId());
+            }
             restoreSecurityContext(task);
             DistributedTaskHandler handler = handlers.get(task.getTaskType());
             if (handler == null) {
                 throw new IllegalStateException("未注册任务处理器：" + task.getTaskType());
             }
             Map<String, Object> result = handler.executeDistributedTask(asyncTaskService.findById(task.getId()));
+            asyncTaskService.assertActiveLease(task.getId());
             AsyncTaskEntity latest = asyncTaskService.findById(task.getId());
-            if (latest != null && !"canceled".equals(latest.getStatus())) {
+            boolean deferred = result != null && Boolean.TRUE.equals(result.get(DocumentPipelineDagService.DEFERRED_RESULT_KEY));
+            if (latest != null && !"canceled".equals(latest.getStatus()) && !deferred) {
                 asyncTaskService.markSuccess(task.getId(), "Kafka 分布式任务执行完成", result == null ? Map.of() : result);
+                asyncTaskService.completeDagParentIfReady(asyncTaskService.findById(task.getId()));
             }
             acknowledgment.acknowledge();
         } catch (Exception exception) {
@@ -135,7 +156,10 @@ public class KafkaDistributedTaskWorker {
             if (heartbeat != null) {
                 heartbeat.cancel(false);
             }
+            AsyncTaskExecutionContext.clear();
+            MDC.remove("traceId");
             SecurityContextHolder.clearContext();
+            workerCapacity.release();
         }
     }
 
@@ -156,6 +180,7 @@ public class KafkaDistributedTaskWorker {
         }
         if (asyncTaskService.findById(message.getTaskId()) != null) {
             asyncTaskService.markDeadLetter(message.getTaskId(), message.getLastError());
+            asyncTaskService.completeDagParentIfReady(asyncTaskService.findById(message.getTaskId()));
         }
         acknowledgment.acknowledge();
     }
@@ -178,11 +203,10 @@ public class KafkaDistributedTaskWorker {
         if (nextAttempt <= Math.max(0, properties.getMaxRetries())) {
             Duration delay = nextAttempt == 1 ? Duration.ofSeconds(5) : Duration.ofSeconds(30);
             LocalDateTime nextRetryAt = LocalDateTime.now().plus(delay);
-            asyncTaskService.markRetryPending(task.getId(), nextRetryAt, error);
-            kafkaTaskClient.publishRetry(asyncTaskService.findById(task.getId()), nextAttempt, delay, error);
+            asyncTaskService.scheduleRetry(task.getId(), nextRetryAt, error, nextAttempt, delay);
         } else {
-            kafkaTaskClient.publishDeadLetter(asyncTaskService.findById(task.getId()), nextAttempt, error);
-            asyncTaskService.markDeadLetter(task.getId(), error);
+            asyncTaskService.scheduleDeadLetter(task.getId(), error, nextAttempt);
+            asyncTaskService.completeDagParentIfReady(asyncTaskService.findById(task.getId()));
         }
         log.warn("Kafka 任务执行失败：taskId={}, taskType={}, attempt={}, error={}",
                 task.getId(), task.getTaskType(), nextAttempt, error);

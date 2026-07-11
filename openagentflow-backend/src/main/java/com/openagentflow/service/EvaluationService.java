@@ -110,9 +110,6 @@ public class EvaluationService implements DistributedTaskHandler {
     /** 统一异步任务中心。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 任务工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
-
     public EvaluationService(EvalDatasetMapper evalDatasetMapper,
                              EvalSampleMapper evalSampleMapper,
                              EvalMetricMapper evalMetricMapper,
@@ -127,8 +124,7 @@ public class EvaluationService implements DistributedTaskHandler {
                              ModelProviderService modelProviderService,
                              OpenAiCompatibleClient openAiCompatibleClient,
                              ObjectMapper objectMapper,
-                             AsyncTaskService asyncTaskService,
-                             KafkaTaskClient kafkaTaskClient) {
+                             AsyncTaskService asyncTaskService) {
         this.evalDatasetMapper = evalDatasetMapper;
         this.evalSampleMapper = evalSampleMapper;
         this.evalMetricMapper = evalMetricMapper;
@@ -144,7 +140,6 @@ public class EvaluationService implements DistributedTaskHandler {
         this.openAiCompatibleClient = openAiCompatibleClient;
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -306,12 +301,6 @@ public class EvaluationService implements DistributedTaskHandler {
                 task.getId(),
                 null,
                 Map.of("evalTaskId", task.getId(), "datasetId", task.getDatasetId(), "totalRuns", task.getTotalSamples()));
-        try {
-            kafkaTaskClient.publish(asyncTask);
-        } catch (Exception exception) {
-            asyncTaskService.appendLog(asyncTask.getId(), "warn", "enqueue_failed",
-                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
-        }
         return getTask(task.getId());
     }
 

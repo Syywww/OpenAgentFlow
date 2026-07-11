@@ -46,21 +46,16 @@ public class KnowledgeGovernanceService implements DistributedTaskHandler {
     /** 统一异步任务中心。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 任务工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
-
     public KnowledgeGovernanceService(ObjectMapper objectMapper,
                                       JdbcTemplate jdbcTemplate,
                                       KnowledgeGovernancePolicyMapper policyMapper,
                                       KnowledgeGovernanceIssueMapper issueMapper,
-                                      AsyncTaskService asyncTaskService,
-                                      KafkaTaskClient kafkaTaskClient) {
+                                      AsyncTaskService asyncTaskService) {
         this.objectMapper = objectMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.policyMapper = policyMapper;
         this.issueMapper = issueMapper;
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -216,12 +211,6 @@ public class KnowledgeGovernanceService implements DistributedTaskHandler {
                 null,
                 null,
                 Map.of("scanScope", "all"));
-        try {
-            kafkaTaskClient.publish(task);
-        } catch (Exception exception) {
-            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
-                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", exception.getMessage()), 0);
-        }
         return Map.of("asyncTaskId", task.getId(), "status", "pending", "message", "知识治理扫描任务已提交");
     }
 

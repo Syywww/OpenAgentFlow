@@ -73,6 +73,9 @@ public class WorkflowService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 发布质量门禁服务。 */
+    private final ReleaseGateService releaseGateService;
+
     public WorkflowService(WorkflowDefinitionMapper workflowDefinitionMapper,
                            WorkflowNodeMapper workflowNodeMapper,
                            WorkflowEdgeMapper workflowEdgeMapper,
@@ -82,7 +85,8 @@ public class WorkflowService {
                            AgentAccessService agentAccessService,
                            WorkspaceGovernanceService workspaceGovernanceService,
                            JdbcTemplate jdbcTemplate,
-                           ObjectMapper objectMapper) {
+                           ObjectMapper objectMapper,
+                           ReleaseGateService releaseGateService) {
         this.workflowDefinitionMapper = workflowDefinitionMapper;
         this.workflowNodeMapper = workflowNodeMapper;
         this.workflowEdgeMapper = workflowEdgeMapper;
@@ -93,6 +97,7 @@ public class WorkflowService {
         this.workspaceGovernanceService = workspaceGovernanceService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.releaseGateService = releaseGateService;
     }
 
     /**
@@ -199,6 +204,7 @@ public class WorkflowService {
         String versionNo = request != null && StringUtils.hasText(request.getVersionNo())
                 ? request.getVersionNo()
                 : "v" + DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now());
+        releaseGateService.assertCanRelease("workflow", entity.getId(), entity.getWorkspaceId(), versionNo);
 
         WorkflowVersionEntity version = new WorkflowVersionEntity();
         version.setId(newId());

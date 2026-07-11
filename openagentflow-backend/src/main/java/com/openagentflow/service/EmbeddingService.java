@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.entity.ModelProviderEntity;
+import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.ModelConfigMapper;
 import org.springframework.stereotype.Service;
@@ -14,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.time.Duration;
 
 /**
  * Embedding 向量化服务。
@@ -33,14 +35,24 @@ public class EmbeddingService {
     /** JSON 工具，用于读取模型默认参数。 */
     private final ObjectMapper objectMapper;
 
+    /** Redis 分布式速率和并发限制服务。 */
+    private final DistributedRateLimiterService rateLimiterService;
+
+    /** RAG 全局配置。 */
+    private final OpenAgentFlowProperties.Rag ragProperties;
+
     public EmbeddingService(ModelConfigMapper modelConfigMapper,
                             ModelProviderService modelProviderService,
                             OpenAiCompatibleClient openAiCompatibleClient,
-                            ObjectMapper objectMapper) {
+                            ObjectMapper objectMapper,
+                            DistributedRateLimiterService rateLimiterService,
+                            OpenAgentFlowProperties openAgentFlowProperties) {
         this.modelConfigMapper = modelConfigMapper;
         this.modelProviderService = modelProviderService;
         this.openAiCompatibleClient = openAiCompatibleClient;
         this.objectMapper = objectMapper;
+        this.rateLimiterService = rateLimiterService;
+        this.ragProperties = openAgentFlowProperties.getRag();
     }
 
     /**
@@ -99,7 +111,13 @@ public class EmbeddingService {
                 List<String> batch = texts.subList(start, end);
                 try {
                     allVectors.addAll(callEmbeddingWithRetry(provider, model, apiKey, batch));
+                } catch (EmbeddingBackpressureException exception) {
+                    // 背压必须交给 Kafka 重试，不能生成本地向量污染生产知识库。
+                    throw exception;
                 } catch (Exception exception) {
+                    if (!Boolean.TRUE.equals(ragProperties.getAllowLocalEmbeddingFallback())) {
+                        throw new IllegalStateException("真实 Embedding 调用失败，生产配置禁止本地模拟向量：" + exception.getMessage(), exception);
+                    }
                     fallbackUsed = true;
                     lastError = exception.getMessage();
                     allVectors.addAll(batch.stream().map(this::localFallbackEmbedding).toList());
@@ -111,7 +129,12 @@ public class EmbeddingService {
             result.setErrorMessage(lastError);
             result.setDimension(firstDimension(allVectors));
             return result;
+        } catch (EmbeddingBackpressureException exception) {
+            throw exception;
         } catch (Exception exception) {
+            if (!Boolean.TRUE.equals(ragProperties.getAllowLocalEmbeddingFallback())) {
+                throw new IllegalStateException("真实 Embedding 调用失败，生产配置禁止本地模拟向量：" + exception.getMessage(), exception);
+            }
             // 开发阶段保留本地兜底向量，同时把失败原因返回给调用方用于日志展示。
             List<List<Double>> fallbackVectors = texts.stream().map(this::localFallbackEmbedding).toList();
             result.setVectors(fallbackVectors);
@@ -136,14 +159,35 @@ public class EmbeddingService {
                                                       String apiKey,
                                                       List<String> batch) {
         try {
-            return openAiCompatibleClient.embeddings(provider, model, apiKey, batch);
+            return callEmbeddingWithPermit(provider, model, apiKey, batch);
+        } catch (EmbeddingBackpressureException exception) {
+            throw exception;
         } catch (Exception firstException) {
             sleepQuietly(600L);
             try {
-                return openAiCompatibleClient.embeddings(provider, model, apiKey, batch);
+                return callEmbeddingWithPermit(provider, model, apiKey, batch);
+            } catch (EmbeddingBackpressureException exception) {
+                throw exception;
             } catch (Exception secondException) {
                 throw secondException;
             }
+        }
+    }
+
+    /**
+     * 获取服务商级分布式许可后调用 Embedding 接口。
+     */
+    private List<List<Double>> callEmbeddingWithPermit(ModelProviderEntity provider,
+                                                        ModelConfigEntity model,
+                                                        String apiKey,
+                                                        List<String> batch) {
+        String resource = "embedding:" + provider.getId();
+        try (DistributedRateLimiterService.Permit ignored = rateLimiterService.acquire(
+                resource,
+                Math.max(1, ragProperties.getEmbeddingQps()),
+                Math.max(1, ragProperties.getEmbeddingConcurrency()),
+                Duration.ofMillis(Math.max(1000L, ragProperties.getEmbeddingAcquireTimeoutMs())))) {
+            return openAiCompatibleClient.embeddings(provider, model, apiKey, batch);
         }
     }
 

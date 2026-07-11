@@ -49,16 +49,26 @@ public class AsyncTaskService {
     /** 平台配置，用于读取 Kafka 任务重试策略。 */
     private final OpenAgentFlowProperties properties;
 
+    /** Transactional Outbox 服务。 */
+    private final AsyncTaskOutboxService outboxService;
+
+    /** 结构化任务阶段服务。 */
+    private final AsyncTaskStageService stageService;
+
     public AsyncTaskService(AsyncTaskMapper asyncTaskMapper,
                             AsyncTaskLogMapper asyncTaskLogMapper,
                             ObjectMapper objectMapper,
                             JdbcTemplate jdbcTemplate,
-                            OpenAgentFlowProperties properties) {
+                            OpenAgentFlowProperties properties,
+                            AsyncTaskOutboxService outboxService,
+                            AsyncTaskStageService stageService) {
         this.asyncTaskMapper = asyncTaskMapper;
         this.asyncTaskLogMapper = asyncTaskLogMapper;
         this.objectMapper = objectMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.properties = properties;
+        this.outboxService = outboxService;
+        this.stageService = stageService;
     }
 
     /**
@@ -86,6 +96,7 @@ public class AsyncTaskService {
         String userId = currentUserId();
         AsyncTaskEntity task = new AsyncTaskEntity();
         task.setId(newId());
+        task.setTraceId(UUID.randomUUID().toString().replace("-", ""));
         task.setTaskCode(uniqueTaskCode(taskType));
         task.setTaskName(taskName);
         task.setTaskType(taskType);
@@ -109,7 +120,101 @@ public class AsyncTaskService {
         task.setCreatedBy(userId);
         asyncTaskMapper.insert(task);
         appendLog(task.getId(), "info", "accepted", "任务已创建并进入队列", payload, 0);
+        // 任务主表与待发送消息在同一事务提交，消除 MySQL 与 Kafka 双写窗口。
+        outboxService.enqueueInitial(task);
         return task;
+    }
+
+    /**
+     * 幂等创建DAG子任务，并在同一事务写入Outbox。
+     *
+     * @param parentTask 父任务
+     * @param taskName 子任务名称
+     * @param taskType 子任务类型
+     * @param shardNo 分片序号
+     * @param shardTotal 分片总数
+     * @param idempotencyKey 幂等键
+     * @param payload 子任务参数
+     * @return 已存在或新创建的子任务
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AsyncTaskEntity createDagChildTask(AsyncTaskEntity parentTask,
+                                               String taskName,
+                                               String taskType,
+                                               int shardNo,
+                                               int shardTotal,
+                                               String idempotencyKey,
+                                               Map<String, Object> payload) {
+        AsyncTaskEntity existing = asyncTaskMapper.selectOne(new LambdaQueryWrapper<AsyncTaskEntity>()
+                .eq(AsyncTaskEntity::getIdempotencyKey, idempotencyKey)
+                .last("limit 1"));
+        if (existing != null) {
+            return existing;
+        }
+        AsyncTaskEntity child = createTask(taskName, taskType,
+                parentTask.getBizType(), parentTask.getBizId(), parentTask.getSourceTable(), parentTask.getSourceId(),
+                parentTask.getWorkspaceId(), payload);
+        child.setParentTaskId(parentTask.getId());
+        child.setRootTaskId(parentTask.getRootTaskId() == null ? parentTask.getId() : parentTask.getRootTaskId());
+        child.setTraceId(parentTask.getTraceId());
+        child.setShardNo(Math.max(0, shardNo));
+        child.setShardTotal(Math.max(1, shardTotal));
+        child.setIdempotencyKey(idempotencyKey);
+        asyncTaskMapper.updateById(child);
+        return child;
+    }
+
+    /**
+     * 查询DAG根任务下指定类型子任务的完成情况。
+     *
+     * @param rootTaskId 根任务ID
+     * @param taskType 任务类型
+     * @return 状态数量映射
+     */
+    public Map<String, Long> countDagChildren(String rootTaskId, String taskType) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT status, COUNT(1) AS total
+                FROM async_task
+                WHERE root_task_id = ? AND task_type = ?
+                GROUP BY status
+                """, rootTaskId, taskType);
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            result.put(String.valueOf(row.get("status")), ((Number) row.get("total")).longValue());
+        }
+        return result;
+    }
+
+    /**
+     * 子任务完成后汇总DAG根任务；只有全部子任务成功才结束根任务。
+     *
+     * @param childTask 已完成子任务
+     */
+    public void completeDagParentIfReady(AsyncTaskEntity childTask) {
+        if (childTask == null || !StringUtils.hasText(childTask.getRootTaskId())) {
+            return;
+        }
+        String rootTaskId = childTask.getRootTaskId();
+        Long unfinished = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1) FROM async_task
+                WHERE root_task_id=? AND id<>? AND status NOT IN ('success','canceled','failed','dead_letter')
+                """, Long.class, rootTaskId, rootTaskId);
+        Long failed = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1) FROM async_task
+                WHERE root_task_id=? AND status IN ('failed','dead_letter')
+                """, Long.class, rootTaskId);
+        if (unfinished != null && unfinished == 0L) {
+            String status = failed != null && failed > 0 ? "failed" : "success";
+            String message = "success".equals(status) ? "文档DAG全部阶段执行完成" : "文档DAG存在失败节点";
+            jdbcTemplate.update("""
+                    UPDATE async_task SET status=?, progress_percent=?, current_stage=?, current_message=?,
+                      finished_at=NOW(3), locked_by=NULL, locked_at=NULL, heartbeat_at=NULL
+                    WHERE id=? AND status='running'
+                    """, status, "success".equals(status) ? 100 : 99, "success".equals(status) ? "done" : "failed", message, rootTaskId);
+            appendLog(rootTaskId, "success".equals(status) ? "info" : "error",
+                    "success".equals(status) ? "done" : "failed", message, Map.of("failedChildren", failed == null ? 0L : failed),
+                    "success".equals(status) ? 100 : 99);
+        }
     }
 
     /**
@@ -169,7 +274,35 @@ public class AsyncTaskService {
                 .stream()
                 .map(this::toLogItem)
                 .toList());
+        List<AsyncTaskDtos.StageItem> stages = stageService.list(id);
+        detail.setStages(stages.isEmpty() ? dagStages(id) : stages);
         return detail;
+    }
+
+    /** 把文档DAG节点转换为任务中心可直接展示的阶段时间线。 */
+    private List<AsyncTaskDtos.StageItem> dagStages(String rootTaskId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT stage_code, shard_no, status, attempt_no, input_json, output_json,
+                       error_message, started_at, finished_at
+                FROM document_pipeline_node WHERE root_task_id=?
+                ORDER BY FIELD(stage_code,'parse','chunk','embedding','persist','index'), shard_no
+                """, rootTaskId);
+        int[] order = {0};
+        return rows.stream().map(row -> {
+            AsyncTaskDtos.StageItem item = new AsyncTaskDtos.StageItem();
+            String code = String.valueOf(row.get("stage_code"));
+            item.setStageCode(code);
+            item.setStageName(Map.of("parse", "解析文档", "chunk", "流式切片", "embedding", "生成向量",
+                    "persist", "持久化分片", "index", "写入向量索引").getOrDefault(code, code));
+            item.setStageOrder(++order[0]);
+            item.setStatus(String.valueOf(row.get("status")));
+            item.setInput(parseMap(row.get("input_json") == null ? null : String.valueOf(row.get("input_json"))));
+            item.setOutput(parseMap(row.get("output_json") == null ? null : String.valueOf(row.get("output_json"))));
+            item.setErrorMessage(row.get("error_message") == null ? null : String.valueOf(row.get("error_message")));
+            if (row.get("started_at") instanceof java.sql.Timestamp started) item.setStartedAt(started.toLocalDateTime());
+            if (row.get("finished_at") instanceof java.sql.Timestamp finished) item.setFinishedAt(finished.toLocalDateTime());
+            return item;
+        }).toList();
     }
 
     /**
@@ -186,7 +319,14 @@ public class AsyncTaskService {
         overview.setFailedCount(countByStatus("failed"));
         overview.setCanceledCount(countByStatus("canceled"));
         overview.setDeadLetterCount(countByStatus("dead_letter"));
+        overview.setOutboxPendingCount(countSql("SELECT COUNT(1) FROM async_task_outbox WHERE status IN ('pending', 'sending', 'failed')"));
+        overview.setOutboxDeadCount(countSql("SELECT COUNT(1) FROM async_task_outbox WHERE status = 'dead'"));
         return overview;
+    }
+
+    private long countSql(String sql) {
+        Long count = jdbcTemplate.queryForObject(sql, Long.class);
+        return count == null ? 0L : count;
     }
 
     /**
@@ -217,6 +357,7 @@ public class AsyncTaskService {
      * @param detail 日志详情
      */
     public void updateProgress(String taskId, String stage, String message, int progress, Map<String, Object> detail) {
+        assertActiveLease(taskId);
         AsyncTaskEntity task = asyncTaskMapper.selectById(taskId);
         if (task == null || "canceled".equals(task.getStatus())) {
             return;
@@ -240,6 +381,7 @@ public class AsyncTaskService {
      * @param result 结果数据
      */
     public void markSuccess(String taskId, String message, Map<String, Object> result) {
+        assertActiveLease(taskId);
         AsyncTaskEntity task = asyncTaskMapper.selectById(taskId);
         if (task == null) {
             return;
@@ -269,6 +411,7 @@ public class AsyncTaskService {
      * @param errorMessage 错误消息
      */
     public void markFailed(String taskId, String errorCode, String errorMessage) {
+        assertActiveLease(taskId);
         AsyncTaskEntity task = asyncTaskMapper.selectById(taskId);
         if (task == null) {
             return;
@@ -318,6 +461,7 @@ public class AsyncTaskService {
      * @param message 取消说明
      */
     public void markCanceled(String taskId, String message) {
+        assertActiveLease(taskId);
         AsyncTaskEntity task = asyncTaskMapper.selectById(taskId);
         if (task == null) {
             return;
@@ -340,6 +484,7 @@ public class AsyncTaskService {
      * @param taskId 任务ID
      * @return 任务实体
      */
+    @Transactional(rollbackFor = Exception.class)
     public AsyncTaskEntity prepareRetry(String taskId) {
         AsyncTaskEntity task = requireTask(taskId);
         assertCanManage(task);
@@ -370,6 +515,7 @@ public class AsyncTaskService {
         task.setDeadLetterAt(null);
         asyncTaskMapper.updateById(task);
         appendLog(taskId, "info", "retrying", "任务已重新进入队列", null, 0);
+        outboxService.enqueueInitial(task);
         return task;
     }
 
@@ -399,9 +545,9 @@ public class AsyncTaskService {
      *
      * @param taskId 任务ID
      * @param workerId Worker 实例ID
-     * @return 是否领取成功
+     * @return 领取成功后的执行代次，领取失败返回 null
      */
-    public boolean tryClaim(String taskId, String workerId) {
+    public Long tryClaim(String taskId, String workerId) {
         long staleSeconds = Math.max(30L, properties.getAsyncTask().getStaleSeconds());
         int changed = jdbcTemplate.update("""
                 UPDATE async_task
@@ -409,6 +555,7 @@ public class AsyncTaskService {
                     locked_by = ?,
                     locked_at = NOW(3),
                     heartbeat_at = NOW(3),
+                    lock_version = lock_version + 1,
                     started_at = COALESCE(started_at, NOW(3)),
                     current_stage = 'running',
                     current_message = 'Kafka Worker 已领取任务',
@@ -421,9 +568,16 @@ public class AsyncTaskService {
                   )
                 """, workerId, taskId, staleSeconds);
         if (changed > 0) {
-            appendLog(taskId, "info", "claimed", "Kafka Worker 已领取任务", Map.of("workerId", workerId), null);
+            Long lockVersion = jdbcTemplate.queryForObject(
+                    "SELECT lock_version FROM async_task WHERE id = ? AND locked_by = ?",
+                    Long.class,
+                    taskId,
+                    workerId);
+            appendLog(taskId, "info", "claimed", "Kafka Worker 已领取任务",
+                    Map.of("workerId", workerId, "lockVersion", lockVersion == null ? 0L : lockVersion), null);
+            return lockVersion;
         }
-        return changed > 0;
+        return null;
     }
 
     /**
@@ -432,12 +586,38 @@ public class AsyncTaskService {
      * @param taskId 任务ID
      * @param workerId Worker 实例ID
      */
-    public void heartbeat(String taskId, String workerId) {
+    public void heartbeat(String taskId, String workerId, long lockVersion) {
         jdbcTemplate.update("""
                 UPDATE async_task
                 SET heartbeat_at = NOW(3)
-                WHERE id = ? AND locked_by = ? AND status = 'running'
-                """, taskId, workerId);
+                WHERE id = ? AND locked_by = ? AND lock_version = ? AND status = 'running'
+                """, taskId, workerId, lockVersion);
+    }
+
+    /**
+     * 确认当前线程仍持有任务执行租约。
+     */
+    public void assertActiveLease(String taskId) {
+        AsyncTaskExecutionContext.Lease lease = AsyncTaskExecutionContext.current();
+        if (lease == null || !taskId.equals(lease.taskId())) {
+            return;
+        }
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1) FROM async_task
+                WHERE id = ? AND status = 'running' AND locked_by = ? AND lock_version = ?
+                """, Long.class, taskId, lease.workerId(), lease.lockVersion());
+        if (count == null || count == 0L) {
+            throw new IllegalStateException("TASK_LEASE_LOST：任务已被其他 Worker 接管");
+        }
+    }
+
+    /**
+     * 保存可恢复任务检查点。
+     */
+    public void saveCheckpoint(String taskId, Map<String, Object> checkpoint) {
+        assertActiveLease(taskId);
+        jdbcTemplate.update("UPDATE async_task SET checkpoint_json = CAST(? AS JSON), updated_at = NOW(3) WHERE id = ?",
+                toJson(checkpoint == null ? Map.of() : checkpoint), taskId);
     }
 
     /**
@@ -463,6 +643,7 @@ public class AsyncTaskService {
      * @param errorMessage 本次错误
      */
     public void markRetryPending(String taskId, LocalDateTime nextRetryAt, String errorMessage) {
+        assertActiveLease(taskId);
         jdbcTemplate.update("""
                 UPDATE async_task
                 SET status = 'pending',
@@ -482,12 +663,27 @@ public class AsyncTaskService {
     }
 
     /**
+     * 原子保存业务重试状态与 Kafka 重试 Outbox。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void scheduleRetry(String taskId,
+                              LocalDateTime nextRetryAt,
+                              String errorMessage,
+                              int attempt,
+                              java.time.Duration delay) {
+        markRetryPending(taskId, nextRetryAt, errorMessage);
+        AsyncTaskEntity task = requireTask(taskId);
+        outboxService.enqueueRetry(task, attempt, delay, errorMessage);
+    }
+
+    /**
      * 标记消息已进入死信队列。
      *
      * @param taskId 任务ID
      * @param errorMessage 最终错误
      */
     public void markDeadLetter(String taskId, String errorMessage) {
+        assertActiveLease(taskId);
         jdbcTemplate.update("""
                 UPDATE async_task
                 SET status = 'dead_letter',
@@ -504,6 +700,15 @@ public class AsyncTaskService {
                 """, limitText(errorMessage, 4000), taskId);
         appendLog(taskId, "error", "dead_letter", "任务超过最大重试次数，已进入死信队列",
                 Map.of("error", safeText(errorMessage)), null);
+    }
+
+    /**
+     * 原子保存最终失败状态与 Kafka 死信 Outbox。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void scheduleDeadLetter(String taskId, String errorMessage, int attempt) {
+        markDeadLetter(taskId, errorMessage);
+        outboxService.enqueueDeadLetter(requireTask(taskId), attempt, errorMessage);
     }
 
     /**
@@ -661,6 +866,8 @@ public class AsyncTaskService {
         item.setQueueTopic(task.getQueueTopic());
         item.setLockedBy(task.getLockedBy());
         item.setHeartbeatAt(task.getHeartbeatAt());
+        item.setLockVersion(task.getLockVersion());
+        item.setCheckpoint(parseMap(task.getCheckpointJson()));
         item.setNextRetryAt(task.getNextRetryAt());
         item.setDeadLetterAt(task.getDeadLetterAt());
         item.setStartedAt(task.getStartedAt());
@@ -699,6 +906,8 @@ public class AsyncTaskService {
         target.setQueueTopic(source.getQueueTopic());
         target.setLockedBy(source.getLockedBy());
         target.setHeartbeatAt(source.getHeartbeatAt());
+        target.setLockVersion(source.getLockVersion());
+        target.setCheckpoint(source.getCheckpoint());
         target.setNextRetryAt(source.getNextRetryAt());
         target.setDeadLetterAt(source.getDeadLetterAt());
         target.setStartedAt(source.getStartedAt());

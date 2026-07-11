@@ -27,7 +27,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台支持流式生成暂停、保留部分回答并引入补充说明继续，长对话内容、引用来源和工具调用在独立区域内滚动展示。
 - **Memory 记忆中心**：支持短期会话记忆、长期记忆、任务记忆、向量记忆、Prompt 同款管理布局、弹框维护、召回测试、过期清理、客服助手长期记忆模板、Agent 调试链路自动沉淀和 SSE 异步登录态传递。
-- **分布式异步任务**：基于 Kafka 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持多实例消费、MySQL 幂等抢占、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
+- **分布式异步任务**：基于 Kafka + Transactional Outbox 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持分类 Topic、多实例消费、MySQL 幂等抢占、Fencing Token、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
 - **开源工程化**：Docker Compose、`.env.example`、CI、脚本、License、Issue/PR 模板和开源文档。
 
 ## 技术栈
@@ -133,6 +133,10 @@ dm/
 - Kafka：IDEA 本地启动默认连接 `localhost:9092`；Docker Compose 默认连接 `host.docker.internal:9092`。
 - Kafka Worker：默认消费组 `openagentflow-async-workers`，并发数由 `OAF_KAFKA_CONCURRENCY` 控制。
 - MinIO：默认连接 `http://localhost:9000`，存储桶为 `openagentflow`，用于分布式文档任务共享原始文件。
+- MinIO 直传：`OAF_MINIO_ENDPOINT` 供后端内部访问，`OAF_MINIO_PUBLIC_ENDPOINT` 必须是浏览器可访问地址，用于生成预签名 URL。
+- MinIO CORS：`OAF_MINIO_CORS_ALLOWED_ORIGINS` 仅配置允许上传的前端正式域名，生产环境不要使用通配来源。
+- Worker 角色：`OAF_KAFKA_WORKER_ROLE` 支持 `all`、`document`、`evaluation`、`integration`、`maintenance`，可按负载类型分别部署。
+- Embedding 背压：通过 `OAF_EMBEDDING_QPS`、`OAF_EMBEDDING_CONCURRENCY` 和 Redis 分布式许可控制模型端点压力；生产环境禁止本地模拟向量兜底。
 - 后端上下文路径：`/api`
 - JWT Secret：生产环境必须通过 `OAF_JWT_SECRET` 覆盖
 
@@ -140,7 +144,7 @@ dm/
 
 ## Kafka 分布式任务
 
-后端通过 `KafkaTaskClient` 统一封装消息序列化、任务 Key、Broker ACK、重试 Topic 和死信 Topic。API 先写入 MySQL `async_task`，再以任务 ID 作为 Kafka Key 投递；Worker 使用 MySQL 条件更新原子领取任务，并恢复任务创建人的 Spring Security 权限上下文。
+后端通过 `KafkaTaskClient` 统一封装消息序列化、任务 Key 和 Broker ACK。API 在同一个 MySQL 事务中写入 `async_task` 与 `async_task_outbox`，Outbox 发布器再以任务 ID 作为 Kafka Key 投递；Worker 使用 MySQL 条件更新原子领取任务，并恢复任务创建人的 Spring Security 权限上下文。
 
 默认 Topic：
 
@@ -151,9 +155,11 @@ openagentflow.async-task.retry-30s
 openagentflow.async-task.dlt
 ```
 
-已接入的任务类型：知识文档处理、知识库向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 治理清理、历史成本重算。Worker 每 20 秒刷新心跳；执行失败后进入 5 秒和 30 秒重试 Topic，超过最大次数后进入死信 Topic；补偿调度器会重新投递首次发送失败或心跳超时的任务。调试台 SSE、单次 Agent、多 Agent 和工作流运行保留实时响应链路。
+新任务会按负载进入 `.document`、`.evaluation`、`.integration`、`.maintenance` 分类 Topic，对应重试 Topic 使用相同后缀。Worker 每 20 秒刷新心跳，每次接管递增 `lock_version`；旧 Worker 无法提交新执行代次的结果。执行失败后进入 5 秒和 30 秒重试 Topic，超过最大次数后进入死信 Topic；Outbox 独立重试 Broker 发送，补偿调度器处理遗留待执行任务和心跳超时任务。调试台 SSE、单次 Agent、多 Agent 和工作流运行保留实时响应链路。
 
-文档上传后先写入 MinIO，Kafka 消费组内任意 Worker 都能读取原文件。生产环境应使用 Kafka 多 Broker 集群和独立 MinIO/S3 服务，并为每套环境使用不同消费组。
+大于 5MB 的文档由浏览器使用 MinIO 预签名 URL 直传，小文件通过后端 InputStream 流式写入；Worker 把对象流式落到临时文件后解析。解析文本和向量批次保存为 MinIO 检查点，数据库或 Milvus 阶段失败后可以跳过已完成的模型调用。任务中心展示解析、切片、Embedding、持久化、Milvus 五阶段时间线。
+
+生产环境要求 Kafka Topic 副本数至少 `3`、`min.insync.replicas` 至少 `2`，并应使用多 Broker 集群和独立 MinIO/S3 服务。API 实例可设置 `OAF_KAFKA_CONSUMER_ENABLED=false`，专用 Worker 按角色独立扩容。
 
 ## SQL 初始化
 
@@ -202,6 +208,7 @@ V033__demo_order_summary_tool_intent.sql
 V034__recursive_knowledge_chunking.sql
 V035__enterprise_rag_metadata_parent_child.sql
 V036__kafka_distributed_async_tasks.sql
+V037__enterprise_async_outbox_pipeline.sql
 ```
 
 Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
@@ -245,7 +252,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | --- | --- | --- |
 | P0 登录、权限、模型接入 | 已完成 | JWT、Redis、模型供应商、SSE |
 | P1 Agent 管理 | 已完成 | CRUD、发布、复制、删除、运行、Agent 权限 |
-| P2 RAG 知识库 | 已完成 | 上传、解析、Parent-Child 递归结构化切片、Embedding、Milvus、引用来源、可信回答模式 |
+| P2 RAG 知识库 | 已完成 | 上传、PDFBox中文PDF解析、扫描件与加密PDF识别、文档原地重新解析、Parent-Child递归结构化切片、Embedding、Milvus、引用来源、可信回答模式 |
 | P3 Tool Calling | 已完成 | REST API、Webhook、DB Query、工具日志 |
 | P4 Trace 运行观测 | 已完成 | 运行列表、步骤详情、RAG/Tool/LLM 统一链路 |
 | P5 工作流编排 | 已完成 | Vue Flow、节点执行、上下文变量、Trace |
@@ -272,6 +279,35 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
 | P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |
 | P33 一键演示数据与交付样例包 | 已完成 | 幂等 SQL 样例包、PowerShell 初始化脚本、客服知识库文档、Prompt/Agent/工具/工作流/评测集/多 Agent/Memory 样例、工作流工具节点编码兼容、LLM 节点结构化工具结果注入、客服订单工具意图门控、Agent 绑定工作流入口路由、产品与优惠券知识分片、非订单问题历史污染隔离、演示工作流节点条件示例、订单汇总查询工具意图、版本快照同步、交付验收中心演示数据检查 |
+| P34 海量文档与高并发任务架构 | 已完成 | Transactional Outbox、分类 Topic、Worker 角色隔离、Fencing Token、Redis Embedding 背压、MinIO 预签名直传、流式文件处理、解析与向量检查点、结构化阶段时间线、生产副本约束 |
+| P35 文档处理 DAG 分片架构 | 已完成 | 持久化 DAG 根任务、父子任务、阶段节点、幂等键、分片协议、阶段尝试留存、根任务延迟收口和任务中心时间线 |
+| P36 Agent Runtime 执行面 | 已完成 | Runtime 专用有界线程池、队列背压、Redis 停止令牌、MySQL 控制指令、SSE 分片停止检查和超时终止 |
+| P37 检索与向量存储生产化 | 已完成 | Milvus 严格写入、失败重试、蓝绿索引版本、物理集合与稳定别名、关键词索引版本预留和回滚元数据 |
+| P38 可观测与弹性伸缩 | 已完成 | Prometheus、Micrometer、OpenTelemetry 桥接、Outbox 年龄、任务积压、Runtime 并发、健康探针和 KEDA Kafka Lag 扩容 |
+| P39 数据生命周期治理 | 已完成 | 文档跨 MySQL、MinIO、向量映射的异步清理作业、删除数量汇总、失败重试模型和高增长表小批量保留清理 |
+| P40 安全与租户隔离 | 已完成 | 工作空间文档/存储/向量/并发配额、危险文件拦截、API Key AES-256-GCM、Kafka SASL_SSL 配置和安全事件表 |
+| P41 高可用与容灾交付 | 已完成 | Helm Chart、API/文档 Worker/集成 Worker/Runtime 拆分、滚动升级、反亲和、PDB、优雅退出、健康探针、MySQL备份恢复脚本和RPO/RTO说明 |
+| P42 容量基线与故障演练 | 已完成 | Testcontainers 基础设施测试、k6 Runtime/任务中心压测、Kafka 暂停与 Worker 强退脚本、容量目标和故障矩阵 |
+| P43 文档物理DAG | 已完成 | Parse、Chunk、Embedding分片、向量写入分片、Finalize五类Kafka任务，稳定分片ID、对象产物、Fan-out/Fan-in和分片幂等提交 |
+| P44 Runtime执行面分离 | 已完成 | API与Runtime双角色Profile、聊天流量独立路由、Redis停止令牌、活动HTTP请求映射和跨实例500毫秒强取消观察器 |
+| P45 检索基础设施闭环 | 已完成 | Milvus新物理集合异步批量重建、真实Alias切换、文档向量过滤删除、OpenSearch BM25建索引、Bulk写入、关键词召回、混合召回和删除同步 |
+| P46 多租户硬隔离 | 已完成 | X-Workspace-Id成员校验、可信空间上下文、Redis Lua原子配额预占、MySQL预占明细和空间安全拦截 |
+| P47 SLO与全链路观测 | 已完成 | 任务Trace ID跨Outbox/Kafka/Worker透传、平台SLO策略、违规归集、恢复检测、Prometheus指标和告警规则 |
+| P48 跨存储一致性 | 已完成 | MySQL、MinIO、Milvus、OpenSearch真实删除，缺失向量、孤儿映射、处理超时巡检和一致性问题列表 |
+| P49 容量与混沌测试 | 已完成 | 文档物理DAG到达率压测、Runtime与任务中心压测、Kafka/Worker故障脚本、Testcontainers和Kafka Schema契约测试 |
+| P50 AI安全护栏 | 已完成 | Prompt注入阻断、模型输出密钥与个人信息脱敏、危险工具二次确认、护栏策略和事件查询接口 |
+| P51 发布质量门禁 | 已完成 | Agent发布前自动检查评测得分、失败率、耗时、安全与成本，失败阻断发布并独立保存门禁执行数据 |
+| P52 软件供应链安全 | 已完成 | CycloneDX SBOM、Trivy漏洞/密钥/配置扫描、许可证检查、Cosign无密钥签名和软件制品准入接口 |
+| P53 检索引擎真实化 | 已完成 | Milvus HNSW ANN、OpenSearch BM25、RRF排名融合，生产默认禁止MySQL向量扫描降级 |
+| P54 海量文档工件分片 | 已完成 | 切片清单按Embedding批次拆成独立对象工件，Worker只加载当前子分片及所需父分片 |
+| P55 强租户上下文 | 已完成 | 生产租户资源强制X-Workspace-Id、成员校验、登录自动选空间、流式上传导出统一透传 |
+| P56 Runtime断线续传 | 已完成 | Redis有界事件缓冲、Run内单调序号、Last-Event-ID重放和终态自动收口 |
+| P57 首Token与OTLP观测 | 已完成 | Run及LLM调用首Token延迟入库、OTLP导出、Prometheus与Trace关联；本地默认关闭OTLP，生产按环境变量启用 |
+| P58 主动一致性修复 | 已完成 | MinIO对象与OpenSearch文档主动探测、一致性问题入库、Kafka幂等修复任务 |
+| P59 动态AI安全治理 | 已完成 | 数据库动态护栏、Unicode混淆归一化、RAG间接注入阻断、HTTP工具SSRF防护 |
+| P60 多资源发布门禁 | 已完成 | Agent、Prompt、工作流发布检查，真实P95、安全与成本配额，限时豁免审批 |
+| P61 灾备演练闭环 | 已完成 | MySQL一致性备份、SHA-256校验、隔离恢复、核心表冒烟查询和RTO测量脚本 |
+| P62 可部署供应链证明 | 已完成 | GHCR不可变镜像、Cosign镜像签名、GitHub provenance、平台准入回写和跨故障域调度 |
 
 ## 演示建议
 
@@ -296,6 +332,20 @@ cd E:\xm\OpenAgentFlow-Java\dm
 19. 打开交付验收中心，点击一键验收，查看环境、权限、核心链路、配置风险和交付清单。
 20. 打开工作流编排，使用模板创建流程，配置节点策略，在调试面板运行并查看 Trace。
 21. 执行 `scripts/init-demo-data.ps1`，使用推荐问题体验客服助手的 RAG、工具、工作流、Trace 和交付验收链路。
+22. 使用 `deploy/helm/openagentflow` 部署独立 API 与 Worker，并通过 KEDA 按文档 Topic Lag 自动扩缩容。
+23. 使用 `scripts/load-test` 建立并发容量基线，使用 `scripts/fault-injection` 检查 Outbox 恢复、Fencing Token 和严格向量写入。
+24. 生产环境使用 `prod,api`、`prod,runtime`、`prod,worker` 三类Profile拆分API、模型流量与Kafka Worker。
+25. 启用OpenSearch后使用BM25与向量混合召回，并通过索引版本接口完成Milvus集合Alias切换。
+26. 发布Agent前先运行评测任务，发布门禁会自动检查质量、稳定性、安全与成本指标。
+27. GitHub Actions中的“软件供应链安全”流程会生成SBOM、扫描镜像和源码，并签名SBOM证明。
+
+本地启用OpenSearch BM25：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.search.yml up -d
+```
+
+默认本地Compose不启动OpenSearch；使用覆盖文件后，后端会自动创建知识库BM25索引并启用关键词与混合召回。
 
 ## 开源发布清单
 
@@ -317,6 +367,8 @@ cd E:\xm\OpenAgentFlow-Java\dm
 - 每次修改前端、后端、SQL、项目结构、依赖、配置、启动方式或关键功能时，同步更新 README 或 docs。
 - 前端页面已按原型图搭建，后续优先保持既有页面结构和视觉，不随意重做页面。
 - 不要把真实模型 API Key 写入源码、SQL、README、docs 或 Git 提交历史。
+- 生产环境必须配置 `OAF_SECRET_ENCRYPTION_KEY`，并将 Kafka 切换为 `SASL_SSL`；密钥由 Kubernetes Secret、Vault 或云 KMS 注入。
+- 后端业务代码调整后只执行编译和测试检查，不自动启动后端进程。
 
 ## License
 

@@ -8,6 +8,8 @@ import com.openagentflow.domain.knowledge.KnowledgeBaseRequest;
 import com.openagentflow.domain.knowledge.KnowledgeBaseSummary;
 import com.openagentflow.domain.knowledge.KnowledgeChunkSummary;
 import com.openagentflow.domain.knowledge.KnowledgeDocumentSummary;
+import com.openagentflow.domain.knowledge.KnowledgeDirectUploadRequest;
+import com.openagentflow.domain.knowledge.KnowledgeDirectUploadTicket;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalRequest;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalResult;
 import com.openagentflow.domain.knowledge.KnowledgeUploadResult;
@@ -118,6 +120,25 @@ public class KnowledgeBaseController {
     }
 
     /**
+     * 申请知识文档 MinIO 直传地址。
+     */
+    @PostMapping("/knowledge-bases/{id}/documents/direct-upload")
+    public ApiResponse<KnowledgeDirectUploadTicket> prepareDirectUpload(
+            @PathVariable String id,
+            @Valid @RequestBody KnowledgeDirectUploadRequest request) {
+        return ApiResponse.ok(knowledgeDocumentProcessingService.prepareDirectUpload(id, request));
+    }
+
+    /**
+     * 确认 MinIO 直传完成并提交后台处理。
+     */
+    @PostMapping("/knowledge-bases/{id}/documents/{documentId}/direct-upload/complete")
+    public ApiResponse<KnowledgeUploadResult> completeDirectUpload(@PathVariable String id,
+                                                                    @PathVariable String documentId) {
+        return ApiResponse.ok(knowledgeDocumentProcessingService.completeDirectUpload(id, documentId));
+    }
+
+    /**
      * 查询知识库文档列表。
      *
      * @param id 知识库 ID
@@ -139,6 +160,15 @@ public class KnowledgeBaseController {
     public ApiResponse<KnowledgeDocumentSummary> getDocumentStatus(@PathVariable String id,
                                                                    @PathVariable String documentId) {
         return ApiResponse.ok(knowledgeDocumentProcessingService.getDocumentStatus(id, documentId));
+    }
+
+    /**
+     * 清理旧分片并重新执行文档解析和向量化。
+     */
+    @PostMapping("/knowledge-bases/{id}/documents/{documentId}/reprocess")
+    public ApiResponse<KnowledgeUploadResult> reprocessDocument(@PathVariable String id,
+                                                                 @PathVariable String documentId) {
+        return ApiResponse.ok(knowledgeDocumentProcessingService.reprocessDocument(id, documentId));
     }
 
     /**

@@ -23,6 +23,8 @@ export interface AsyncTaskSummary {
   queueTopic?: string;
   lockedBy?: string;
   heartbeatAt?: string;
+  lockVersion?: number;
+  checkpoint?: Record<string, unknown>;
   nextRetryAt?: string;
   deadLetterAt?: string;
   errorMessage?: string;
@@ -47,6 +49,21 @@ export interface AsyncTaskDetail extends AsyncTaskSummary {
   resultPayload?: Record<string, unknown>;
   errorCode?: string;
   logs: AsyncTaskLogItem[];
+  stages: AsyncTaskStageItem[];
+}
+
+export interface AsyncTaskStageItem {
+  stageCode: string;
+  stageName: string;
+  stageOrder: number;
+  status: string;
+  workerId?: string;
+  lockVersion?: number;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  errorMessage?: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface AsyncTaskOverview {
@@ -57,6 +74,8 @@ export interface AsyncTaskOverview {
   failedCount: number;
   canceledCount: number;
   deadLetterCount: number;
+  outboxPendingCount: number;
+  outboxDeadCount: number;
 }
 
 export function taskQuery(params: Record<string, string | number | undefined> = {}) {

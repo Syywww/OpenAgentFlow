@@ -60,6 +60,7 @@ Redis: cache, sessions, queue state
 - `V034__recursive_knowledge_chunking.sql`: Parent-Child recursive structured chunking becomes the default strategy for new knowledge bases.
 - `V035__enterprise_rag_metadata_parent_child.sql`: enterprise RAG metadata, existing knowledge-base strategy migration, Parent-Child chunks, knowledge-base versions, and retrieval cache.
 - `V036__kafka_distributed_async_tasks.sql`: Kafka queue metadata, Worker locks, heartbeat, retry scheduling, recovery indexes, and dead-letter fields for distributed async tasks.
+- `V037__enterprise_async_outbox_pipeline.sql`: Transactional Outbox, Fencing Token, resumable checkpoint JSON, and structured task-stage tables for high-throughput document pipelines.
 
 Recommended execution order:
 
@@ -100,6 +101,7 @@ V033__demo_order_summary_tool_intent.sql
 V034__recursive_knowledge_chunking.sql
 V035__enterprise_rag_metadata_parent_child.sql
 V036__kafka_distributed_async_tasks.sql
+V037__enterprise_async_outbox_pipeline.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -139,6 +141,9 @@ Coverage matches the PostgreSQL version at the feature level:
 - Knowledge document processing, vector rebuild, evaluation batch execution, MCP discovery, knowledge governance scans, Memory cleanup, and historical cost recalculation are submitted to Kafka and executed by distributed Workers.
 - MySQL conditional updates provide idempotent task claims; five-second and thirty-second retry Topics provide delayed retries; exhausted tasks enter the dead-letter Topic and can be replayed from the task center.
 - Original uploaded files are stored in MinIO so any Worker instance can parse the same document.
+- `V037__enterprise_async_outbox_pipeline.sql` makes task creation and Kafka pending messages atomic through `async_task_outbox`.
+- `async_task.lock_version` prevents stale Workers from committing newer task results, while `checkpoint_json` stores resumable artifact locations.
+- `async_task_stage` stores parse, chunk, Embedding, persistence, and Milvus stage state with Worker and execution generation fields.
 
 ## Latest Governance Risk Update
 
@@ -226,3 +231,32 @@ Knowledge and memory rows point to Milvus through:
 - `agent_memory.vector_collection_id`
 - `agent_memory.vector_primary_key`
 - `knowledge_retrieval_log.milvus_result_ids`
+
+## P35-P42 生产规模升级
+
+`V038__production_scale_p35_p42.sql` 增加以下数据库能力：
+
+- `async_task` 增加父任务、根任务、分片序号、分片总数和幂等键。
+- `async_task_stage` 按任务、阶段、分片和执行代次保留阶段明细。
+- `document_pipeline_node` 保存文档 DAG 节点、依赖、阶段产物和错误摘要。
+- `runtime_control_command` 保存 Runtime 停止、暂停、恢复和补充指令。
+- `knowledge_index_version` 保存 Milvus 物理集合、稳定别名和关键词索引版本。
+- `data_lifecycle_job` 统一调度 MySQL、MinIO 和向量索引的数据清理。
+- `tenant_resource_quota` 限制工作空间文档、存储、向量、并发和 Token 用量。
+- `platform_security_event` 保存基础设施安全事件和处置状态。
+
+所有新增表和字段均包含中文注释。
+
+## P43-P52 生产闭环升级
+
+`V039__production_closure_p43_p52.sql` 增加以下能力：
+
+- 异步任务和Outbox增加Trace ID，支持跨Kafka分片链路追踪。
+- `tenant_resource_reservation`保存工作空间Redis原子预占的数据库明细。
+- `platform_slo_policy`、`platform_slo_violation`保存SLO目标及违规数据。
+- `data_consistency_issue`保存MySQL、Milvus、OpenSearch、MinIO之间的一致性问题。
+- `ai_guardrail_policy`、`ai_guardrail_event`保存输入、输出和工具护栏策略及命中事件。
+- `release_gate_policy`、`release_gate_execution`保存Agent等资源的发布质量门禁。
+- `software_artifact_attestation`保存SBOM、签名、漏洞、许可证和密钥扫描结果。
+
+所有新增表、字段和索引均带中文注释，初始化脚本可重复执行。

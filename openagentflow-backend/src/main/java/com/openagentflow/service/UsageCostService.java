@@ -59,19 +59,14 @@ public class UsageCostService implements DistributedTaskHandler {
     /** 异步任务服务。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 任务工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
-
     public UsageCostService(ModelUsageQuotaMapper modelUsageQuotaMapper,
                             RuntimeCostDailyMapper runtimeCostDailyMapper,
                             JdbcTemplate jdbcTemplate,
-                            AsyncTaskService asyncTaskService,
-                            KafkaTaskClient kafkaTaskClient) {
+                            AsyncTaskService asyncTaskService) {
         this.modelUsageQuotaMapper = modelUsageQuotaMapper;
         this.runtimeCostDailyMapper = runtimeCostDailyMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
     }
 
     /**
@@ -519,13 +514,6 @@ public class UsageCostService implements DistributedTaskHandler {
                 null,
                 null,
                 Map.of("scope", "all_llm_calls"));
-        try {
-            kafkaTaskClient.publish(task);
-        } catch (Exception exception) {
-            String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-            asyncTaskService.appendLog(task.getId(), "warn", "enqueue_failed",
-                    "Kafka 首次投递失败，补偿调度器将自动重试", Map.of("error", error), 0);
-        }
         return asyncTaskService.getTask(task.getId());
     }
 

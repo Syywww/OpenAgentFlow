@@ -81,6 +81,10 @@ public class RuntimeLlmCallEntity {
     @TableField("latency_ms")
     private Integer latencyMs;
 
+    /** 首Token延迟毫秒数。 */
+    @TableField("first_token_latency_ms")
+    private Integer firstTokenLatencyMs;
+
     /** 成功。 */
     @TableField("success")
     private Boolean success;
@@ -227,6 +231,14 @@ public class RuntimeLlmCallEntity {
 
     public void setLatencyMs(Integer latencyMs) {
         this.latencyMs = latencyMs;
+    }
+
+    public Integer getFirstTokenLatencyMs() {
+        return firstTokenLatencyMs;
+    }
+
+    public void setFirstTokenLatencyMs(Integer firstTokenLatencyMs) {
+        this.firstTokenLatencyMs = firstTokenLatencyMs;
     }
 
     public Boolean getSuccess() {

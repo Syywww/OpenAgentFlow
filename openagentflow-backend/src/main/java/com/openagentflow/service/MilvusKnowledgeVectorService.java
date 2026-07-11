@@ -5,6 +5,7 @@ import com.openagentflow.entity.KnowledgeChunkEntity;
 import com.openagentflow.entity.KnowledgeEmbeddingEntity;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.grpc.DataType;
+import io.milvus.grpc.SearchResults;
 import io.milvus.param.IndexType;
 import io.milvus.param.MetricType;
 import io.milvus.param.R;
@@ -14,19 +15,30 @@ import io.milvus.param.collection.FlushParam;
 import io.milvus.param.collection.HasCollectionParam;
 import io.milvus.param.collection.LoadCollectionParam;
 import io.milvus.param.dml.InsertParam;
+import io.milvus.param.dml.SearchParam;
+import io.milvus.param.dml.UpsertParam;
+import io.milvus.param.dml.DeleteParam;
+import io.milvus.param.alias.AlterAliasParam;
+import io.milvus.param.alias.CreateAliasParam;
 import io.milvus.param.index.CreateIndexParam;
+import io.milvus.response.SearchResultsWrapper;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Milvus 知识向量写入服务。
  */
 @Service
 public class MilvusKnowledgeVectorService {
+
+    /** Milvus 向量检索命中项。 */
+    public record VectorHit(String chunkId, String documentId, String kbId, double score) {
+    }
 
     /** Milvus 客户端。 */
     private final ObjectProvider<MilvusServiceClient> milvusServiceClientProvider;
@@ -106,7 +118,7 @@ public class MilvusKnowledgeVectorService {
             floatVectors.add(vector.stream().map(Double::floatValue).toList());
         }
 
-        InsertParam insertParam = InsertParam.newBuilder()
+        UpsertParam upsertParam = UpsertParam.newBuilder()
                 .withDatabaseName(properties.getMilvus().getDatabaseName())
                 .withCollectionName(targetCollection)
                 .withFields(List.of(
@@ -118,8 +130,8 @@ public class MilvusKnowledgeVectorService {
                         new InsertParam.Field("embedding", floatVectors)
                 ))
                 .build();
-        R<?> result = milvusServiceClient.insert(insertParam);
-        assertMilvusSuccess(result, "Milvus 向量批量写入失败");
+        R<?> result = milvusServiceClient.upsert(upsertParam);
+        assertMilvusSuccess(result, "Milvus 向量批量幂等写入失败");
 
         // 批量写入后只 flush 一次，避免大文档分片时把网络和磁盘开销放大数百倍。
         milvusServiceClient.flush(FlushParam.newBuilder()
@@ -127,6 +139,100 @@ public class MilvusKnowledgeVectorService {
                 .addCollectionName(targetCollection)
                 .withSyncFlush(false)
                 .build());
+    }
+
+    /**
+     * 原子把稳定别名切换到新物理集合，不存在别名时自动创建。
+     *
+     * @param physicalCollection 物理集合名称
+     * @param alias 稳定查询别名
+     */
+    public void activateAlias(String physicalCollection, String alias) {
+        MilvusServiceClient client = requireMilvusClient();
+        R<?> altered = client.alterAlias(AlterAliasParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .withCollectionName(physicalCollection)
+                .withAlias(alias)
+                .build());
+        if (altered != null && altered.getStatus() == 0) {
+            return;
+        }
+        R<?> created = client.createAlias(CreateAliasParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .withCollectionName(physicalCollection)
+                .withAlias(alias)
+                .build());
+        assertMilvusSuccess(created, "Milvus集合别名激活失败");
+    }
+
+    /**
+     * 按文档ID删除Milvus实体，删除结果由后台Compaction异步回收空间。
+     *
+     * @param collectionName 集合基础名称
+     * @param dimension 向量维度
+     * @param documentId 文档ID
+     */
+    public void deleteDocument(String collectionName, int dimension, String documentId) {
+        String baseCollection = StringUtils.hasText(collectionName)
+                ? collectionName : properties.getMilvus().getDefaultKnowledgeCollection();
+        String targetCollection = dimensionCollectionName(baseCollection, dimension);
+        String safeDocumentId = documentId.replace("\\", "\\\\").replace("\"", "\\\"");
+        R<?> result = requireMilvusClient().delete(DeleteParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .withCollectionName(targetCollection)
+                .withExpr("document_id == \"" + safeDocumentId + "\"")
+                .build());
+        assertMilvusSuccess(result, "Milvus文档向量删除失败");
+    }
+
+    /**
+     * 使用 Milvus HNSW 索引执行知识分片近似最近邻检索。
+     *
+     * @param collectionName 集合基础名称
+     * @param kbId 知识库 ID
+     * @param queryVector 查询向量
+     * @param topK 召回上限
+     * @return 按相似度从高到低排列的命中项
+     */
+    public List<VectorHit> searchKnowledgeChunks(String collectionName,
+                                                 String kbId,
+                                                 List<Double> queryVector,
+                                                 int topK) {
+        if (queryVector == null || queryVector.isEmpty() || !StringUtils.hasText(kbId)) {
+            return List.of();
+        }
+        String baseCollection = StringUtils.hasText(collectionName)
+                ? collectionName : properties.getMilvus().getDefaultKnowledgeCollection();
+        String targetCollection = dimensionCollectionName(baseCollection, queryVector.size());
+        ensureCollection(targetCollection, queryVector.size());
+
+        // Milvus 表达式只接受双引号字符串，因此先转义租户数据中的特殊字符。
+        String safeKbId = escapeExpressionValue(kbId);
+        SearchParam searchParam = SearchParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .withCollectionName(targetCollection)
+                .withMetricType(MetricType.COSINE)
+                .withVectorFieldName("embedding")
+                .withTopK(Math.max(1, topK))
+                .withExpr("kb_id == \"" + safeKbId + "\"")
+                .withOutFields(List.of("chunk_id", "document_id", "kb_id"))
+                .withFloatVectors(List.of(queryVector.stream().map(Double::floatValue).toList()))
+                .withParams("{\"ef\":" + Math.max(64, Math.min(512, topK * 4)) + "}")
+                .build();
+        R<SearchResults> result = requireMilvusClient().search(searchParam);
+        assertMilvusSuccess(result, "Milvus 知识向量检索失败");
+
+        SearchResultsWrapper wrapper = new SearchResultsWrapper(result.getData().getResults());
+        List<VectorHit> hits = new ArrayList<>();
+        for (SearchResultsWrapper.IDScore item : wrapper.getIDScore(0)) {
+            Map<String, Object> fields = item.getFieldValues();
+            hits.add(new VectorHit(
+                    String.valueOf(fields.getOrDefault("chunk_id", "")),
+                    String.valueOf(fields.getOrDefault("document_id", "")),
+                    String.valueOf(fields.getOrDefault("kb_id", kbId)),
+                    Math.max(0D, Math.min(1D, item.getScore()))));
+        }
+        return hits;
     }
 
     /**
@@ -139,6 +245,16 @@ public class MilvusKnowledgeVectorService {
     private String dimensionCollectionName(String baseCollection, int dimension) {
         String suffix = "_d" + dimension;
         return baseCollection.endsWith(suffix) ? baseCollection : baseCollection + suffix;
+    }
+
+    /**
+     * 转义 Milvus 标量过滤表达式中的字符串值。
+     *
+     * @param value 原始值
+     * @return 可安全嵌入表达式的值
+     */
+    private String escapeExpressionValue(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /**

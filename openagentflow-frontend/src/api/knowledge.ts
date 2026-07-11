@@ -1,4 +1,4 @@
-import { API_BASE_URL, getAccessToken, request } from './http';
+import { API_BASE_URL, applyAuthHeaders, request } from './http';
 
 export interface KnowledgeSource {
   kbId: string;
@@ -102,6 +102,14 @@ export interface KnowledgeUploadResult {
   message: string;
   asyncAccepted?: boolean;
   asyncTaskId?: string;
+}
+
+export interface KnowledgeDirectUploadTicket {
+  documentId: string;
+  bucket: string;
+  objectKey: string;
+  uploadUrl: string;
+  expiresAt: string;
 }
 
 export interface KnowledgeRetrievalResult {
@@ -277,13 +285,33 @@ export async function deleteKnowledgeBase(id: string) {
 }
 
 export async function uploadKnowledgeDocument(id: string, file: File) {
+  // 大文件绕过 Spring Boot 直接写入 MinIO，避免占用后端连接和 JVM 堆内存。
+  if (file.size >= 5 * 1024 * 1024) {
+    const ticket = await request<KnowledgeDirectUploadTicket>(`/knowledge-bases/${id}/documents/direct-upload`, {
+      method: 'POST',
+      body: JSON.stringify({
+        fileName: file.name,
+        fileSize: file.size,
+        contentType: file.type || 'application/octet-stream',
+      }),
+    });
+    const uploadResponse = await fetch(ticket.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+    if (!uploadResponse.ok) {
+      throw new Error(`MinIO 直传失败，HTTP ${uploadResponse.status}`);
+    }
+    return request<KnowledgeUploadResult>(
+      `/knowledge-bases/${id}/documents/${ticket.documentId}/direct-upload/complete`,
+      { method: 'POST' },
+    );
+  }
   const form = new FormData();
   form.append('file', file);
   const headers = new Headers();
-  const token = getAccessToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
+  applyAuthHeaders(headers);
   const response = await fetch(`${API_BASE_URL}/knowledge-bases/${id}/documents`, {
     method: 'POST',
     headers,
@@ -298,6 +326,12 @@ export async function uploadKnowledgeDocument(id: string, file: File) {
 
 export async function fetchKnowledgeDocumentStatus(kbId: string, documentId: string) {
   return request<KnowledgeDocumentSummary>(`/knowledge-bases/${kbId}/documents/${documentId}`);
+}
+
+export async function reprocessKnowledgeDocument(kbId: string, documentId: string) {
+  return request<KnowledgeUploadResult>(`/knowledge-bases/${kbId}/documents/${documentId}/reprocess`, {
+    method: 'POST',
+  });
 }
 
 export async function retrievalTest(id: string, payload: string | KnowledgeRetrievalOptions, topK = 5, scoreThreshold = 0.65) {

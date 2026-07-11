@@ -45,6 +45,7 @@ public class ProductionStartupValidator implements ApplicationRunner {
         validateMysqlPassword();
         validateKafka();
         validateObjectStorage();
+        validateSecretEncryption();
     }
 
     /**
@@ -102,6 +103,14 @@ public class ProductionStartupValidator implements ApplicationRunner {
                 || bootstrapServers.contains("127.0.0.1")) {
             throw new IllegalStateException("生产环境必须通过 OAF_KAFKA_BOOTSTRAP_SERVERS 配置可用的 Kafka 集群地址");
         }
+        if (properties.getAsyncTask().getReplicationFactor() < 3
+                || properties.getAsyncTask().getMinInSyncReplicas() < 2) {
+            throw new IllegalStateException("生产 Kafka Topic 必须配置副本数至少3、最小同步副本数至少2");
+        }
+        String securityProtocol = environment.getProperty("spring.kafka.properties.security.protocol", "");
+        if (!"SASL_SSL".equalsIgnoreCase(securityProtocol) && !"SSL".equalsIgnoreCase(securityProtocol)) {
+            throw new IllegalStateException("生产 Kafka 必须通过 OAF_KAFKA_SECURITY_PROTOCOL 启用 SASL_SSL 或 SSL");
+        }
     }
 
     /**
@@ -113,11 +122,22 @@ public class ProductionStartupValidator implements ApplicationRunner {
             throw new IllegalStateException("生产环境必须启用 OAF_OBJECT_STORAGE_ENABLED，文档任务需要共享对象存储");
         }
         if (!StringUtils.hasText(storage.getEndpoint())
+                || !StringUtils.hasText(storage.getPublicEndpoint())
+                || storage.getPublicEndpoint().contains("localhost")
+                || storage.getPublicEndpoint().contains("127.0.0.1")
                 || !StringUtils.hasText(storage.getBucket())
                 || !StringUtils.hasText(storage.getAccessKey())
                 || !StringUtils.hasText(storage.getSecretKey())
                 || DEFAULT_MINIO_SECRET.equals(storage.getSecretKey())) {
-            throw new IllegalStateException("生产环境必须配置正式的 MinIO/S3 连接、存储桶和非默认访问密钥");
+            throw new IllegalStateException("生产环境必须配置正式的 MinIO/S3 内部地址、公网地址、存储桶和非默认访问密钥");
+        }
+    }
+
+    /** 校验API Key等敏感配置的主加密密钥。 */
+    private void validateSecretEncryption() {
+        String key = environment.getProperty("openagentflow.security.secret-encryption-key");
+        if (!StringUtils.hasText(key) || key.length() < 32 || key.startsWith("CHANGE_ME")) {
+            throw new IllegalStateException("生产环境必须配置长度不少于32位的OAF_SECRET_ENCRYPTION_KEY");
         }
     }
 }

@@ -7,6 +7,12 @@ import java.time.Instant;
  */
 public class AsyncTaskMessage {
 
+    /** 消息 Schema 版本，用于消费者兼容升级。 */
+    private Integer schemaVersion;
+
+    /** 跨组件Trace ID。 */
+    private String traceId;
+
     /** 消息唯一ID，用于排查重复投递。 */
     private String messageId;
 
@@ -27,6 +33,17 @@ public class AsyncTaskMessage {
 
     /** 上一次执行错误摘要。 */
     private String lastError;
+
+    public Integer getSchemaVersion() {
+        return schemaVersion;
+    }
+
+    public void setSchemaVersion(Integer schemaVersion) {
+        this.schemaVersion = schemaVersion;
+    }
+
+    public String getTraceId() { return traceId; }
+    public void setTraceId(String traceId) { this.traceId = traceId; }
 
     public String getMessageId() {
         return messageId;

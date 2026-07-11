@@ -24,13 +24,13 @@ public class KafkaTaskRecoveryScheduler {
     /** 异步任务服务。 */
     private final AsyncTaskService asyncTaskService;
 
-    /** Kafka 工具类。 */
-    private final KafkaTaskClient kafkaTaskClient;
+    /** Transactional Outbox 服务。 */
+    private final AsyncTaskOutboxService outboxService;
 
     public KafkaTaskRecoveryScheduler(AsyncTaskService asyncTaskService,
-                                      KafkaTaskClient kafkaTaskClient) {
+                                      AsyncTaskOutboxService outboxService) {
         this.asyncTaskService = asyncTaskService;
-        this.kafkaTaskClient = kafkaTaskClient;
+        this.outboxService = outboxService;
     }
 
     /**
@@ -41,8 +41,9 @@ public class KafkaTaskRecoveryScheduler {
         List<AsyncTaskEntity> tasks = asyncTaskService.findRecoverableTasks(100);
         for (AsyncTaskEntity task : tasks) {
             try {
-                kafkaTaskClient.publish(task);
-                log.info("Kafka 任务已补偿投递：taskId={}, taskType={}", task.getId(), task.getTaskType());
+                if (outboxService.enqueueRecovery(task)) {
+                    log.info("Kafka 任务已补充 Outbox：taskId={}, taskType={}", task.getId(), task.getTaskType());
+                }
             } catch (Exception exception) {
                 log.warn("Kafka 任务补偿投递失败：taskId={}, error={}", task.getId(), exception.getMessage());
             }

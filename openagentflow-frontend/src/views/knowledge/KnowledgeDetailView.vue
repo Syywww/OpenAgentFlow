@@ -10,6 +10,7 @@ import {
   fetchKnowledgeBase,
   fetchKnowledgeDocumentStatus,
   rebuildKnowledgeVectors,
+  reprocessKnowledgeDocument,
   retrievalTest,
   uploadKnowledgeDocument,
   type KnowledgeBaseDetail,
@@ -31,6 +32,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const loading = ref(false);
 const uploading = ref(false);
 const rebuilding = ref(false);
+const reprocessingDocumentId = ref('');
 const pollingDocumentId = ref('');
 const pollTimer = ref<number | null>(null);
 const query = ref('请根据知识库总结核心内容');
@@ -154,6 +156,20 @@ async function handleRebuildVectors() {
     router.push('/tasks');
   } finally {
     rebuilding.value = false;
+  }
+}
+
+async function handleReprocessDocument() {
+  if (!selectedDocument.value || reprocessingDocumentId.value) return;
+  if (!window.confirm(`确认重新解析「${selectedDocument.value.docName}」吗？旧分片和向量会被清理后重新生成。`)) return;
+  reprocessingDocumentId.value = selectedDocument.value.id;
+  try {
+    const result = await reprocessKnowledgeDocument(String(route.params.id), selectedDocument.value.id);
+    upsertDocument(result.document);
+    toast(result.message || '文档重新解析任务已提交');
+    startPolling(selectedDocument.value.id);
+  } finally {
+    reprocessingDocumentId.value = '';
   }
 }
 
@@ -310,6 +326,14 @@ function escapeHtml(value: string) {
             @click="router.push('/tasks')"
           >
             <ClipboardList :size="16" /> 查看任务中心日志
+          </button>
+          <button
+            class="secondary-button"
+            type="button"
+            :disabled="processing || Boolean(reprocessingDocumentId)"
+            @click="handleReprocessDocument"
+          >
+            <RefreshCw :size="16" /> {{ reprocessingDocumentId ? '提交中' : '重新解析' }}
           </button>
           <ul class="process-log">
             <li v-for="line in selectedDocument.processLogs || []" :key="line">{{ line }}</li>

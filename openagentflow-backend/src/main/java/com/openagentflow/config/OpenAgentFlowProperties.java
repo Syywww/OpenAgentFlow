@@ -91,11 +91,38 @@ public class OpenAgentFlowProperties {
         /** Topic 分区数量。 */
         private Integer partitions = 6;
 
+        /** Topic 副本数量，本地单 Broker 默认为1，生产建议3。 */
+        private Integer replicationFactor = 1;
+
+        /** Topic 最小同步副本数，本地默认为1，生产建议2。 */
+        private Integer minInSyncReplicas = 1;
+
         /** 最大自动重试次数。 */
         private Integer maxRetries = 3;
 
         /** 运行任务失联判定秒数。 */
         private Long staleSeconds = 300L;
+
+        /** Outbox 单次领取数量。 */
+        private Integer outboxBatchSize = 100;
+
+        /** Outbox 消息最大发送次数。 */
+        private Integer outboxMaxAttempts = 20;
+
+        /** 已发送 Outbox 保留天数。 */
+        private Integer outboxRetentionDays = 7;
+
+        /** Worker 角色：all、document、evaluation、integration、maintenance。 */
+        private String workerRole = "all";
+
+        /** 当前实例是否启用 Kafka 任务消费者。 */
+        private Boolean consumerEnabled = true;
+
+        /** 当前实例是否启用 Outbox 发布器。 */
+        private Boolean publisherEnabled = true;
+
+        /** 单实例允许同时运行的最大任务数。 */
+        private Integer maxRunningTasks = 32;
 
         public Boolean getEnabled() {
             return enabled;
@@ -153,6 +180,22 @@ public class OpenAgentFlowProperties {
             this.partitions = partitions;
         }
 
+        public Integer getReplicationFactor() {
+            return replicationFactor;
+        }
+
+        public void setReplicationFactor(Integer replicationFactor) {
+            this.replicationFactor = replicationFactor;
+        }
+
+        public Integer getMinInSyncReplicas() {
+            return minInSyncReplicas;
+        }
+
+        public void setMinInSyncReplicas(Integer minInSyncReplicas) {
+            this.minInSyncReplicas = minInSyncReplicas;
+        }
+
         public Integer getMaxRetries() {
             return maxRetries;
         }
@@ -168,6 +211,62 @@ public class OpenAgentFlowProperties {
         public void setStaleSeconds(Long staleSeconds) {
             this.staleSeconds = staleSeconds;
         }
+
+        public Integer getOutboxBatchSize() {
+            return outboxBatchSize;
+        }
+
+        public void setOutboxBatchSize(Integer outboxBatchSize) {
+            this.outboxBatchSize = outboxBatchSize;
+        }
+
+        public Integer getOutboxMaxAttempts() {
+            return outboxMaxAttempts;
+        }
+
+        public void setOutboxMaxAttempts(Integer outboxMaxAttempts) {
+            this.outboxMaxAttempts = outboxMaxAttempts;
+        }
+
+        public Integer getOutboxRetentionDays() {
+            return outboxRetentionDays;
+        }
+
+        public void setOutboxRetentionDays(Integer outboxRetentionDays) {
+            this.outboxRetentionDays = outboxRetentionDays;
+        }
+
+        public String getWorkerRole() {
+            return workerRole;
+        }
+
+        public void setWorkerRole(String workerRole) {
+            this.workerRole = workerRole;
+        }
+
+        public Boolean getConsumerEnabled() {
+            return consumerEnabled;
+        }
+
+        public void setConsumerEnabled(Boolean consumerEnabled) {
+            this.consumerEnabled = consumerEnabled;
+        }
+
+        public Boolean getPublisherEnabled() {
+            return publisherEnabled;
+        }
+
+        public void setPublisherEnabled(Boolean publisherEnabled) {
+            this.publisherEnabled = publisherEnabled;
+        }
+
+        public Integer getMaxRunningTasks() {
+            return maxRunningTasks;
+        }
+
+        public void setMaxRunningTasks(Integer maxRunningTasks) {
+            this.maxRunningTasks = maxRunningTasks;
+        }
     }
 
     /**
@@ -180,6 +279,9 @@ public class OpenAgentFlowProperties {
 
         /** MinIO 服务地址。 */
         private String endpoint = "http://localhost:9000";
+
+        /** 浏览器访问 MinIO 的公网地址，用于生成预签名URL。 */
+        private String publicEndpoint = "http://localhost:9000";
 
         /** MinIO 访问账号。 */
         private String accessKey = "minioadmin";
@@ -204,6 +306,14 @@ public class OpenAgentFlowProperties {
 
         public void setEndpoint(String endpoint) {
             this.endpoint = endpoint;
+        }
+
+        public String getPublicEndpoint() {
+            return publicEndpoint;
+        }
+
+        public void setPublicEndpoint(String publicEndpoint) {
+            this.publicEndpoint = publicEndpoint;
         }
 
         public String getAccessKey() {
@@ -386,6 +496,21 @@ public class OpenAgentFlowProperties {
         /** 默认相似度阈值。 */
         private Double defaultScoreThreshold = 0.65;
 
+        /** 单个 Embedding 服务商默认每秒批请求数。 */
+        private Integer embeddingQps = 8;
+
+        /** 单个 Embedding 服务商默认并发批请求数。 */
+        private Integer embeddingConcurrency = 4;
+
+        /** 等待 Embedding 分布式许可的毫秒数。 */
+        private Long embeddingAcquireTimeoutMs = 10000L;
+
+        /** 是否允许 Embedding 失败后使用本地模拟向量，仅建议开发环境开启。 */
+        private Boolean allowLocalEmbeddingFallback = true;
+
+        /** Milvus 不可用时是否允许扫描 MySQL 向量，仅限本地开发兼容。 */
+        private Boolean allowMysqlVectorFallback = false;
+
         public Integer getDefaultTopK() {
             return defaultTopK;
         }
@@ -400,6 +525,46 @@ public class OpenAgentFlowProperties {
 
         public void setDefaultScoreThreshold(Double defaultScoreThreshold) {
             this.defaultScoreThreshold = defaultScoreThreshold;
+        }
+
+        public Integer getEmbeddingQps() {
+            return embeddingQps;
+        }
+
+        public void setEmbeddingQps(Integer embeddingQps) {
+            this.embeddingQps = embeddingQps;
+        }
+
+        public Integer getEmbeddingConcurrency() {
+            return embeddingConcurrency;
+        }
+
+        public void setEmbeddingConcurrency(Integer embeddingConcurrency) {
+            this.embeddingConcurrency = embeddingConcurrency;
+        }
+
+        public Long getEmbeddingAcquireTimeoutMs() {
+            return embeddingAcquireTimeoutMs;
+        }
+
+        public void setEmbeddingAcquireTimeoutMs(Long embeddingAcquireTimeoutMs) {
+            this.embeddingAcquireTimeoutMs = embeddingAcquireTimeoutMs;
+        }
+
+        public Boolean getAllowLocalEmbeddingFallback() {
+            return allowLocalEmbeddingFallback;
+        }
+
+        public void setAllowLocalEmbeddingFallback(Boolean allowLocalEmbeddingFallback) {
+            this.allowLocalEmbeddingFallback = allowLocalEmbeddingFallback;
+        }
+
+        public Boolean getAllowMysqlVectorFallback() {
+            return allowMysqlVectorFallback;
+        }
+
+        public void setAllowMysqlVectorFallback(Boolean allowMysqlVectorFallback) {
+            this.allowMysqlVectorFallback = allowMysqlVectorFallback;
         }
     }
 }

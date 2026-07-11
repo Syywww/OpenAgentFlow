@@ -1,4 +1,4 @@
-import { API_BASE_URL, getAccessToken, request } from './http';
+import { API_BASE_URL, applyAuthHeaders, request } from './http';
 import type { KnowledgeSource } from './knowledge';
 import type { MemoryRecallItem } from './memories';
 
@@ -59,6 +59,13 @@ export interface StreamResult {
   aborted?: boolean;
 }
 
+interface StreamCursor {
+  runId?: string;
+  lastEventId: number;
+  reconnectCount: number;
+  resumable: boolean;
+}
+
 export async function completeChat(payload: ChatCompletionRequest) {
   return request<ChatCompletionResponse>('/chat/completions', {
     method: 'POST',
@@ -73,10 +80,7 @@ export async function streamChat(
 ): Promise<StreamResult> {
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
-  const token = getAccessToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
+  applyAuthHeaders(headers);
 
   const response = await fetch(`${API_BASE_URL}/chat/completions/stream`, {
     method: 'POST',
@@ -89,13 +93,18 @@ export async function streamChat(
     throw new Error('流式对话请求失败');
   }
 
-  return readSseStream(response.body, handlers, signal);
+  return readSseStream(response.body, handlers, signal, {
+    lastEventId: 0,
+    reconnectCount: 0,
+    resumable: true,
+  });
 }
 
 export async function readSseStream(
   body: ReadableStream<Uint8Array>,
   handlers: StreamHandlers,
   signal?: AbortSignal,
+  cursor: StreamCursor = { lastEventId: 0, reconnectCount: 0, resumable: false },
 ): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8');
@@ -123,7 +132,10 @@ export async function readSseStream(
       const events = buffer.split('\n\n');
       buffer = events.pop() ?? '';
       for (const eventText of events) {
-        const eventName = dispatchSseEvent(eventText, handlers);
+        const event = dispatchSseEvent(eventText, handlers);
+        const eventName = event.name;
+        cursor.lastEventId = Math.max(cursor.lastEventId, event.id ?? 0);
+        if (event.runId) cursor.runId = event.runId;
         doneReceived ||= eventName === 'done';
         errorReceived ||= eventName === 'error';
       }
@@ -135,6 +147,10 @@ export async function readSseStream(
     }
     // 已收到 done 说明业务调用成功，忽略 SSE 连接收尾阶段的读流异常。
     if (!doneReceived) {
+      if (cursor.resumable && cursor.runId && cursor.reconnectCount < 3) {
+        await new Promise((resolve) => window.setTimeout(resolve, 300 * (cursor.reconnectCount + 1)));
+        return resumeSseStream(cursor, handlers, signal);
+      }
       throw error;
     }
   } finally {
@@ -142,23 +158,31 @@ export async function readSseStream(
   }
 
   if (!aborted && buffer.trim()) {
-    const eventName = dispatchSseEvent(buffer, handlers);
+    const event = dispatchSseEvent(buffer, handlers);
+    const eventName = event.name;
+    cursor.lastEventId = Math.max(cursor.lastEventId, event.id ?? 0);
+    if (event.runId) cursor.runId = event.runId;
     doneReceived ||= eventName === 'done';
     errorReceived ||= eventName === 'error';
+  }
+
+  if (!aborted && !doneReceived && !errorReceived && cursor.resumable && cursor.runId && cursor.reconnectCount < 3) {
+    return resumeSseStream(cursor, handlers, signal);
   }
 
   return { doneReceived, errorReceived, aborted };
 }
 
-function dispatchSseEvent(eventText: string, handlers: StreamHandlers): string | undefined {
+function dispatchSseEvent(eventText: string, handlers: StreamHandlers): { name?: string; id?: number; runId?: string } {
   const lines = eventText.split(/\r?\n/);
   const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message';
+  const eventId = Number(lines.find((line) => line.startsWith('id:'))?.slice(3).trim() ?? 0);
   const dataText = lines
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trim())
     .join('\n');
   if (!dataText) {
-    return undefined;
+    return {};
   }
 
   let data: Record<string, unknown>;
@@ -179,5 +203,24 @@ function dispatchSseEvent(eventText: string, handlers: StreamHandlers): string |
   } else if (eventName === 'error') {
     handlers.onError?.(String(data.message ?? '模型调用失败'));
   }
-  return eventName;
+  return {
+    name: eventName,
+    id: Number.isFinite(eventId) ? eventId : undefined,
+    runId: typeof data.runId === 'string' ? data.runId : undefined,
+  };
+}
+
+async function resumeSseStream(cursor: StreamCursor, handlers: StreamHandlers, signal?: AbortSignal) {
+  const headers = new Headers();
+  applyAuthHeaders(headers);
+  headers.set('Last-Event-ID', String(cursor.lastEventId));
+  const response = await fetch(
+    `${API_BASE_URL}/runs/${encodeURIComponent(cursor.runId ?? '')}/events/stream?after=${cursor.lastEventId}`,
+    { headers, signal },
+  );
+  if (!response.ok || !response.body) throw new Error('流式对话续传失败');
+  return readSseStream(response.body, handlers, signal, {
+    ...cursor,
+    reconnectCount: cursor.reconnectCount + 1,
+  });
 }

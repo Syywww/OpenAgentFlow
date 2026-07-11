@@ -19,16 +19,31 @@ export function setAccessToken(token: string) {
 export function clearAccessToken() {
   localStorage.removeItem('oaf_access_token');
   localStorage.removeItem('oaf_current_user');
+  localStorage.removeItem('oaf_active_workspace_id');
+}
+
+export function getActiveWorkspaceId() {
+  return localStorage.getItem('oaf_active_workspace_id');
+}
+
+export function setActiveWorkspaceId(workspaceId?: string) {
+  if (workspaceId) localStorage.setItem('oaf_active_workspace_id', workspaceId);
+  else localStorage.removeItem('oaf_active_workspace_id');
+}
+
+export function applyAuthHeaders(headers: Headers) {
+  const token = getAccessToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const workspaceId = getActiveWorkspaceId();
+  if (workspaceId) headers.set('X-Workspace-Id', workspaceId);
+  return headers;
 }
 
 export async function request<T>(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
 
-  const token = getAccessToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
+  applyAuthHeaders(headers);
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
