@@ -3,6 +3,7 @@ package com.openagentflow.service;
 import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.entity.KnowledgeChunkEntity;
 import com.openagentflow.entity.KnowledgeEmbeddingEntity;
+import com.openagentflow.entity.AgentMemoryEntity;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.grpc.DataType;
 import io.milvus.grpc.SearchResults;
@@ -38,6 +39,115 @@ public class MilvusKnowledgeVectorService {
 
     /** Milvus 向量检索命中项。 */
     public record VectorHit(String chunkId, String documentId, String kbId, double score) {
+    }
+
+    /** Milvus Memory向量检索命中项。 */
+    public record MemoryHit(String memoryId, double score) {
+    }
+
+    /**
+     * 批量幂等写入Memory向量。
+     *
+     * @param collectionName 集合基础名称
+     * @param memories 记忆实体
+     * @param vectors 向量值
+     */
+    public void upsertMemories(String collectionName,
+                               List<AgentMemoryEntity> memories,
+                               List<List<Double>> vectors) {
+        if (memories == null || memories.isEmpty()) return;
+        if (vectors == null || memories.size() != vectors.size()) {
+            throw new IllegalArgumentException("Memory与向量数量不一致");
+        }
+        int dimension = vectors.getFirst().size();
+        String base = StringUtils.hasText(collectionName) ? collectionName : properties.getMilvus().getDefaultMemoryCollection();
+        String target = dimensionCollectionName(base, dimension);
+        ensureMemoryCollection(target, dimension);
+
+        List<String> primaryKeys = new ArrayList<>();
+        List<String> memoryIds = new ArrayList<>();
+        List<String> workspaceIds = new ArrayList<>();
+        List<String> agentIds = new ArrayList<>();
+        List<String> userIds = new ArrayList<>();
+        List<String> privacyScopes = new ArrayList<>();
+        List<String> contents = new ArrayList<>();
+        List<List<Float>> floatVectors = new ArrayList<>();
+        for (int index = 0; index < memories.size(); index++) {
+            AgentMemoryEntity memory = memories.get(index);
+            List<Double> vector = vectors.get(index);
+            if (vector.size() != dimension) throw new IllegalArgumentException("同批Memory向量维度必须一致");
+            primaryKeys.add(memory.getVectorPrimaryKey());
+            memoryIds.add(memory.getId());
+            workspaceIds.add(value(memory.getWorkspaceId()));
+            agentIds.add(value(memory.getAgentId()));
+            userIds.add(value(memory.getUserId()));
+            privacyScopes.add(value(memory.getPrivacyScope()));
+            contents.add(truncate(memory.getMemoryText(), 4096));
+            floatVectors.add(vector.stream().map(Double::floatValue).toList());
+        }
+        R<?> result = requireMilvusClient().upsert(UpsertParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .withCollectionName(target)
+                .withFields(List.of(
+                        new InsertParam.Field("vector_primary_key", primaryKeys),
+                        new InsertParam.Field("memory_id", memoryIds),
+                        new InsertParam.Field("workspace_id", workspaceIds),
+                        new InsertParam.Field("agent_id", agentIds),
+                        new InsertParam.Field("user_id", userIds),
+                        new InsertParam.Field("privacy_scope", privacyScopes),
+                        new InsertParam.Field("content", contents),
+                        new InsertParam.Field("embedding", floatVectors)))
+                .build());
+        assertMilvusSuccess(result, "Milvus Memory向量写入失败");
+        requireMilvusClient().flush(FlushParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .addCollectionName(target).withSyncFlush(false).build());
+    }
+
+    /**
+     * 使用ANN和租户标量条件召回Memory。
+     */
+    public List<MemoryHit> searchMemories(String collectionName,
+                                          String workspaceId,
+                                          String agentId,
+                                          String userId,
+                                          List<Double> queryVector,
+                                          int topK) {
+        if (queryVector == null || queryVector.isEmpty() || !StringUtils.hasText(workspaceId) || !StringUtils.hasText(agentId)) {
+            return List.of();
+        }
+        String base = StringUtils.hasText(collectionName) ? collectionName : properties.getMilvus().getDefaultMemoryCollection();
+        String target = dimensionCollectionName(base, queryVector.size());
+        ensureMemoryCollection(target, queryVector.size());
+        String expression = "workspace_id == \"" + escapeExpressionValue(workspaceId) + "\""
+                + " && agent_id == \"" + escapeExpressionValue(agentId) + "\""
+                + " && (user_id == \"" + escapeExpressionValue(value(userId)) + "\""
+                + " || privacy_scope in [\"agent\",\"workspace\"])";
+        R<SearchResults> result = requireMilvusClient().search(SearchParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName())
+                .withCollectionName(target).withMetricType(MetricType.COSINE)
+                .withVectorFieldName("embedding").withTopK(Math.max(1, topK))
+                .withExpr(expression).withOutFields(List.of("memory_id"))
+                .withFloatVectors(List.of(queryVector.stream().map(Double::floatValue).toList()))
+                .withParams("{\"ef\":" + Math.max(64, Math.min(512, topK * 4)) + "}").build());
+        assertMilvusSuccess(result, "Milvus Memory向量检索失败");
+        SearchResultsWrapper wrapper = new SearchResultsWrapper(result.getData().getResults());
+        List<MemoryHit> hits = new ArrayList<>();
+        for (SearchResultsWrapper.IDScore item : wrapper.getIDScore(0)) {
+            hits.add(new MemoryHit(String.valueOf(item.getFieldValues().getOrDefault("memory_id", "")),
+                    Math.max(0D, Math.min(1D, item.getScore()))));
+        }
+        return hits;
+    }
+
+    /** 删除单条Memory向量。 */
+    public void deleteMemory(String collectionName, int dimension, String vectorPrimaryKey) {
+        String base = StringUtils.hasText(collectionName) ? collectionName : properties.getMilvus().getDefaultMemoryCollection();
+        String target = dimensionCollectionName(base, dimension);
+        R<?> result = requireMilvusClient().delete(DeleteParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName()).withCollectionName(target)
+                .withExpr("vector_primary_key == \"" + escapeExpressionValue(vectorPrimaryKey) + "\"").build());
+        assertMilvusSuccess(result, "Milvus Memory向量删除失败");
     }
 
     /** Milvus 客户端。 */
@@ -314,6 +424,37 @@ public class MilvusKnowledgeVectorService {
         assertMilvusSuccess(indexResult, "Milvus 索引创建失败");
         loadCollection(collectionName);
     }
+
+    /** 确保Memory专用集合存在并已加载。 */
+    private void ensureMemoryCollection(String collectionName, int dimension) {
+        MilvusServiceClient client = requireMilvusClient();
+        R<Boolean> exists = client.hasCollection(HasCollectionParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName()).withCollectionName(collectionName).build());
+        assertMilvusSuccess(exists, "Milvus Memory集合检查失败");
+        if (Boolean.TRUE.equals(exists.getData())) { loadCollection(collectionName); return; }
+        List<FieldType> fields = new ArrayList<>();
+        fields.add(FieldType.newBuilder().withName("vector_primary_key").withDataType(DataType.VarChar)
+                .withPrimaryKey(true).withAutoID(false).withMaxLength(160).build());
+        fields.add(varCharField("memory_id", 80));
+        fields.add(varCharField("workspace_id", 80));
+        fields.add(varCharField("agent_id", 80));
+        fields.add(varCharField("user_id", 80));
+        fields.add(varCharField("privacy_scope", 32));
+        fields.add(varCharField("content", 4096));
+        fields.add(FieldType.newBuilder().withName("embedding").withDataType(DataType.FloatVector).withDimension(dimension).build());
+        assertMilvusSuccess(client.createCollection(CreateCollectionParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName()).withCollectionName(collectionName)
+                .withDescription("OpenAgentFlow Agent Memory向量").withShardsNum(2).withFieldTypes(fields).build()),
+                "Milvus Memory集合创建失败");
+        assertMilvusSuccess(client.createIndex(CreateIndexParam.newBuilder()
+                .withDatabaseName(properties.getMilvus().getDatabaseName()).withCollectionName(collectionName)
+                .withFieldName("embedding").withIndexType(IndexType.HNSW).withMetricType(MetricType.COSINE)
+                .withExtraParam("{\"M\":16,\"efConstruction\":128}").withSyncMode(false).build()),
+                "Milvus Memory索引创建失败");
+        loadCollection(collectionName);
+    }
+
+    private String value(String value) { return value == null ? "" : value; }
 
     /**
      * 加载集合到 Milvus 查询节点。

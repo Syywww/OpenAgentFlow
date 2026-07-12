@@ -110,7 +110,9 @@ public class EmbeddingService {
                 int end = Math.min(start + batchSize, texts.size());
                 List<String> batch = texts.subList(start, end);
                 try {
-                    allVectors.addAll(callEmbeddingWithRetry(provider, model, apiKey, batch));
+                    List<List<Double>> batchVectors = callEmbeddingWithRetry(provider, model, apiKey, batch);
+                    assertVectorCount(batch.size(), batchVectors, "Embedding批次");
+                    allVectors.addAll(batchVectors);
                 } catch (EmbeddingBackpressureException exception) {
                     // 背压必须交给 Kafka 重试，不能生成本地向量污染生产知识库。
                     throw exception;
@@ -124,6 +126,7 @@ public class EmbeddingService {
                 }
                 sleepQuietly(120L);
             }
+            assertVectorCount(texts.size(), allVectors, "Embedding总任务");
             result.setVectors(allVectors);
             result.setFallbackUsed(fallbackUsed);
             result.setErrorMessage(lastError);
@@ -253,6 +256,14 @@ public class EmbeddingService {
             return 0;
         }
         return vectors.getFirst().size();
+    }
+
+    /** 防止模型部分返回时静默丢失文档分片。 */
+    private void assertVectorCount(int expected, List<List<Double>> vectors, String stage) {
+        int actual = vectors == null ? 0 : vectors.size();
+        if (actual != expected) {
+            throw new IllegalStateException(stage + "向量数量不一致：expected=" + expected + ", actual=" + actual);
+        }
     }
 
     /**

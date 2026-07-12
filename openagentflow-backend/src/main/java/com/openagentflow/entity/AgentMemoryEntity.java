@@ -17,6 +17,14 @@ public class AgentMemoryEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 所属组织 ID。 */
+    @TableField("organization_id")
+    private String organizationId;
+
+    /** 所属工作空间 ID，用于租户硬隔离。 */
+    @TableField("workspace_id")
+    private String workspaceId;
+
     /** 归属 Agent ID，为空时表示用户级通用记忆。 */
     @TableField("agent_id")
     private String agentId;
@@ -29,6 +37,10 @@ public class AgentMemoryEntity {
     @TableField("session_id")
     private String sessionId;
 
+    /** 记忆主体 ID，例如客户、员工或设备 ID。 */
+    @TableField("subject_id")
+    private String subjectId;
+
     /** 记忆类型：short_term、long_term、task、vector。 */
     @TableField("memory_type")
     private String memoryType;
@@ -36,6 +48,10 @@ public class AgentMemoryEntity {
     /** 记忆密钥，用于业务侧去重或定位来源。 */
     @TableField("memory_key")
     private String memoryKey;
+
+    /** 结构化事实键，用于去重和冲突处理。 */
+    @TableField("fact_key")
+    private String factKey;
 
     /** 可直接注入 Prompt 或用于召回匹配的记忆文本。 */
     @TableField("memory_text")
@@ -45,6 +61,10 @@ public class AgentMemoryEntity {
     @TableField("memory_value")
     private String memoryValue;
 
+    /** 规范化内容 SHA-256 哈希。 */
+    @TableField("content_hash")
+    private String contentHash;
+
     /** 向量 JSON，Milvus 不可用时作为 MySQL 兜底召回依据。 */
     @TableField("embedding_json")
     private String embeddingJson;
@@ -52,6 +72,18 @@ public class AgentMemoryEntity {
     /** 向量二进制。 */
     @TableField("embedding_blob")
     private byte[] embeddingBlob;
+
+    /** 生成当前向量的 Embedding 模型 ID。 */
+    @TableField("embedding_model_id")
+    private String embeddingModelId;
+
+    /** 当前向量维度。 */
+    @TableField("embedding_dimension")
+    private Integer embeddingDimension;
+
+    /** Embedding 模型或算法版本。 */
+    @TableField("embedding_version")
+    private String embeddingVersion;
 
     /** 向量集合ID。 */
     @TableField("vector_collection_id")
@@ -73,6 +105,14 @@ public class AgentMemoryEntity {
     @TableField("sync_status")
     private String syncStatus;
 
+    /** 向量同步重试次数。 */
+    @TableField("sync_retry_count")
+    private Integer syncRetryCount;
+
+    /** 最近一次向量同步错误。 */
+    @TableField("sync_error")
+    private String syncError;
+
     /** 最后同步时间。 */
     @TableField("last_synced_at")
     private LocalDateTime lastSyncedAt;
@@ -84,6 +124,34 @@ public class AgentMemoryEntity {
     /** 重要度得分，范围 0 到 1，用于召回排序。 */
     @TableField("importance_score")
     private BigDecimal importanceScore;
+
+    /** 事实置信度。 */
+    @TableField("confidence_score")
+    private BigDecimal confidenceScore;
+
+    /** 来源可信度。 */
+    @TableField("source_reliability")
+    private BigDecimal sourceReliability;
+
+    /** 综合使用价值得分。 */
+    @TableField("utility_score")
+    private BigDecimal utilityScore;
+
+    /** 事实生效时间。 */
+    @TableField("valid_from")
+    private LocalDateTime validFrom;
+
+    /** 事实失效时间。 */
+    @TableField("valid_to")
+    private LocalDateTime validTo;
+
+    /** 替代当前事实的新记忆 ID。 */
+    @TableField("superseded_by")
+    private String supersededBy;
+
+    /** 同一事实的版本号。 */
+    @TableField("version_no")
+    private Integer versionNo;
 
     /** 过期时间，到期后默认不再参与召回。 */
     @TableField("expired_at")
@@ -117,6 +185,14 @@ public class AgentMemoryEntity {
     @TableField("last_accessed_at")
     private LocalDateTime lastAccessedAt;
 
+    /** 软删除时间。 */
+    @TableField("deleted_at")
+    private LocalDateTime deletedAt;
+
+    /** 创建人 ID。 */
+    @TableField("created_by")
+    private String createdBy;
+
     /** 创建时间。 */
     @TableField("created_at")
     private LocalDateTime createdAt;
@@ -132,6 +208,11 @@ public class AgentMemoryEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getOrganizationId() { return organizationId; }
+    public void setOrganizationId(String organizationId) { this.organizationId = organizationId; }
+    public String getWorkspaceId() { return workspaceId; }
+    public void setWorkspaceId(String workspaceId) { this.workspaceId = workspaceId; }
 
     public String getAgentId() {
         return agentId;
@@ -157,6 +238,9 @@ public class AgentMemoryEntity {
         this.sessionId = sessionId;
     }
 
+    public String getSubjectId() { return subjectId; }
+    public void setSubjectId(String subjectId) { this.subjectId = subjectId; }
+
     public String getMemoryType() {
         return memoryType;
     }
@@ -172,6 +256,9 @@ public class AgentMemoryEntity {
     public void setMemoryKey(String memoryKey) {
         this.memoryKey = memoryKey;
     }
+
+    public String getFactKey() { return factKey; }
+    public void setFactKey(String factKey) { this.factKey = factKey; }
 
     public String getMemoryText() {
         return memoryText;
@@ -189,6 +276,9 @@ public class AgentMemoryEntity {
         this.memoryValue = memoryValue;
     }
 
+    public String getContentHash() { return contentHash; }
+    public void setContentHash(String contentHash) { this.contentHash = contentHash; }
+
     public String getEmbeddingJson() {
         return embeddingJson;
     }
@@ -204,6 +294,13 @@ public class AgentMemoryEntity {
     public void setEmbeddingBlob(byte[] embeddingBlob) {
         this.embeddingBlob = embeddingBlob;
     }
+
+    public String getEmbeddingModelId() { return embeddingModelId; }
+    public void setEmbeddingModelId(String embeddingModelId) { this.embeddingModelId = embeddingModelId; }
+    public Integer getEmbeddingDimension() { return embeddingDimension; }
+    public void setEmbeddingDimension(Integer embeddingDimension) { this.embeddingDimension = embeddingDimension; }
+    public String getEmbeddingVersion() { return embeddingVersion; }
+    public void setEmbeddingVersion(String embeddingVersion) { this.embeddingVersion = embeddingVersion; }
 
     public String getVectorCollectionId() {
         return vectorCollectionId;
@@ -245,6 +342,11 @@ public class AgentMemoryEntity {
         this.syncStatus = syncStatus;
     }
 
+    public Integer getSyncRetryCount() { return syncRetryCount; }
+    public void setSyncRetryCount(Integer syncRetryCount) { this.syncRetryCount = syncRetryCount; }
+    public String getSyncError() { return syncError; }
+    public void setSyncError(String syncError) { this.syncError = syncError; }
+
     public LocalDateTime getLastSyncedAt() {
         return lastSyncedAt;
     }
@@ -268,6 +370,21 @@ public class AgentMemoryEntity {
     public void setImportanceScore(BigDecimal importanceScore) {
         this.importanceScore = importanceScore;
     }
+
+    public BigDecimal getConfidenceScore() { return confidenceScore; }
+    public void setConfidenceScore(BigDecimal confidenceScore) { this.confidenceScore = confidenceScore; }
+    public BigDecimal getSourceReliability() { return sourceReliability; }
+    public void setSourceReliability(BigDecimal sourceReliability) { this.sourceReliability = sourceReliability; }
+    public BigDecimal getUtilityScore() { return utilityScore; }
+    public void setUtilityScore(BigDecimal utilityScore) { this.utilityScore = utilityScore; }
+    public LocalDateTime getValidFrom() { return validFrom; }
+    public void setValidFrom(LocalDateTime validFrom) { this.validFrom = validFrom; }
+    public LocalDateTime getValidTo() { return validTo; }
+    public void setValidTo(LocalDateTime validTo) { this.validTo = validTo; }
+    public String getSupersededBy() { return supersededBy; }
+    public void setSupersededBy(String supersededBy) { this.supersededBy = supersededBy; }
+    public Integer getVersionNo() { return versionNo; }
+    public void setVersionNo(Integer versionNo) { this.versionNo = versionNo; }
 
     public LocalDateTime getExpiredAt() {
         return expiredAt;
@@ -332,6 +449,11 @@ public class AgentMemoryEntity {
     public void setLastAccessedAt(LocalDateTime lastAccessedAt) {
         this.lastAccessedAt = lastAccessedAt;
     }
+
+    public LocalDateTime getDeletedAt() { return deletedAt; }
+    public void setDeletedAt(LocalDateTime deletedAt) { this.deletedAt = deletedAt; }
+    public String getCreatedBy() { return createdBy; }
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
 
     public LocalDateTime getCreatedAt() {
         return createdAt;

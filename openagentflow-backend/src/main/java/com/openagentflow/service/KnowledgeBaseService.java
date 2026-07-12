@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.config.OpenAgentFlowProperties;
+import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.knowledge.AgentKnowledgeBindingRequest;
 import com.openagentflow.domain.knowledge.AgentKnowledgeBindingSummary;
 import com.openagentflow.domain.knowledge.KnowledgeBaseDetail;
@@ -206,7 +207,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         KnowledgeBaseSummary summary = toSummary(entity);
         copySummary(summary, detail);
         detail.setDocuments(listDocuments(id));
-        detail.setChunks(listChunks(id, 50));
+        detail.setChunks(listChunks(id, 10));
         return detail;
     }
 
@@ -399,6 +400,25 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                 .stream()
                 .map(this::toChunkSummary)
                 .toList();
+    }
+
+    /** 分页查询指定知识库或文档的全部切片。 */
+    public PageResult<KnowledgeChunkSummary> listChunks(String kbId, String documentId, Integer pageNo, Integer pageSize) {
+        KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
+        assertCanView(kb);
+        int page = pageNo == null || pageNo < 1 ? 1 : pageNo;
+        int size = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
+        LambdaQueryWrapper<KnowledgeChunkEntity> countWrapper = new LambdaQueryWrapper<KnowledgeChunkEntity>()
+                .eq(KnowledgeChunkEntity::getKbId, kbId)
+                .eq(StringUtils.hasText(documentId), KnowledgeChunkEntity::getDocumentId, documentId);
+        Long total = knowledgeChunkMapper.selectCount(countWrapper);
+        List<KnowledgeChunkSummary> rows = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
+                        .eq(KnowledgeChunkEntity::getKbId, kbId)
+                        .eq(StringUtils.hasText(documentId), KnowledgeChunkEntity::getDocumentId, documentId)
+                        .orderByAsc(KnowledgeChunkEntity::getChunkNo)
+                        .last("LIMIT " + ((page - 1) * size) + "," + size))
+                .stream().map(this::toChunkSummary).toList();
+        return new PageResult<>(rows, total == null ? 0 : total, page, size);
     }
 
     /**
@@ -761,6 +781,25 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                 }
             } catch (Exception exception) {
                 log.warn("OpenSearch混合召回失败，回退本地关键词得分：kbId={}, error={}", kb.getId(), exception.getMessage());
+            }
+        }
+        if ("hybrid".equals(options.searchMode) && externalKeywordScores.isEmpty()) {
+            // 本地未启用OpenSearch时仍保留精确词法通道，避免PDF原句只依赖向量TopK而被遗漏。
+            List<KnowledgeChunkEntity> lexicalChunks = knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkEntity>()
+                    .eq(KnowledgeChunkEntity::getKbId, kb.getId())
+                    .eq(KnowledgeChunkEntity::getStatus, "active")
+                    .and(wrapper -> wrapper.ne(KnowledgeChunkEntity::getChunkLevel, "parent").or().isNull(KnowledgeChunkEntity::getChunkLevel))
+                    .last("limit 2000"));
+            List<Map.Entry<String, Double>> lexicalHits = lexicalChunks.stream()
+                    .map(chunk -> Map.entry(chunk.getId(), keywordScore(query, terms, chunk)))
+                    .filter(entry -> entry.getValue() > 0D)
+                    .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                    .limit(options.candidateK)
+                    .toList();
+            for (int index = 0; index < lexicalHits.size(); index++) {
+                Map.Entry<String, Double> hit = lexicalHits.get(index);
+                externalKeywordScores.put(hit.getKey(), hit.getValue());
+                keywordRanks.put(hit.getKey(), index + 1);
             }
         }
         try {

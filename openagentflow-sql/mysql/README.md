@@ -61,6 +61,10 @@ Redis: cache, sessions, queue state
 - `V035__enterprise_rag_metadata_parent_child.sql`: enterprise RAG metadata, existing knowledge-base strategy migration, Parent-Child chunks, knowledge-base versions, and retrieval cache.
 - `V036__kafka_distributed_async_tasks.sql`: Kafka queue metadata, Worker locks, heartbeat, retry scheduling, recovery indexes, and dead-letter fields for distributed async tasks.
 - `V037__enterprise_async_outbox_pipeline.sql`: Transactional Outbox, Fencing Token, resumable checkpoint JSON, and structured task-stage tables for high-throughput document pipelines.
+- `V038__production_scale_p35_p42.sql`: production scale, tenant quota, lifecycle, observability, and high-availability fields.
+- `V039__production_closure_p43_p52.sql`: platform SLO, guardrails, release gates, consistency, and supply-chain governance.
+- `V040__production_closure_p53_p62.sql`: real retrieval engines, strong tenant context, runtime recovery, OTLP, disaster recovery, and deployment proof.
+- `V041__memory_production_p63.sql`: production Memory tenant isolation, fact versions, policy, feedback, governance issues, metrics, vector consistency, and permissions.
 
 Recommended execution order:
 
@@ -102,6 +106,10 @@ V034__recursive_knowledge_chunking.sql
 V035__enterprise_rag_metadata_parent_child.sql
 V036__kafka_distributed_async_tasks.sql
 V037__enterprise_async_outbox_pipeline.sql
+V038__production_scale_p35_p42.sql
+V039__production_closure_p43_p52.sql
+V040__production_closure_p53_p62.sql
+V041__memory_production_p63.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:

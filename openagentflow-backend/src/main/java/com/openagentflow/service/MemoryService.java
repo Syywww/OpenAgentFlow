@@ -14,6 +14,8 @@ import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.AgentMapper;
 import com.openagentflow.mapper.AgentMemoryMapper;
+import com.openagentflow.security.WorkspaceContextHolder;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -21,8 +23,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.util.DigestUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -31,6 +36,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.Set;
 import java.util.UUID;
 
@@ -69,6 +75,15 @@ public class MemoryService implements DistributedTaskHandler {
     /** 异步任务服务。 */
     private final AsyncTaskService asyncTaskService;
 
+    /** Memory结构化事实提取器。 */
+    private final MemoryExtractionService memoryExtractionService;
+
+    /** Milvus向量读写服务。 */
+    private final MilvusKnowledgeVectorService milvusVectorService;
+
+    /** Redis短期记忆存储。 */
+    private final StringRedisTemplate redisTemplate;
+
     public MemoryService(AgentMemoryMapper agentMemoryMapper,
                          AgentMapper agentMapper,
                          AgentAccessService agentAccessService,
@@ -76,7 +91,10 @@ public class MemoryService implements DistributedTaskHandler {
                          JdbcTemplate jdbcTemplate,
                          ObjectMapper objectMapper,
                          OpenAgentFlowProperties properties,
-                         AsyncTaskService asyncTaskService) {
+                         AsyncTaskService asyncTaskService,
+                         MemoryExtractionService memoryExtractionService,
+                         MilvusKnowledgeVectorService milvusVectorService,
+                         StringRedisTemplate redisTemplate) {
         this.agentMemoryMapper = agentMemoryMapper;
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
@@ -85,6 +103,9 @@ public class MemoryService implements DistributedTaskHandler {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.asyncTaskService = asyncTaskService;
+        this.memoryExtractionService = memoryExtractionService;
+        this.milvusVectorService = milvusVectorService;
+        this.redisTemplate = redisTemplate;
     }
 
     /**
@@ -236,7 +257,15 @@ public class MemoryService implements DistributedTaskHandler {
     public void deleteMemory(String id) {
         AgentMemoryEntity entity = requireMemory(id);
         assertCanManageMemory(entity);
+        if ("synced".equals(entity.getSyncStatus()) && entity.getEmbeddingDimension() != null) {
+            try {
+                milvusVectorService.deleteMemory(entity.getMilvusCollectionName(), entity.getEmbeddingDimension(), entity.getVectorPrimaryKey());
+            } catch (Exception exception) {
+                throw new BusinessException("MEMORY_VECTOR_DELETE_FAILED", "向量删除失败，请稍后重试：" + exception.getMessage());
+            }
+        }
         entity.setStatus("deleted");
+        entity.setDeletedAt(LocalDateTime.now());
         entity.setUpdatedAt(LocalDateTime.now());
         agentMemoryMapper.updateById(entity);
     }
@@ -272,24 +301,42 @@ public class MemoryService implements DistributedTaskHandler {
         }
         String strategy = safeText(agent.getMemoryStrategy()).toLowerCase(Locale.ROOT);
         String currentUserId = currentUserIdOrThrow();
+        String workspaceId = requireWorkspace(agent);
+        limit = Math.min(limit, integer(memoryPolicy(workspaceId, agent.getId()).get("recall_limit"), 8));
         List<AgentMemoryEntity> candidates = agentMemoryMapper.selectList(new LambdaQueryWrapper<AgentMemoryEntity>()
+                .eq(AgentMemoryEntity::getWorkspaceId, workspaceId)
                 .eq(AgentMemoryEntity::getAgentId, agent.getId())
                 .and(wrapper -> wrapper.eq(AgentMemoryEntity::getUserId, currentUserId)
                         .or()
                         .in(AgentMemoryEntity::getPrivacyScope, List.of("agent", "workspace")))
                 .eq(AgentMemoryEntity::getStatus, "active")
+                .and(wrapper -> wrapper.isNull(AgentMemoryEntity::getValidFrom).or().le(AgentMemoryEntity::getValidFrom, LocalDateTime.now()))
+                .and(wrapper -> wrapper.isNull(AgentMemoryEntity::getValidTo).or().gt(AgentMemoryEntity::getValidTo, LocalDateTime.now()))
                 .and(wrapper -> wrapper.isNull(AgentMemoryEntity::getExpiredAt).or().gt(AgentMemoryEntity::getExpiredAt, LocalDateTime.now()))
                 .orderByDesc(AgentMemoryEntity::getUpdatedAt)
-                .last("limit 200"));
+                .last("limit 100"));
         List<Double> queryVector = buildQueryVector(query, candidates);
+        Map<String, Double> milvusScores = searchMilvus(agent, workspaceId, currentUserId, queryVector, limit * 4);
+        if (!milvusScores.isEmpty()) {
+            List<AgentMemoryEntity> vectorCandidates = agentMemoryMapper.selectBatchIds(milvusScores.keySet());
+            Map<String, AgentMemoryEntity> merged = new LinkedHashMap<>();
+            candidates.forEach(item -> merged.put(item.getId(), item));
+            vectorCandidates.stream().filter(item -> workspaceId.equals(item.getWorkspaceId()))
+                    .forEach(item -> merged.put(item.getId(), item));
+            candidates = new ArrayList<>(merged.values());
+        }
         List<MemoryDtos.RecallItem> recalls = candidates.stream()
                 .filter(memory -> memoryTypeAllowed(strategy, memory, sessionId))
-                .map(memory -> toRecallItem(memory, query, queryVector))
-                .filter(item -> item.getScore() > 0.05D)
+                .map(memory -> toRecallItem(memory, query, queryVector, milvusScores.get(memory.getId())))
+                .filter(item -> item.getScore() >= recallThreshold(workspaceId, agent.getId()))
                 .sorted(Comparator.comparingDouble(MemoryDtos.RecallItem::getScore).reversed())
                 .limit(Math.max(1, limit))
-                .toList();
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        recalls.addAll(redisShortTermMemories(workspaceId, agent.getId(), currentUserId, sessionId, query));
+        recalls = recalls.stream().sorted(Comparator.comparingDouble(MemoryDtos.RecallItem::getScore).reversed())
+                .limit(Math.max(1, limit)).toList();
         markHits(recalls);
+        updateRecallMetric(workspaceId, agent.getId(), recalls.size());
         return recalls;
     }
 
@@ -311,35 +358,16 @@ public class MemoryService implements DistributedTaskHandler {
         if (agent == null || !memoryEnabled(agent) || !StringUtils.hasText(userInput) || !StringUtils.hasText(assistantOutput)) {
             return;
         }
-        String memoryType = "long_term".equalsIgnoreCase(agent.getMemoryStrategy()) ? "long_term" : "short_term";
-        if ("vector".equalsIgnoreCase(agent.getMemoryStrategy())) {
-            memoryType = "vector";
-        }
-        AgentMemoryEntity entity = new AgentMemoryEntity();
-        entity.setId(newId());
-        entity.setAgentId(agent.getId());
-        entity.setUserId(currentUserIdOrThrow());
-        entity.setSessionId(sessionId);
-        entity.setMemoryType(memoryType);
-        entity.setMemoryKey("chat:" + safeText(runId));
-        entity.setMemoryText(truncate("用户：" + userInput + "\n助手：" + assistantOutput, 1600));
-        entity.setMemoryValue(toJson(Map.of(
-                "source", "agent_chat",
-                "runId", safeText(runId),
-                "agentId", agent.getId(),
-                "sessionId", safeText(sessionId)
-        )));
-        entity.setImportanceScore(defaultImportance(memoryType));
-        entity.setExpiredAt("short_term".equals(memoryType) ? LocalDateTime.now().plusDays(7) : null);
-        entity.setStatus("active");
-        entity.setPrivacyScope("private");
-        entity.setSourceRunId(runId);
-        entity.setTagsJson("[\"自动沉淀\"]");
-        entity.setHitCount(0);
-        entity.setCreatedAt(LocalDateTime.now());
-        entity.setUpdatedAt(LocalDateTime.now());
-        enrichEmbedding(entity);
-        agentMemoryMapper.insert(entity);
+        String workspaceId = requireWorkspace(agent);
+        String userId = currentUserIdOrThrow();
+        Map<String, Object> policy = memoryPolicy(workspaceId, agent.getId());
+        cacheShortTermConversation(workspaceId, agent.getId(), userId, sessionId, userInput, assistantOutput,
+                integer(policy.get("short_term_ttl_days"), 7));
+        if (Boolean.FALSE.equals(policy.get("extraction_enabled")) || Integer.valueOf(0).equals(policy.get("extraction_enabled"))) return;
+        asyncTaskService.createTask("提取Agent长期记忆", "MEMORY_CAPTURE", "memory_pipeline", runId,
+                "runtime_run", runId, workspaceId, Map.of(
+                        "agentId", agent.getId(), "sessionId", safeText(sessionId), "runId", safeText(runId),
+                        "userId", userId, "userInput", truncate(userInput, 6000)));
     }
 
     /**
@@ -350,20 +378,25 @@ public class MemoryService implements DistributedTaskHandler {
     @Transactional(rollbackFor = Exception.class)
     public MemoryDtos.CleanupResult cleanup() {
         assertCanManageCenter();
+        return cleanupForWorkspace(requiredCurrentWorkspace());
+    }
+
+    /** 按工作空间执行过期归档和低价值清理。 */
+    private MemoryDtos.CleanupResult cleanupForWorkspace(String workspaceId) {
         int archivedExpired = jdbcTemplate.update("""
                 UPDATE agent_memory
                 SET status = 'archived', updated_at = NOW(3)
-                WHERE status = 'active'
+                WHERE workspace_id = ? AND status = 'active'
                   AND expired_at IS NOT NULL
                   AND expired_at < NOW(3)
-                """);
+                """, workspaceId);
         int deletedLowValue = jdbcTemplate.update("""
                 UPDATE agent_memory
                 SET status = 'deleted', updated_at = NOW(3)
-                WHERE status = 'archived'
+                WHERE workspace_id = ? AND status = 'archived'
                   AND hit_count = 0
                   AND updated_at < DATE_SUB(NOW(3), INTERVAL 30 DAY)
-                """);
+                """, workspaceId);
         MemoryDtos.CleanupResult result = new MemoryDtos.CleanupResult();
         result.setArchivedExpiredCount(archivedExpired);
         result.setDeletedLowValueCount(deletedLowValue);
@@ -385,9 +418,136 @@ public class MemoryService implements DistributedTaskHandler {
                 null,
                 "agent_memory",
                 null,
-                null,
+                requiredCurrentWorkspace(),
                 Map.of("scope", "expired_and_archived_low_value"));
         return asyncTaskService.getTask(task.getId());
+    }
+
+    /** 查询Memory生产运营指标。 */
+    public Map<String, Object> productionOverview() {
+        String workspaceId = requiredCurrentWorkspace();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("active", count("SELECT COUNT(1) FROM agent_memory WHERE workspace_id=? AND status='active'", new Object[]{workspaceId}));
+        result.put("syncFailed", count("SELECT COUNT(1) FROM agent_memory WHERE workspace_id=? AND status='active' AND sync_status='failed'", new Object[]{workspaceId}));
+        result.put("openIssues", count("SELECT COUNT(1) FROM memory_governance_issue WHERE workspace_id=? AND status='open'", new Object[]{workspaceId}));
+        result.put("conflicts", count("SELECT COUNT(1) FROM memory_governance_issue WHERE workspace_id=? AND issue_type='conflict' AND status='open'", new Object[]{workspaceId}));
+        List<Map<String, Object>> metrics = jdbcTemplate.queryForList("""
+                SELECT COALESCE(SUM(extraction_total),0) extractionTotal,
+                       COALESCE(SUM(extraction_accepted),0) extractionAccepted,
+                       COALESCE(SUM(recall_total),0) recallTotal,
+                       COALESCE(SUM(recall_hit_total),0) recallHits,
+                       COALESCE(SUM(feedback_positive),0) positiveFeedback,
+                       COALESCE(SUM(feedback_negative),0) negativeFeedback
+                FROM memory_access_metric WHERE workspace_id=? AND metric_date>=DATE_SUB(CURRENT_DATE,INTERVAL 30 DAY)
+                """, workspaceId);
+        result.put("last30Days", metrics.isEmpty() ? Map.of() : metrics.getFirst());
+        return result;
+    }
+
+    /** 查询当前空间的Memory策略。 */
+    public List<Map<String, Object>> listPolicies() {
+        return jdbcTemplate.queryForList("SELECT * FROM memory_policy WHERE workspace_id=? ORDER BY agent_id IS NULL DESC,updated_at DESC", requiredCurrentWorkspace());
+    }
+
+    /** 保存空间或Agent级Memory策略。 */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> savePolicy(Map<String, Object> request) {
+        assertCanManageCenter();
+        String workspaceId = requiredCurrentWorkspace();
+        String id = String.valueOf(request.getOrDefault("id", newId()));
+        String agentId = emptyToNull(String.valueOf(request.getOrDefault("agentId", "")));
+        jdbcTemplate.update("""
+                INSERT INTO memory_policy(id,workspace_id,agent_id,policy_name,extraction_enabled,min_importance,min_confidence,
+                  recall_threshold,recall_limit,prompt_token_budget,short_term_ttl_days,long_term_ttl_days,max_memories_per_user,
+                  pii_mode,conflict_mode,status,created_by)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE policy_name=VALUES(policy_name),extraction_enabled=VALUES(extraction_enabled),
+                  min_importance=VALUES(min_importance),min_confidence=VALUES(min_confidence),recall_threshold=VALUES(recall_threshold),
+                  recall_limit=VALUES(recall_limit),prompt_token_budget=VALUES(prompt_token_budget),short_term_ttl_days=VALUES(short_term_ttl_days),
+                  long_term_ttl_days=VALUES(long_term_ttl_days),max_memories_per_user=VALUES(max_memories_per_user),
+                  pii_mode=VALUES(pii_mode),conflict_mode=VALUES(conflict_mode),status=VALUES(status)
+                """, id, workspaceId, agentId, String.valueOf(request.getOrDefault("policyName", "Memory策略")),
+                Boolean.FALSE.equals(request.get("extractionEnabled")) ? 0 : 1,
+                number(request.get("minImportance"), 0.55D), number(request.get("minConfidence"), 0.65D),
+                number(request.get("recallThreshold"), 0.35D), integer(request.get("recallLimit"), 8),
+                integer(request.get("promptTokenBudget"), 1200), integer(request.get("shortTermTtlDays"), 7),
+                request.get("longTermTtlDays"), integer(request.get("maxMemoriesPerUser"), 10000),
+                String.valueOf(request.getOrDefault("piiMode", "redact")), String.valueOf(request.getOrDefault("conflictMode", "supersede")),
+                String.valueOf(request.getOrDefault("status", "enabled")), currentUserIdOrThrow());
+        return jdbcTemplate.queryForMap("SELECT * FROM memory_policy WHERE id=?", id);
+    }
+
+    /** 分页查询Memory治理问题。 */
+    public PageResult<Map<String, Object>> listGovernanceIssues(String status, String type, Integer pageNo, Integer pageSize) {
+        String workspaceId = requiredCurrentWorkspace();
+        int page = normalizePageNo(pageNo), size = normalizePageSize(pageSize);
+        StringBuilder where = new StringBuilder(" WHERE i.workspace_id=? ");
+        List<Object> args = new ArrayList<>(List.of(workspaceId));
+        if (StringUtils.hasText(status) && !"all".equals(status)) { where.append(" AND i.status=? "); args.add(status); }
+        if (StringUtils.hasText(type) && !"all".equals(type)) { where.append(" AND i.issue_type=? "); args.add(type); }
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM memory_governance_issue i" + where, Long.class, args.toArray());
+        List<Object> listArgs = new ArrayList<>(args); listArgs.add((page - 1) * size); listArgs.add(size);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("SELECT i.*,m.memory_text,m.fact_key FROM memory_governance_issue i LEFT JOIN agent_memory m ON m.id=i.memory_id" + where + " ORDER BY FIELD(i.severity,'critical','high','medium','low'),i.created_at DESC LIMIT ?,?", listArgs.toArray());
+        return new PageResult<>(rows, total == null ? 0 : total, page, size);
+    }
+
+    /** 处置Memory治理问题。 */
+    public Map<String, Object> resolveGovernanceIssue(String id, Map<String, Object> request) {
+        assertCanManageCenter();
+        jdbcTemplate.update("UPDATE memory_governance_issue SET status=?,resolution=?,resolved_by=?,resolved_at=NOW(3) WHERE id=? AND workspace_id=?",
+                String.valueOf(request.getOrDefault("status", "resolved")), String.valueOf(request.getOrDefault("resolution", "已处置")),
+                currentUserIdOrThrow(), id, requiredCurrentWorkspace());
+        return jdbcTemplate.queryForMap("SELECT * FROM memory_governance_issue WHERE id=?", id);
+    }
+
+    /** 保存召回质量反馈并调整记忆效用分。 */
+    @Transactional(rollbackFor = Exception.class)
+    public void feedback(String memoryId, Map<String, Object> request) {
+        AgentMemoryEntity memory = requireMemory(memoryId);
+        String type = String.valueOf(request.getOrDefault("feedbackType", "helpful"));
+        boolean positive = "helpful".equals(type);
+        jdbcTemplate.update("INSERT INTO memory_feedback(id,workspace_id,memory_id,run_id,user_id,feedback_type,score,comment_text) VALUES(UUID(),?,?,?,?,?,?,?)",
+                memory.getWorkspaceId(), memoryId, request.get("runId"), currentUserIdOrThrow(), type,
+                request.get("score"), truncate(String.valueOf(request.getOrDefault("comment", "")), 1000));
+        jdbcTemplate.update("UPDATE agent_memory SET utility_score=LEAST(1,GREATEST(0,utility_score+?)) WHERE id=?", positive ? 0.05D : -0.1D, memoryId);
+        jdbcTemplate.update("""
+                INSERT INTO memory_access_metric(id,workspace_id,agent_id,metric_date,feedback_positive,feedback_negative)
+                VALUES(UUID(),?,?,CURRENT_DATE,?,?) ON DUPLICATE KEY UPDATE
+                  feedback_positive=feedback_positive+VALUES(feedback_positive),feedback_negative=feedback_negative+VALUES(feedback_negative)
+                """, memory.getWorkspaceId(), memory.getAgentId(), positive ? 1 : 0, positive ? 0 : 1);
+        if (List.of("incorrect", "outdated", "sensitive").contains(type)) {
+            createGovernanceIssue(memory.getWorkspaceId(), memoryId, type, "sensitive".equals(type) ? "high" : "medium", request);
+        }
+    }
+
+    /** 提交向量补偿重建任务。 */
+    public AsyncTaskDtos.Detail submitVectorRebuild() {
+        assertCanManageCenter();
+        AsyncTaskEntity task = asyncTaskService.createTask("重建Memory向量", "MEMORY_VECTOR_REBUILD", "memory_governance", null,
+                "agent_memory", null, requiredCurrentWorkspace(), Map.of("scope", "pending_and_failed"));
+        return asyncTaskService.getTask(task.getId());
+    }
+
+    /** 提交Memory治理扫描任务。 */
+    public AsyncTaskDtos.Detail submitGovernanceScan() {
+        assertCanManageCenter();
+        AsyncTaskEntity task = asyncTaskService.createTask("扫描Memory治理问题", "MEMORY_GOVERNANCE_SCAN", "memory_governance", null,
+                "agent_memory", null, requiredCurrentWorkspace(), Map.of("scope", "workspace"));
+        return asyncTaskService.getTask(task.getId());
+    }
+
+    /** 按主体执行一键遗忘，并同步清理向量。 */
+    @Transactional(rollbackFor = Exception.class)
+    public int forgetSubject(String subjectId) {
+        String workspaceId = requiredCurrentWorkspace();
+        String currentUser = currentUserIdOrThrow();
+        if (!isMemoryManager() && !currentUser.equals(subjectId)) throw new BusinessException("MEMORY_FORGET_FORBIDDEN", "只能遗忘自己的Memory");
+        List<AgentMemoryEntity> memories = agentMemoryMapper.selectList(new LambdaQueryWrapper<AgentMemoryEntity>()
+                .eq(AgentMemoryEntity::getWorkspaceId, workspaceId)
+                .and(wrapper -> wrapper.eq(AgentMemoryEntity::getSubjectId, subjectId).or().eq(AgentMemoryEntity::getUserId, subjectId))
+                .ne(AgentMemoryEntity::getStatus, "deleted"));
+        for (AgentMemoryEntity memory : memories) deleteMemory(memory.getId());
+        return memories.size();
     }
 
     /**
@@ -398,17 +558,169 @@ public class MemoryService implements DistributedTaskHandler {
         return "MEMORY_CLEANUP";
     }
 
+    @Override
+    public Set<String> taskTypes() {
+        return Set.of("MEMORY_CLEANUP", "MEMORY_CAPTURE", "MEMORY_VECTOR_REBUILD", "MEMORY_GOVERNANCE_SCAN");
+    }
+
     /**
      * 在 Kafka Worker 中执行 Memory 治理清理。
      */
     @Override
     public Map<String, Object> executeDistributedTask(AsyncTaskEntity task) {
+        if ("MEMORY_CAPTURE".equals(task.getTaskType())) return executeCaptureTask(task);
+        if ("MEMORY_VECTOR_REBUILD".equals(task.getTaskType())) return executeVectorRebuild(task);
+        if ("MEMORY_GOVERNANCE_SCAN".equals(task.getTaskType())) return executeGovernanceScan(task);
         asyncTaskService.updateProgress(task.getId(), "memory_cleanup", "正在清理过期和低价值 Memory", 40, null);
-        MemoryDtos.CleanupResult result = cleanup();
+        MemoryDtos.CleanupResult result = cleanupForWorkspace(task.getWorkspaceId());
         return Map.of(
                 "archivedExpiredCount", result.getArchivedExpiredCount(),
                 "deletedLowValueCount", result.getDeletedLowValueCount(),
                 "messages", result.getMessages());
+    }
+
+    /** 执行对话事实提取、去重、冲突替代和向量同步。 */
+    private Map<String, Object> executeCaptureTask(AsyncTaskEntity task) {
+        Map<String, Object> payload = taskPayload(task);
+        AgentEntity agent = requireAgent(String.valueOf(payload.get("agentId")));
+        String workspaceId = requireWorkspace(agent);
+        String userId = String.valueOf(payload.get("userId"));
+        String runId = String.valueOf(payload.getOrDefault("runId", ""));
+        String sessionId = String.valueOf(payload.getOrDefault("sessionId", ""));
+        String userInput = String.valueOf(payload.getOrDefault("userInput", ""));
+        asyncTaskService.updateProgress(task.getId(), "extract", "正在提取结构化用户事实", 25, null);
+        Map<String, Object> policy = memoryPolicy(workspaceId, agent.getId());
+        List<MemoryExtractionService.Candidate> candidates = memoryExtractionService.extract(agent, workspaceId, runId, userInput,
+                String.valueOf(policy.getOrDefault("pii_mode", "redact")));
+        double minImportance = number(policy.get("min_importance"), 0.55D);
+        double minConfidence = number(policy.get("min_confidence"), 0.65D);
+        int quota = integer(policy.get("max_memories_per_user"), 10000);
+        long activeCount = count("SELECT COUNT(1) FROM agent_memory WHERE workspace_id=? AND user_id=? AND status='active'", new Object[]{workspaceId, userId});
+        int accepted = 0;
+        int duplicate = 0;
+        int rejected = 0;
+        for (MemoryExtractionService.Candidate candidate : candidates) {
+            if (candidate.importance() < minImportance || candidate.confidence() < minConfidence || activeCount + accepted >= quota) {
+                rejected++;
+                continue;
+            }
+            String hash = contentHash(candidate.text());
+            Long exists = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM agent_memory WHERE workspace_id=? AND user_id=? AND content_hash=? AND status='active'", Long.class, workspaceId, userId, hash);
+            if (exists != null && exists > 0) { duplicate++; continue; }
+            AgentMemoryEntity entity = extractedMemory(agent, workspaceId, userId, sessionId, runId, candidate, hash);
+            AgentMemoryEntity previous = agentMemoryMapper.selectOne(new LambdaQueryWrapper<AgentMemoryEntity>()
+                    .eq(AgentMemoryEntity::getWorkspaceId, workspaceId).eq(AgentMemoryEntity::getAgentId, agent.getId())
+                    .eq(AgentMemoryEntity::getUserId, userId).eq(AgentMemoryEntity::getFactKey, candidate.factKey())
+                    .eq(AgentMemoryEntity::getStatus, "active").orderByDesc(AgentMemoryEntity::getVersionNo).last("limit 1"));
+            if (previous != null) entity.setVersionNo((previous.getVersionNo() == null ? 1 : previous.getVersionNo()) + 1);
+            int longTermTtl = integer(policy.get("long_term_ttl_days"), 0);
+            if (longTermTtl > 0) entity.setExpiredAt(LocalDateTime.now().plusDays(longTermTtl));
+            agentMemoryMapper.insert(entity);
+            enrichEmbedding(entity);
+            agentMemoryMapper.updateById(entity);
+            String conflictMode = String.valueOf(policy.getOrDefault("conflict_mode", "supersede"));
+            if (previous != null && !hash.equals(previous.getContentHash()) && "supersede".equals(conflictMode)) {
+                previous.setStatus("archived");
+                previous.setValidTo(LocalDateTime.now());
+                previous.setSupersededBy(entity.getId());
+                agentMemoryMapper.updateById(previous);
+                createGovernanceIssue(workspaceId, entity.getId(), "conflict", "medium", Map.of("supersededMemoryId", previous.getId()));
+            } else if (previous != null && !hash.equals(previous.getContentHash()) && "review".equals(conflictMode)) {
+                createGovernanceIssue(workspaceId, entity.getId(), "conflict", "high", Map.of("conflictingMemoryId", previous.getId()));
+            }
+            accepted++;
+        }
+        updateExtractionMetric(workspaceId, agent.getId(), candidates.size(), accepted);
+        return Map.of("extracted", candidates.size(), "accepted", accepted, "duplicates", duplicate, "rejected", rejected);
+    }
+
+    /** 批量补偿待同步或失败的Memory向量。 */
+    private Map<String, Object> executeVectorRebuild(AsyncTaskEntity task) {
+        String workspaceId = task.getWorkspaceId();
+        List<AgentMemoryEntity> memories = agentMemoryMapper.selectList(new LambdaQueryWrapper<AgentMemoryEntity>()
+                .eq(StringUtils.hasText(workspaceId), AgentMemoryEntity::getWorkspaceId, workspaceId)
+                .in(AgentMemoryEntity::getSyncStatus, List.of("pending", "failed"))
+                .eq(AgentMemoryEntity::getStatus, "active").last("limit 500"));
+        int success = 0;
+        for (AgentMemoryEntity memory : memories) {
+            enrichEmbedding(memory);
+            agentMemoryMapper.updateById(memory);
+            if ("synced".equals(memory.getSyncStatus())) success++;
+        }
+        return Map.of("processed", memories.size(), "synced", success, "failed", memories.size() - success);
+    }
+
+    /** 扫描重复、过期、低价值和同步失败问题。 */
+    private Map<String, Object> executeGovernanceScan(AsyncTaskEntity task) {
+        String workspaceId = task.getWorkspaceId();
+        jdbcTemplate.update("""
+                INSERT INTO memory_governance_issue(id,workspace_id,memory_id,issue_type,severity,issue_detail,status)
+                SELECT UUID(),m.workspace_id,m.id,'sync_failed','high',JSON_OBJECT('syncError',m.sync_error),'open'
+                FROM agent_memory m WHERE m.workspace_id=? AND m.status='active' AND m.sync_status='failed'
+                AND NOT EXISTS(SELECT 1 FROM memory_governance_issue i WHERE i.memory_id=m.id AND i.issue_type='sync_failed' AND i.status='open')
+                """, workspaceId);
+        jdbcTemplate.update("""
+                INSERT INTO memory_governance_issue(id,workspace_id,memory_id,issue_type,severity,issue_detail,status)
+                SELECT UUID(),m.workspace_id,m.id,'low_value','low',JSON_OBJECT('hitCount',m.hit_count),'open'
+                FROM agent_memory m WHERE m.workspace_id=? AND m.status='active' AND m.hit_count=0 AND m.created_at<DATE_SUB(NOW(),INTERVAL 90 DAY)
+                AND NOT EXISTS(SELECT 1 FROM memory_governance_issue i WHERE i.memory_id=m.id AND i.issue_type='low_value' AND i.status='open')
+                """, workspaceId);
+        Long issues = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM memory_governance_issue WHERE workspace_id=? AND status='open'", Long.class, workspaceId);
+        return Map.of("openIssues", issues == null ? 0 : issues);
+    }
+
+    /** 构造提取后的长期记忆实体。 */
+    private AgentMemoryEntity extractedMemory(AgentEntity agent, String workspaceId, String userId, String sessionId,
+                                               String runId, MemoryExtractionService.Candidate candidate, String hash) {
+        AgentMemoryEntity entity = new AgentMemoryEntity();
+        entity.setId(newId()); entity.setWorkspaceId(workspaceId); entity.setOrganizationId(resolveOrganizationId(workspaceId));
+        entity.setAgentId(agent.getId()); entity.setUserId(userId); entity.setSessionId(emptyToNull(sessionId));
+        entity.setSubjectId(userId); entity.setMemoryType("long_term"); entity.setMemoryKey("fact:" + candidate.factKey());
+        entity.setFactKey(candidate.factKey()); entity.setMemoryText(candidate.text()); entity.setContentHash(hash);
+        entity.setMemoryValue(toJson(Map.of("source", "llm_extraction", "category", candidate.category(), "runId", runId)));
+        entity.setImportanceScore(BigDecimal.valueOf(candidate.importance())); entity.setConfidenceScore(BigDecimal.valueOf(candidate.confidence()));
+        entity.setSourceReliability(BigDecimal.valueOf(candidate.sourceReliability())); entity.setUtilityScore(BigDecimal.valueOf(0.5D));
+        entity.setStatus("active"); entity.setPrivacyScope("private"); entity.setSourceRunId(emptyToNull(runId));
+        entity.setTagsJson(toJson(List.of(candidate.category(), "结构化提取"))); entity.setHitCount(0);
+        entity.setSyncStatus("pending"); entity.setSyncRetryCount(0); entity.setMilvusCollectionName(properties.getMilvus().getDefaultMemoryCollection());
+        entity.setVectorCollectionId(DEFAULT_MEMORY_VECTOR_COLLECTION_ID); entity.setVectorPrimaryKey("memory_" + entity.getId());
+        entity.setVersionNo(1); entity.setValidFrom(LocalDateTime.now()); entity.setCreatedBy(userId);
+        entity.setCreatedAt(LocalDateTime.now()); entity.setUpdatedAt(LocalDateTime.now());
+        return entity;
+    }
+
+    /** 在Redis中保留有限长度的短期会话上下文。 */
+    private void cacheShortTermConversation(String workspaceId, String agentId, String userId, String sessionId,
+                                            String userInput, String assistantOutput, int ttlDays) {
+        if (!StringUtils.hasText(sessionId)) return;
+        String key = redisMemoryKey(workspaceId, agentId, userId, sessionId);
+        String value = truncate("用户：" + userInput + "\n助手：" + assistantOutput, 2000);
+        redisTemplate.opsForList().rightPush(key, value);
+        redisTemplate.opsForList().trim(key, -20, -1);
+        redisTemplate.expire(key, Duration.ofDays(Math.max(1, ttlDays)));
+    }
+
+    /** 读取Redis短期记忆并进行轻量关键词评分。 */
+    private List<MemoryDtos.RecallItem> redisShortTermMemories(String workspaceId, String agentId, String userId,
+                                                               String sessionId, String query) {
+        if (!StringUtils.hasText(sessionId)) return List.of();
+        List<String> values = redisTemplate.opsForList().range(redisMemoryKey(workspaceId, agentId, userId, sessionId), -10, -1);
+        if (values == null) return List.of();
+        List<MemoryDtos.RecallItem> result = new ArrayList<>();
+        for (int index = values.size() - 1; index >= 0; index--) {
+            String text = values.get(index);
+            double score = keywordScore(query, text) * 0.7D + 0.2D;
+            if (score < 0.25D) continue;
+            MemoryDtos.RecallItem item = new MemoryDtos.RecallItem();
+            item.setId("redis:" + index); item.setAgentId(agentId); item.setMemoryType("short_term");
+            item.setMemoryText(text); item.setImportanceScore(BigDecimal.valueOf(0.5D)); item.setScore(score);
+            result.add(item);
+        }
+        return result;
+    }
+
+    private String redisMemoryKey(String workspaceId, String agentId, String userId, String sessionId) {
+        return "oaf:memory:short:" + workspaceId + ":" + agentId + ":" + userId + ":" + sessionId;
     }
 
     /**
@@ -422,6 +734,9 @@ public class MemoryService implements DistributedTaskHandler {
             return "";
         }
         StringBuilder builder = new StringBuilder("以下是当前 Agent 召回的用户相关记忆。请在回答时参考，但不要泄露内部记忆编号；如果记忆与问题无关，请忽略。\n");
+        String workspaceId = WorkspaceContextHolder.current();
+        String agentId = recalls.getFirst().getAgentId();
+        int maxChars = Math.max(400, integer(memoryPolicy(workspaceId, agentId).get("prompt_token_budget"), 1200) * 4);
         for (int index = 0; index < recalls.size(); index++) {
             MemoryDtos.RecallItem item = recalls.get(index);
             builder.append("\n[记忆").append(index + 1).append("] ")
@@ -430,8 +745,9 @@ public class MemoryService implements DistributedTaskHandler {
                     .append(String.format(Locale.ROOT, "%.4f", item.getScore()))
                     .append("\n")
                     .append(item.getMemoryText());
+            if (builder.length() >= maxChars) break;
         }
-        return builder.toString();
+        return truncate(builder.toString(), maxChars);
     }
 
     /**
@@ -485,12 +801,23 @@ public class MemoryService implements DistributedTaskHandler {
             entity.setTagsJson(validJsonOrDefault(request.getTagsJson(), "[]"));
         }
         if (!partial) {
+            AgentEntity ownerAgent = StringUtils.hasText(entity.getAgentId()) ? requireAgent(entity.getAgentId()) : null;
+            entity.setWorkspaceId(ownerAgent == null ? WorkspaceContextHolder.current() : ownerAgent.getWorkspaceId());
+            entity.setOrganizationId(resolveOrganizationId(entity.getWorkspaceId()));
+            entity.setCreatedBy(currentUserIdOrThrow());
             entity.setSyncStatus("pending");
+            entity.setSyncRetryCount(0);
             entity.setMilvusCollectionName(properties.getMilvus().getDefaultMemoryCollection());
             entity.setVectorCollectionId(DEFAULT_MEMORY_VECTOR_COLLECTION_ID);
             entity.setVectorPrimaryKey("memory_" + entity.getId());
             entity.setHitCount(0);
+            entity.setConfidenceScore(BigDecimal.valueOf(0.8D));
+            entity.setSourceReliability(BigDecimal.valueOf(0.8D));
+            entity.setUtilityScore(BigDecimal.valueOf(0.5D));
+            entity.setVersionNo(1);
+            entity.setValidFrom(LocalDateTime.now());
         }
+        if (StringUtils.hasText(entity.getMemoryText())) entity.setContentHash(contentHash(entity.getMemoryText()));
     }
 
     /**
@@ -509,12 +836,24 @@ public class MemoryService implements DistributedTaskHandler {
             List<List<Double>> vectors = result.getVectors();
             if (vectors != null && !vectors.isEmpty()) {
                 entity.setEmbeddingJson(toJson(vectors.getFirst()));
-                entity.setSyncStatus(Boolean.TRUE.equals(result.getFallbackUsed()) ? "failed" : "synced");
-                entity.setLastSyncedAt(LocalDateTime.now());
+                entity.setEmbeddingModelId(model.getId());
+                entity.setEmbeddingDimension(vectors.getFirst().size());
+                entity.setEmbeddingVersion(model.getModelCode());
+                if (Boolean.TRUE.equals(result.getFallbackUsed())) {
+                    entity.setSyncStatus("failed");
+                    entity.setSyncError("Embedding使用了降级向量，未写入生产Milvus");
+                } else {
+                    milvusVectorService.upsertMemories(entity.getMilvusCollectionName(), List.of(entity), vectors);
+                    entity.setSyncStatus("synced");
+                    entity.setSyncError(null);
+                    entity.setLastSyncedAt(LocalDateTime.now());
+                }
             }
         } catch (Exception exception) {
             // 记忆保存不能因为向量模型欠费、未配置或网络失败而中断，后续可在治理页面补偿重建。
             entity.setSyncStatus("failed");
+            entity.setSyncRetryCount((entity.getSyncRetryCount() == null ? 0 : entity.getSyncRetryCount()) + 1);
+            entity.setSyncError(truncate(exception.getMessage(), 1000));
             entity.setMemoryValue(mergeJson(entity.getMemoryValue(), Map.of("embeddingError", safeText(exception.getMessage()))));
         }
     }
@@ -527,7 +866,7 @@ public class MemoryService implements DistributedTaskHandler {
      * @param queryVector 查询向量
      * @return 召回项
      */
-    private MemoryDtos.RecallItem toRecallItem(AgentMemoryEntity memory, String query, List<Double> queryVector) {
+    private MemoryDtos.RecallItem toRecallItem(AgentMemoryEntity memory, String query, List<Double> queryVector, Double milvusScore) {
         MemoryDtos.RecallItem item = new MemoryDtos.RecallItem();
         item.setId(memory.getId());
         item.setAgentId(memory.getAgentId());
@@ -535,7 +874,7 @@ public class MemoryService implements DistributedTaskHandler {
         item.setMemoryType(memory.getMemoryType());
         item.setMemoryText(memory.getMemoryText());
         item.setImportanceScore(memory.getImportanceScore());
-        item.setScore(calculateScore(memory, query, queryVector));
+        item.setScore(calculateScore(memory, query, queryVector, milvusScore));
         return item;
     }
 
@@ -547,12 +886,14 @@ public class MemoryService implements DistributedTaskHandler {
      * @param queryVector 查询向量
      * @return 得分
      */
-    private double calculateScore(AgentMemoryEntity memory, String query, List<Double> queryVector) {
-        double vectorScore = cosine(queryVector, parseVector(memory.getEmbeddingJson()));
+    private double calculateScore(AgentMemoryEntity memory, String query, List<Double> queryVector, Double milvusScore) {
+        double vectorScore = milvusScore == null ? cosine(queryVector, parseVector(memory.getEmbeddingJson())) : milvusScore;
         double keywordScore = keywordScore(query, memory.getMemoryText());
         double importance = memory.getImportanceScore() == null ? 0.5D : memory.getImportanceScore().doubleValue();
+        double confidence = memory.getConfidenceScore() == null ? 0.7D : memory.getConfidenceScore().doubleValue();
+        double recency = recencyScore(memory.getUpdatedAt());
         double hitBoost = Math.min(0.1D, (memory.getHitCount() == null ? 0 : memory.getHitCount()) * 0.01D);
-        return Math.max(vectorScore, keywordScore) * 0.75D + importance * 0.2D + hitBoost;
+        return Math.max(vectorScore, keywordScore) * 0.55D + importance * 0.15D + confidence * 0.15D + recency * 0.1D + hitBoost * 0.05D;
     }
 
     /**
@@ -563,10 +904,6 @@ public class MemoryService implements DistributedTaskHandler {
      * @return 查询向量
      */
     private List<Double> buildQueryVector(String query, List<AgentMemoryEntity> candidates) {
-        boolean hasVectorCandidate = candidates.stream().anyMatch(item -> StringUtils.hasText(item.getEmbeddingJson()));
-        if (!hasVectorCandidate) {
-            return List.of();
-        }
         try {
             ModelConfigEntity model = embeddingService.resolveEmbeddingModel(null);
             EmbeddingBatchResult result = embeddingService.embedWithTrace(model, List.of(query));
@@ -576,15 +913,127 @@ public class MemoryService implements DistributedTaskHandler {
         }
     }
 
+    /** 调用Milvus ANN并转换为记忆ID到相似度映射。 */
+    private Map<String, Double> searchMilvus(AgentEntity agent, String workspaceId, String userId,
+                                             List<Double> queryVector, int topK) {
+        if (queryVector == null || queryVector.isEmpty()) return Map.of();
+        try {
+            Map<String, Double> scores = new HashMap<>();
+            for (MilvusKnowledgeVectorService.MemoryHit hit : milvusVectorService.searchMemories(
+                    properties.getMilvus().getDefaultMemoryCollection(), workspaceId, agent.getId(), userId, queryVector, topK)) {
+                if (StringUtils.hasText(hit.memoryId())) scores.put(hit.memoryId(), hit.score());
+            }
+            return scores;
+        } catch (Exception ignored) {
+            // Milvus短暂不可用时保留关键词候选，生产环境由治理问题和告警推动补偿。
+            return Map.of();
+        }
+    }
+
+    /** 读取Agent级策略，缺失时回退工作空间默认策略。 */
+    private Map<String, Object> memoryPolicy(String workspaceId, String agentId) {
+        if (!StringUtils.hasText(workspaceId)) return Map.of();
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT * FROM memory_policy WHERE workspace_id=? AND status='enabled'
+                  AND (agent_id=? OR agent_id IS NULL)
+                ORDER BY CASE WHEN agent_id=? THEN 0 ELSE 1 END LIMIT 1
+                """, workspaceId, agentId, agentId);
+        return rows.isEmpty() ? Map.of() : rows.getFirst();
+    }
+
+    private double recallThreshold(String workspaceId, String agentId) {
+        return number(memoryPolicy(workspaceId, agentId).get("recall_threshold"), 0.35D);
+    }
+
+    /** 写入每日召回聚合指标。 */
+    private void updateRecallMetric(String workspaceId, String agentId, int hitCount) {
+        jdbcTemplate.update("""
+                INSERT INTO memory_access_metric(id,workspace_id,agent_id,metric_date,recall_total,recall_hit_total)
+                VALUES(UUID(),?,?,CURRENT_DATE,1,?)
+                ON DUPLICATE KEY UPDATE recall_total=recall_total+1,recall_hit_total=recall_hit_total+VALUES(recall_hit_total)
+                """, workspaceId, agentId, hitCount);
+    }
+
+    /** 写入每日提取聚合指标。 */
+    private void updateExtractionMetric(String workspaceId, String agentId, int total, int accepted) {
+        jdbcTemplate.update("""
+                INSERT INTO memory_access_metric(id,workspace_id,agent_id,metric_date,extraction_total,extraction_accepted)
+                VALUES(UUID(),?,?,CURRENT_DATE,?,?)
+                ON DUPLICATE KEY UPDATE extraction_total=extraction_total+VALUES(extraction_total),
+                  extraction_accepted=extraction_accepted+VALUES(extraction_accepted)
+                """, workspaceId, agentId, total, accepted);
+    }
+
+    /** 创建去重后的治理问题。 */
+    private void createGovernanceIssue(String workspaceId, String memoryId, String type, String severity, Map<String, Object> detail) {
+        jdbcTemplate.update("""
+                INSERT INTO memory_governance_issue(id,workspace_id,memory_id,issue_type,severity,issue_detail,status)
+                VALUES(UUID(),?,?,?,?,CAST(? AS JSON),'open')
+                """, workspaceId, memoryId, type, severity, toJson(detail));
+    }
+
+    /** 解析异步任务JSON载荷。 */
+    private Map<String, Object> taskPayload(AsyncTaskEntity task) {
+        try {
+            return objectMapper.readValue(task.getRequestPayload(), new TypeReference<Map<String, Object>>() { });
+        } catch (Exception exception) {
+            throw new BusinessException("MEMORY_TASK_PAYLOAD_INVALID", "Memory任务参数无效");
+        }
+    }
+
+    /** 获取Agent工作空间，禁止生产记忆脱离租户边界。 */
+    private String requireWorkspace(AgentEntity agent) {
+        String workspaceId = agent == null ? WorkspaceContextHolder.current() : agent.getWorkspaceId();
+        if (!StringUtils.hasText(workspaceId)) throw new BusinessException("MEMORY_WORKSPACE_REQUIRED", "Memory必须归属工作空间");
+        return workspaceId;
+    }
+
+    private String requiredCurrentWorkspace() {
+        String workspaceId = WorkspaceContextHolder.current();
+        if (!StringUtils.hasText(workspaceId)) throw new BusinessException("MEMORY_WORKSPACE_REQUIRED", "请先选择工作空间");
+        return workspaceId;
+    }
+
+    private String resolveOrganizationId(String workspaceId) {
+        if (!StringUtils.hasText(workspaceId)) return null;
+        List<String> rows = jdbcTemplate.query("SELECT organization_id FROM oaf_workspace WHERE id=?",
+                (rs, rowNum) -> rs.getString(1), workspaceId);
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    /** 内容规范化后生成SHA-256幂等哈希。 */
+    private String contentHash(String text) {
+        try {
+            byte[] bytes = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(safeText(text).trim().toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(bytes);
+        } catch (Exception exception) {
+            return DigestUtils.md5DigestAsHex(safeText(text).getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    /** 按更新时间计算指数式时间衰减近似值。 */
+    private double recencyScore(LocalDateTime updatedAt) {
+        if (updatedAt == null) return 0.3D;
+        long days = Math.max(0L, java.time.temporal.ChronoUnit.DAYS.between(updatedAt, LocalDateTime.now()));
+        return Math.exp(-days / 90D);
+    }
+
+    private double number(Object value, double fallback) { return value instanceof Number number ? number.doubleValue() : fallback; }
+    private int integer(Object value, int fallback) { return value instanceof Number number ? number.intValue() : fallback; }
+
     /**
      * 标记记忆命中。
      *
      * @param recalls 召回项
      */
     private void markHits(List<MemoryDtos.RecallItem> recalls) {
-        for (MemoryDtos.RecallItem item : recalls) {
-            jdbcTemplate.update("UPDATE agent_memory SET hit_count = hit_count + 1, last_accessed_at = NOW(3) WHERE id = ?", item.getId());
-        }
+        List<String> ids = recalls.stream().map(MemoryDtos.RecallItem::getId)
+                .filter(id -> StringUtils.hasText(id) && !id.startsWith("redis:"))
+                .distinct().toList();
+        if (ids.isEmpty()) return;
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        jdbcTemplate.update("UPDATE agent_memory SET hit_count=hit_count+1,last_accessed_at=NOW(3) WHERE id IN (" + placeholders + ")", ids.toArray());
     }
 
     /**
@@ -707,6 +1156,7 @@ public class MemoryService implements DistributedTaskHandler {
      * @param entity 记忆实体
      */
     private void assertCanViewMemory(AgentMemoryEntity entity) {
+        assertWorkspaceScope(entity);
         if (isMemoryManager() || currentUserIdOrThrow().equals(entity.getUserId())) {
             return;
         }
@@ -719,6 +1169,7 @@ public class MemoryService implements DistributedTaskHandler {
      * @param entity 记忆实体
      */
     private void assertCanManageMemory(AgentMemoryEntity entity) {
+        assertWorkspaceScope(entity);
         if (isMemoryManager() || currentUserIdOrThrow().equals(entity.getUserId())) {
             return;
         }
@@ -741,6 +1192,8 @@ public class MemoryService implements DistributedTaskHandler {
      * @param args 参数列表
      */
     private void appendUserScope(StringBuilder where, List<Object> args) {
+        where.append(" AND m.workspace_id = ? ");
+        args.add(requiredCurrentWorkspace());
         if (isMemoryManager()) {
             return;
         }
@@ -754,7 +1207,7 @@ public class MemoryService implements DistributedTaskHandler {
      * @return SQL 片段
      */
     private String userScopeWhere() {
-        return isMemoryManager() ? "" : " AND m.user_id = ? ";
+        return " AND m.workspace_id = ? " + (isMemoryManager() ? "" : " AND m.user_id = ? ");
     }
 
     /**
@@ -763,7 +1216,18 @@ public class MemoryService implements DistributedTaskHandler {
      * @return 参数数组
      */
     private Object[] userScopeArgs() {
-        return isMemoryManager() ? new Object[]{} : new Object[]{currentUserIdOrThrow()};
+        List<Object> args = new ArrayList<>();
+        args.add(requiredCurrentWorkspace());
+        if (!isMemoryManager()) args.add(currentUserIdOrThrow());
+        return args.toArray();
+    }
+
+    /** 校验当前请求不能越过工作空间边界。 */
+    private void assertWorkspaceScope(AgentMemoryEntity entity) {
+        String currentWorkspace = requiredCurrentWorkspace();
+        if (!currentWorkspace.equals(entity.getWorkspaceId())) {
+            throw new BusinessException("MEMORY_WORKSPACE_FORBIDDEN", "不能访问其他工作空间的Memory");
+        }
     }
 
     /**

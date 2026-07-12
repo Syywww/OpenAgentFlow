@@ -77,6 +77,13 @@ export interface KnowledgeChunkSummary {
   createdAt?: string;
 }
 
+export interface KnowledgeChunkPage {
+  records: KnowledgeChunkSummary[];
+  total: number;
+  pageNo: number;
+  pageSize: number;
+}
+
 export interface KnowledgeBaseDetail extends KnowledgeBaseSummary {
   documents: KnowledgeDocumentSummary[];
   chunks: KnowledgeChunkSummary[];
@@ -264,6 +271,11 @@ export async function fetchKnowledgeBases() {
 
 export async function fetchKnowledgeBase(id: string) {
   return request<KnowledgeBaseDetail>(`/knowledge-bases/${id}`);
+}
+
+export async function fetchKnowledgeChunks(id: string, documentId: string, pageNo = 1, pageSize = 10) {
+  const query = new URLSearchParams({ documentId, pageNo: String(pageNo), pageSize: String(pageSize) });
+  return request<KnowledgeChunkPage>(`/knowledge-bases/${id}/chunks?${query.toString()}`);
 }
 
 export async function createKnowledgeBase(payload: KnowledgeBaseRequest) {

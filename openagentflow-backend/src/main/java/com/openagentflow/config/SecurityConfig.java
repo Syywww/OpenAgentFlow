@@ -5,6 +5,7 @@ import com.openagentflow.api.ApiResponse;
 import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.security.JwtAuthenticationFilter;
 import com.openagentflow.security.WorkspaceIsolationFilter;
+import com.openagentflow.security.AuditOperationFilter;
 import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -57,6 +58,7 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    JwtAuthenticationFilter jwtAuthenticationFilter,
                                                    WorkspaceIsolationFilter workspaceIsolationFilter,
+                                                   AuditOperationFilter auditOperationFilter,
                                                    ObjectMapper objectMapper) throws Exception {
         http.csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -112,6 +114,8 @@ public class SecurityConfig {
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 // 工作空间过滤器必须在JWT认证之后执行，才能校验当前用户成员关系。
                 .addFilterAfter(workspaceIsolationFilter, JwtAuthenticationFilter.class)
+                // 接口访问日志放在认证和工作空间校验之后，可输出可信用户与空间信息。
+                .addFilterAfter(auditOperationFilter, WorkspaceIsolationFilter.class)
                 // 明确禁用默认 logout 端点，退出登录由 AuthController 处理 Redis token 删除。
                 .logout(logout -> logout.logoutRequestMatcher(new AntPathRequestMatcher("/security-disabled-logout")));
         return http.build();
@@ -121,6 +125,14 @@ public class SecurityConfig {
     @Bean
     public FilterRegistrationBean<WorkspaceIsolationFilter> workspaceIsolationFilterRegistration(WorkspaceIsolationFilter filter) {
         FilterRegistrationBean<WorkspaceIsolationFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
+
+    /** 禁止Servlet容器重复注册审计过滤器，仅由Spring Security过滤链管理顺序。 */
+    @Bean
+    public FilterRegistrationBean<AuditOperationFilter> auditOperationFilterRegistration(AuditOperationFilter filter) {
+        FilterRegistrationBean<AuditOperationFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setEnabled(false);
         return registration;
     }

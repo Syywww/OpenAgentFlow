@@ -203,6 +203,7 @@ public class DeliveryAcceptanceService {
         checks.add(checkOpsReady());
         checks.add(checkRiskReady());
         checks.add(checkAsyncTaskReady());
+        checks.add(checkMemoryProductionReady());
         checks.add(checkProductionSecrets());
         checks.add(checkDemoData());
         return checks;
@@ -410,6 +411,20 @@ public class DeliveryAcceptanceService {
                 status.equals("passed") ? "暂无积压或失败任务" : "存在积压或失败任务",
                 "进入任务中心处理失败任务，确认长任务没有卡住",
                 false, activeTasks + "/" + failedTasks, "积压和失败均=0", mapOf("activeTasks", activeTasks, "failedTasks", failedTasks));
+    }
+
+    /** Memory生产能力就绪检查。 */
+    private DeliveryAcceptanceDtos.CheckItem checkMemoryProductionReady() {
+        long policies = count("select count(1) from memory_policy where status='enabled'");
+        long syncFailed = count("select count(1) from agent_memory where status='active' and sync_status='failed'");
+        long openHighIssues = count("select count(1) from memory_governance_issue where status='open' and severity in ('high','critical')");
+        boolean ready = policies > 0 && syncFailed == 0 && openHighIssues == 0;
+        return item("memory_production", "Memory生产能力", "AI治理", ready ? "passed" : "warning",
+                ready ? "Memory策略、向量同步和治理状态正常" : "Memory存在策略缺失、向量失败或高风险治理问题",
+                "进入Memory中心执行治理扫描和向量重建，并确认默认空间策略已启用",
+                false, policies + "/" + syncFailed + "/" + openHighIssues,
+                "启用策略>0、向量失败=0、高风险问题=0",
+                mapOf("policies", policies, "syncFailed", syncFailed, "openHighIssues", openHighIssues));
     }
 
     /**

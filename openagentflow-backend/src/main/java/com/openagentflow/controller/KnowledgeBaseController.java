@@ -1,6 +1,7 @@
 package com.openagentflow.controller;
 
 import com.openagentflow.api.ApiResponse;
+import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.knowledge.AgentKnowledgeBindingRequest;
 import com.openagentflow.domain.knowledge.AgentKnowledgeBindingSummary;
 import com.openagentflow.domain.knowledge.KnowledgeBaseDetail;
@@ -178,8 +179,11 @@ public class KnowledgeBaseController {
      * @return 分片摘要列表
      */
     @GetMapping("/knowledge-bases/{id}/chunks")
-    public ApiResponse<List<KnowledgeChunkSummary>> listChunks(@PathVariable String id) {
-        return ApiResponse.ok(knowledgeBaseService.listChunks(id, 100));
+    public ApiResponse<PageResult<KnowledgeChunkSummary>> listChunks(@PathVariable String id,
+                                                                     @org.springframework.web.bind.annotation.RequestParam(required = false) String documentId,
+                                                                     @org.springframework.web.bind.annotation.RequestParam(defaultValue = "1") Integer pageNo,
+                                                                     @org.springframework.web.bind.annotation.RequestParam(defaultValue = "10") Integer pageSize) {
+        return ApiResponse.ok(knowledgeBaseService.listChunks(id, documentId, pageNo, pageSize));
     }
 
     /**

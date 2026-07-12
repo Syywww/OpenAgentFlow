@@ -31,6 +31,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleBusinessException(BusinessException exception) {
+        LOGGER.warn("业务异常 code={} message={}", exception.getCode(), exception.getMessage());
         return ApiResponse.fail(exception.getCode(), exception.getMessage());
     }
 
@@ -47,6 +48,7 @@ public class GlobalExceptionHandler {
                 .findFirst()
                 .map(error -> error.getField() + " " + error.getDefaultMessage())
                 .orElse("请求参数不合法");
+        LOGGER.warn("请求体参数校验失败 message={}", message);
         return ApiResponse.fail("PARAM_INVALID", message);
     }
 
@@ -59,6 +61,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleConstraintViolationException(ConstraintViolationException exception) {
+        LOGGER.warn("请求参数校验失败 message={}", exception.getMessage());
         return ApiResponse.fail("PARAM_INVALID", exception.getMessage());
     }
 
@@ -72,6 +75,7 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     public ApiResponse<Void> handleAuthenticationException(AuthenticationException exception) {
         // 用户名或密码错误时不暴露具体原因，避免被枚举账号。
+        LOGGER.warn("登录认证失败");
         return ApiResponse.fail("LOGIN_FAILED", "用户名或密码错误");
     }
 

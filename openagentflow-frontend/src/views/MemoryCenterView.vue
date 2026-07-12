@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { Plus, RefreshCw, Save, Search, Sparkles, X } from 'lucide-vue-next';
+import { DatabaseZap, Plus, RefreshCw, Save, ScanSearch, Search, Sparkles, ThumbsDown, ThumbsUp, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 import StatCard from '../components/StatCard.vue';
@@ -14,7 +14,18 @@ import {
   fetchMemoryOverview,
   recallMemories,
   updateMemory,
+  fetchMemoryProductionOverview,
+  fetchMemoryPolicies,
+  fetchMemoryGovernanceIssues,
+  saveMemoryPolicy,
+  resolveMemoryGovernanceIssue,
+  scanMemoryGovernance,
+  rebuildMemoryVectors,
+  submitMemoryFeedback,
   type MemoryOverview,
+  type MemoryProductionOverview,
+  type MemoryPolicy,
+  type MemoryGovernanceIssue,
   type MemoryRecallItem,
   type MemorySaveRequest,
   type MemorySummary,
@@ -27,10 +38,22 @@ const overview = ref<MemoryOverview | null>(null);
 const memories = ref<MemorySummary[]>([]);
 const agents = ref<AgentSummary[]>([]);
 const total = ref(0);
-const activePanel = ref<'list' | 'recall' | 'cleanup'>('list');
+const activePanel = ref<'list' | 'recall' | 'cleanup' | 'operations' | 'issues' | 'policies'>('list');
 const memoryModalOpen = ref(false);
 const editingId = ref('');
 const recallResults = ref<MemoryRecallItem[]>([]);
+const productionOverview = ref<MemoryProductionOverview | null>(null);
+const policies = ref<MemoryPolicy[]>([]);
+const issues = ref<MemoryGovernanceIssue[]>([]);
+const issueTotal = ref(0);
+const policyModalOpen = ref(false);
+const issueFilters = reactive({ status: 'open', type: 'all', pageNo: 1, pageSize: 10 });
+const policyForm = reactive({
+  id: '', agentId: '', policyName: 'Memory生产策略', extractionEnabled: true,
+  minImportance: 0.55, minConfidence: 0.65, recallThreshold: 0.35, recallLimit: 8,
+  promptTokenBudget: 1200, shortTermTtlDays: 7, maxMemoriesPerUser: 10000,
+  piiMode: 'redact', conflictMode: 'supersede', status: 'enabled',
+});
 
 const filters = reactive({
   memoryType: 'all',
@@ -75,15 +98,22 @@ async function loadData() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [overviewResult, listResult, agentResult] = await Promise.all([
+    const [overviewResult, listResult, agentResult, productionResult, policyResult, issueResult] = await Promise.all([
       fetchMemoryOverview(),
       fetchMemories(filters),
       fetchAgents(),
+      fetchMemoryProductionOverview(),
+      fetchMemoryPolicies(),
+      fetchMemoryGovernanceIssues(issueFilters),
     ]);
     overview.value = overviewResult;
     memories.value = listResult.records;
     total.value = listResult.total;
     agents.value = agentResult;
+    productionOverview.value = productionResult;
+    policies.value = policyResult;
+    issues.value = issueResult.records;
+    issueTotal.value = issueResult.total;
     if (!recallForm.agentId && agentResult[0]) {
       recallForm.agentId = agentResult[0].id;
     }
@@ -231,6 +261,72 @@ async function runCleanup() {
   }
 }
 
+async function runGovernanceScan() {
+  loading.value = true;
+  try {
+    const task = await scanMemoryGovernance();
+    successMessage.value = `治理扫描任务已提交：${task.taskCode}`;
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '治理扫描提交失败'; }
+  finally { loading.value = false; }
+}
+
+async function runVectorRebuild() {
+  loading.value = true;
+  try {
+    const task = await rebuildMemoryVectors();
+    successMessage.value = `向量重建任务已提交：${task.taskCode}`;
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '向量重建提交失败'; }
+  finally { loading.value = false; }
+}
+
+async function loadIssues(page = issueFilters.pageNo) {
+  issueFilters.pageNo = page;
+  const result = await fetchMemoryGovernanceIssues(issueFilters);
+  issues.value = result.records;
+  issueTotal.value = result.total;
+}
+
+async function resolveIssue(issue: MemoryGovernanceIssue) {
+  await resolveMemoryGovernanceIssue(issue.id, { status: 'resolved', resolution: '已在Memory治理中心确认处置' });
+  successMessage.value = '治理问题已处置';
+  await loadIssues();
+}
+
+function openPolicyModal(policy?: MemoryPolicy) {
+  policyForm.id = policy?.id || '';
+  policyForm.agentId = policy?.agent_id || '';
+  policyForm.policyName = policy?.policy_name || 'Memory生产策略';
+  policyForm.extractionEnabled = policy ? Boolean(policy.extraction_enabled) : true;
+  policyForm.minImportance = Number(policy?.min_importance ?? 0.55);
+  policyForm.minConfidence = Number(policy?.min_confidence ?? 0.65);
+  policyForm.recallThreshold = Number(policy?.recall_threshold ?? 0.35);
+  policyForm.recallLimit = Number(policy?.recall_limit ?? 8);
+  policyForm.promptTokenBudget = Number(policy?.prompt_token_budget ?? 1200);
+  policyForm.shortTermTtlDays = Number(policy?.short_term_ttl_days ?? 7);
+  policyForm.maxMemoriesPerUser = Number(policy?.max_memories_per_user ?? 10000);
+  policyForm.piiMode = policy?.pii_mode || 'redact';
+  policyForm.conflictMode = policy?.conflict_mode || 'supersede';
+  policyForm.status = policy?.status || 'enabled';
+  policyModalOpen.value = true;
+}
+
+async function persistPolicy() {
+  loading.value = true;
+  try {
+    await saveMemoryPolicy({ ...policyForm, id: policyForm.id || undefined, agentId: policyForm.agentId || undefined });
+    policies.value = await fetchMemoryPolicies();
+    policyModalOpen.value = false;
+    successMessage.value = 'Memory策略已保存';
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '策略保存失败'; }
+  finally { loading.value = false; }
+}
+
+async function feedback(item: MemoryRecallItem, type: 'helpful' | 'irrelevant') {
+  if (item.id.startsWith('redis:')) return;
+  await submitMemoryFeedback(item.id, type);
+  successMessage.value = type === 'helpful' ? '已标记为有帮助' : '已标记为不相关';
+}
+
 function normalizeForm(): MemorySaveRequest {
   return {
     ...form,
@@ -354,6 +450,15 @@ function shortText(value?: string, length = 36) {
       <b>{{ overview?.expiredCount || 0 }}</b>
       <small>过期归档和低价值清理</small>
     </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'operations' }" type="button" @click="activePanel = 'operations'">
+      <span>运营指标</span><b>{{ productionOverview?.last30Days?.recallTotal || 0 }}</b><small>近30天召回调用</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'issues' }" type="button" @click="activePanel = 'issues'">
+      <span>治理问题</span><b>{{ productionOverview?.openIssues || 0 }}</b><small>冲突、低价值和同步失败</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'policies' }" type="button" @click="activePanel = 'policies'">
+      <span>策略配置</span><b>{{ policies.length }}</b><small>提取、召回、隐私和配额</small>
+    </button>
   </section>
 
   <section class="section-block prompt-center-panel memory-center-panel">
@@ -423,12 +528,16 @@ function shortText(value?: string, length = 36) {
             <StatusBadge :label="`得分 ${item.score.toFixed(4)}`" />
           </div>
           <p>{{ item.memoryText }}</p>
+          <div v-if="!item.id.startsWith('redis:')" class="table-actions">
+            <button class="icon-button" type="button" title="有帮助" @click="feedback(item, 'helpful')"><ThumbsUp :size="15" /></button>
+            <button class="icon-button" type="button" title="不相关" @click="feedback(item, 'irrelevant')"><ThumbsDown :size="15" /></button>
+          </div>
         </article>
         <p v-if="recallResults.length === 0" class="empty-state">暂无召回结果</p>
       </div>
     </template>
 
-    <template v-else>
+    <template v-else-if="activePanel === 'cleanup'">
       <div class="section-title">
         <h2>记忆治理</h2>
         <div class="title-actions">
@@ -444,6 +553,50 @@ function shortText(value?: string, length = 36) {
         <StatCard label="过期记忆" :value="String(overview?.expiredCount || 0)" detail="可归档" icon="Timer" tone="danger" />
         <StatCard label="待同步" :value="String(overview?.pendingSyncCount || 0)" detail="需向量化" icon="RefreshCw" tone="neutral" />
       </div>
+    </template>
+
+    <template v-else-if="activePanel === 'operations'">
+      <div class="section-title"><h2>Memory 运营指标</h2><span>近30天提取、召回、反馈和向量健康</span></div>
+      <div class="metric-grid">
+        <StatCard label="有效记忆" :value="String(productionOverview?.active || 0)" detail="当前空间" icon="Activity" tone="success" />
+        <StatCard label="提取采纳" :value="String(productionOverview?.last30Days?.extractionAccepted || 0)" detail="结构化事实" icon="Sparkles" tone="info" />
+        <StatCard label="召回命中" :value="String(productionOverview?.last30Days?.recallHits || 0)" detail="注入上下文" icon="Search" tone="neutral" />
+        <StatCard label="向量失败" :value="String(productionOverview?.syncFailed || 0)" detail="需要补偿" icon="Database" tone="danger" />
+      </div>
+      <div class="toolbar compact">
+        <button class="secondary-button" type="button" :disabled="loading" @click="runGovernanceScan"><ScanSearch :size="16" /> 扫描治理问题</button>
+        <button class="primary-button" type="button" :disabled="loading" @click="runVectorRebuild"><DatabaseZap :size="16" /> 重建失败向量</button>
+      </div>
+    </template>
+
+    <template v-else-if="activePanel === 'issues'">
+      <div class="section-title">
+        <h2>治理问题</h2>
+        <div class="title-actions">
+          <select v-model="issueFilters.status" @change="loadIssues(1)"><option value="open">待处理</option><option value="resolved">已处置</option><option value="all">全部</option></select>
+          <select v-model="issueFilters.type" @change="loadIssues(1)"><option value="all">全部类型</option><option value="conflict">事实冲突</option><option value="sync_failed">同步失败</option><option value="low_value">低价值</option><option value="sensitive">敏感内容</option></select>
+          <button class="secondary-button slim" type="button" @click="runGovernanceScan"><ScanSearch :size="14" /> 立即扫描</button>
+        </div>
+      </div>
+      <table class="data-table"><thead><tr><th>类型</th><th>严重度</th><th>事实键</th><th>内容</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="issue in issues" :key="issue.id">
+          <td>{{ issue.issue_type }}</td><td><StatusBadge :label="issue.severity" :tone="issue.severity === 'high' || issue.severity === 'critical' ? 'danger' : 'warning'" /></td>
+          <td>{{ issue.fact_key || '-' }}</td><td><span :title="issue.memory_text">{{ shortText(issue.memory_text, 48) }}</span></td><td>{{ issue.status }}</td>
+          <td><button v-if="issue.status === 'open'" class="primary-button slim" type="button" @click="resolveIssue(issue)">确认处置</button></td>
+        </tr></tbody>
+      </table>
+      <PaginationBar :page="issueFilters.pageNo" :total="issueTotal" :page-size="issueFilters.pageSize" @update:page="loadIssues" />
+      <div v-if="issues.length === 0" class="empty-state">暂无治理问题</div>
+    </template>
+
+    <template v-else>
+      <div class="section-title"><h2>Memory 策略</h2><button class="primary-button slim" type="button" @click="openPolicyModal()"><Plus :size="14" /> 新增策略</button></div>
+      <table class="data-table"><thead><tr><th>策略</th><th>范围</th><th>重要度</th><th>置信度</th><th>召回阈值</th><th>Token预算</th><th>隐私</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="policy in policies" :key="policy.id"><td>{{ policy.policy_name }}</td><td>{{ policy.agent_id ? 'Agent' : '空间默认' }}</td>
+          <td>{{ Number(policy.min_importance).toFixed(2) }}</td><td>{{ Number(policy.min_confidence).toFixed(2) }}</td><td>{{ Number(policy.recall_threshold).toFixed(2) }}</td>
+          <td>{{ policy.prompt_token_budget }}</td><td>{{ policy.pii_mode }}</td><td><StatusBadge :label="policy.status" :tone="policy.status === 'enabled' ? 'success' : 'warning'" /></td>
+          <td><button class="secondary-button slim" type="button" @click="openPolicyModal(policy)">编辑</button></td></tr></tbody>
+      </table>
     </template>
   </section>
 
@@ -502,6 +655,29 @@ function shortText(value?: string, length = 36) {
           <Save :size="16" /> 保存
         </button>
       </div>
+    </div>
+  </div>
+
+  <div v-if="policyModalOpen" class="overlay-backdrop">
+    <div class="modal-panel memory-modal">
+      <div class="overlay-header"><div><h2>Memory 策略</h2><p>控制结构化提取、召回阈值、Prompt预算、隐私和容量</p></div><button class="icon-button" type="button" @click="policyModalOpen = false"><X :size="18" /></button></div>
+      <div class="memory-modal-body">
+        <div class="form-grid">
+          <label>策略名称<input v-model="policyForm.policyName" /></label>
+          <label>适用 Agent<select v-model="policyForm.agentId"><option value="">空间默认</option><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.agentName }}</option></select></label>
+          <label>最低重要度<input v-model.number="policyForm.minImportance" type="number" min="0" max="1" step="0.05" /></label>
+          <label>最低置信度<input v-model.number="policyForm.minConfidence" type="number" min="0" max="1" step="0.05" /></label>
+          <label>召回阈值<input v-model.number="policyForm.recallThreshold" type="number" min="0" max="1" step="0.05" /></label>
+          <label>召回上限<input v-model.number="policyForm.recallLimit" type="number" min="1" max="50" /></label>
+          <label>Prompt Token预算<input v-model.number="policyForm.promptTokenBudget" type="number" min="200" max="8000" /></label>
+          <label>短期保留天数<input v-model.number="policyForm.shortTermTtlDays" type="number" min="1" max="365" /></label>
+          <label>单用户容量<input v-model.number="policyForm.maxMemoriesPerUser" type="number" min="100" /></label>
+          <label>PII策略<select v-model="policyForm.piiMode"><option value="redact">脱敏</option><option value="reject">拒绝保存</option><option value="allow">允许</option></select></label>
+          <label>冲突策略<select v-model="policyForm.conflictMode"><option value="supersede">新事实替代旧事实</option><option value="review">进入人工治理</option><option value="keep">并存</option></select></label>
+          <label>状态<select v-model="policyForm.status"><option value="enabled">启用</option><option value="disabled">停用</option></select></label>
+        </div>
+      </div>
+      <div class="form-actions modal-actions"><button class="secondary-button" type="button" @click="policyModalOpen = false"><X :size="16" /> 取消</button><button class="primary-button" type="button" :disabled="loading" @click="persistPolicy"><Save :size="16" /> 保存策略</button></div>
     </div>
   </div>
 </template>

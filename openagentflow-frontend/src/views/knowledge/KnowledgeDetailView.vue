@@ -8,6 +8,7 @@ import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {
   fetchKnowledgeBase,
+  fetchKnowledgeChunks,
   fetchKnowledgeDocumentStatus,
   rebuildKnowledgeVectors,
   reprocessKnowledgeDocument,
@@ -15,6 +16,7 @@ import {
   uploadKnowledgeDocument,
   type KnowledgeBaseDetail,
   type KnowledgeDocumentSummary,
+  type KnowledgeChunkSummary,
   type KnowledgeRetrievalOptions,
   type KnowledgeRetrievalResult,
   type KnowledgeSource,
@@ -39,6 +41,10 @@ const query = ref('请根据知识库总结核心内容');
 const sources = ref<KnowledgeSource[]>([]);
 const retrievalLatency = ref(0);
 const retrievalQuality = ref<KnowledgeRetrievalResult | null>(null);
+const chunks = ref<KnowledgeChunkSummary[]>([]);
+const chunkTotal = ref(0);
+const chunkPage = ref(1);
+const chunkPageSize = 10;
 type KnowledgeDetailPanel = 'chunks' | 'retrieval' | 'sources';
 const activePanel = ref<KnowledgeDetailPanel>('chunks');
 const retrievalForm = reactive<KnowledgeRetrievalOptions>({
@@ -58,14 +64,8 @@ const retrievalForm = reactive<KnowledgeRetrievalOptions>({
 
 const documents = computed(() => detail.value?.documents ?? []);
 const selectedDocument = computed(() => detail.value?.documents.find((doc) => doc.id === selectedDocumentId.value));
-const visibleChunks = computed(() => {
-  if (!detail.value) return [];
-  if (!selectedDocumentId.value) return detail.value.chunks;
-  return detail.value.chunks.filter((chunk) => chunk.documentId === selectedDocumentId.value);
-});
 const { currentPage: documentPage, pagedItems: pagedDocuments } = usePagination(documents);
 const { currentPage: sourcePage, pagedItems: pagedSources } = usePagination(sources);
-const { currentPage: chunkPage, pagedItems: pagedChunks } = usePagination(visibleChunks);
 const processing = computed(() => selectedDocument.value?.parseStatus === 'processing');
 
 onMounted(() => {
@@ -81,6 +81,7 @@ async function loadDetail() {
   try {
     detail.value = await fetchKnowledgeBase(String(route.params.id));
     selectedDocumentId.value = selectedDocumentId.value || detail.value.documents[0]?.id || '';
+    await loadChunks(1);
     const processingDoc = detail.value.documents.find((doc) => doc.parseStatus === 'processing');
     if (processingDoc) {
       startPolling(processingDoc.id);
@@ -88,6 +89,23 @@ async function loadDetail() {
   } finally {
     loading.value = false;
   }
+}
+
+async function loadChunks(page = chunkPage.value) {
+  if (!selectedDocumentId.value) {
+    chunks.value = [];
+    chunkTotal.value = 0;
+    return;
+  }
+  chunkPage.value = page;
+  const result = await fetchKnowledgeChunks(String(route.params.id), selectedDocumentId.value, page, chunkPageSize);
+  chunks.value = result.records;
+  chunkTotal.value = result.total;
+}
+
+async function selectDocument(documentId: string) {
+  selectedDocumentId.value = documentId;
+  await loadChunks(1);
 }
 
 function chooseFile() {
@@ -285,7 +303,7 @@ function escapeHtml(value: string) {
         class="document-item"
         :class="{ active: selectedDocumentId === doc.id }"
         type="button"
-        @click="selectedDocumentId = doc.id"
+        @click="selectDocument(doc.id)"
       >
         <b>{{ doc.docName }}</b>
         <span>{{ formatSize(doc.fileSize) }} · {{ statusLabel(doc.parseStatus) }} · {{ doc.progressPercent || 0 }}%</span>
@@ -341,7 +359,7 @@ function escapeHtml(value: string) {
           <p v-if="selectedDocument.parseError" class="error-text">{{ selectedDocument.parseError }}</p>
         </div>
 
-        <article v-for="chunk in pagedChunks" :key="chunk.id" class="chunk-item">
+        <article v-for="chunk in chunks" :key="chunk.id" class="chunk-item">
           <div>
             <b>{{ chunk.title || `分片 ${chunk.chunkNo}` }}</b>
             <StatusBadge :label="chunk.syncStatus === 'synced' ? '已写入 Milvus' : chunk.syncStatus || '待同步'" />
@@ -349,8 +367,8 @@ function escapeHtml(value: string) {
           <p>{{ chunk.content }}</p>
           <span>{{ chunk.tokenCount }} tokens</span>
         </article>
-        <PaginationBar v-model:page="chunkPage" :total="visibleChunks.length" />
-        <div v-if="visibleChunks.length === 0" class="empty-state">
+        <PaginationBar :page="chunkPage" :total="chunkTotal" :page-size="chunkPageSize" @update:page="loadChunks" />
+        <div v-if="chunks.length === 0" class="empty-state">
           {{ selectedDocument ? '当前文档暂无切片' : '暂无可预览分片' }}
         </div>
       </template>

@@ -14,7 +14,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限、调试运行和 Runtime 策略解释器。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
-- **RAG 知识库**：知识库 CRUD、文档上传、解析、Parent-Child 递归结构化切片、Embedding、Milvus 写入、混合召回、重排、检索缓存、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
+- **RAG 知识库**：知识库 CRUD、文档上传、解析、Parent-Child 递归结构化切片、Embedding 数量完整性校验、Milvus 写入、切片分页预览、混合召回、重排、检索缓存、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
 - **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
 - **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
@@ -26,7 +26,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **一键演示数据**：提供 P33 演示样例包，内置 Prompt、Agent、知识库、工具、工作流、评测集、多 Agent 团队和 Memory，支持脚本快速初始化。
 - **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台支持流式生成暂停、保留部分回答并引入补充说明继续，长对话内容、引用来源和工具调用在独立区域内滚动展示。
-- **Memory 记忆中心**：支持短期会话记忆、长期记忆、任务记忆、向量记忆、Prompt 同款管理布局、弹框维护、召回测试、过期清理、客服助手长期记忆模板、Agent 调试链路自动沉淀和 SSE 异步登录态传递。
+- **Memory 记忆中心**：支持 Redis 短期记忆、MySQL 事实主数据、Milvus HNSW 长期记忆、LLM 结构化提取、Kafka + Outbox 异步流水线、内容哈希去重、事实版本与冲突替代、PII 策略、租户硬隔离、混合召回与时间衰减、Prompt Token 预算、反馈学习、配额、向量补偿、用户遗忘、治理问题和运营指标。
 - **分布式异步任务**：基于 Kafka + Transactional Outbox 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持分类 Topic、多实例消费、MySQL 幂等抢占、Fencing Token、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
 - **开源工程化**：Docker Compose、`.env.example`、CI、脚本、License、Issue/PR 模板和开源文档。
 
@@ -139,6 +139,7 @@ dm/
 - Embedding 背压：通过 `OAF_EMBEDDING_QPS`、`OAF_EMBEDDING_CONCURRENCY` 和 Redis 分布式许可控制模型端点压力；生产环境禁止本地模拟向量兜底。
 - 后端上下文路径：`/api`
 - JWT Secret：生产环境必须通过 `OAF_JWT_SECRET` 覆盖
+- IDEA控制台启动时会显示后端启动成功摘要、IP、端口、Swagger和基础依赖地址；空闲阶段保持安静，仅在HTTP请求ID存在时输出请求URL、Spring MVC匹配路由、业务链路、MyBatis SQL耗时和JdbcTemplate SQL。定时任务、Kafka消费和内部Trace不会持续刷出成功SQL，无请求上下文的ERROR仍会显示。SQL参数值不输出，避免密码、Token与API Key泄露。可通过`OAF_SQL_LOG_ENABLED`、`OAF_SLOW_SQL_MS`、`OAF_SLOW_REQUEST_MS`调整。
 
 真实模型 API Key 不会写入源码、SQL 或 README。SQL 只初始化模型供应商和模型接入点，真实 Key 请在系统设置页或本地数据库中配置。
 
@@ -157,7 +158,7 @@ openagentflow.async-task.dlt
 
 新任务会按负载进入 `.document`、`.evaluation`、`.integration`、`.maintenance` 分类 Topic，对应重试 Topic 使用相同后缀。Worker 每 20 秒刷新心跳，每次接管递增 `lock_version`；旧 Worker 无法提交新执行代次的结果。执行失败后进入 5 秒和 30 秒重试 Topic，超过最大次数后进入死信 Topic；Outbox 独立重试 Broker 发送，补偿调度器处理遗留待执行任务和心跳超时任务。调试台 SSE、单次 Agent、多 Agent 和工作流运行保留实时响应链路。
 
-大于 5MB 的文档由浏览器使用 MinIO 预签名 URL 直传，小文件通过后端 InputStream 流式写入；Worker 把对象流式落到临时文件后解析。解析文本和向量批次保存为 MinIO 检查点，数据库或 Milvus 阶段失败后可以跳过已完成的模型调用。任务中心展示解析、切片、Embedding、持久化、Milvus 五阶段时间线。
+大于 5MB 的文档由浏览器使用 MinIO 预签名 URL 直传，小文件通过后端 InputStream 流式写入；Worker 把对象流式落到临时文件后解析。解析文本和向量批次保存为 MinIO 检查点，Embedding 默认每 16 个子分片形成一个物理任务，并对每批输入数、向量返回数执行强一致校验，禁止模型部分返回时静默丢失后部内容。稳定分片ID包含文档、全局分片号、父级、偏移量和内容哈希，避免不同父分片下的局部序号碰撞；Fan-in必须等待达到预期分片总数后才能收口。数据库或 Milvus 阶段失败后可以跳过已完成的模型调用，任务中心展示解析、切片、Embedding、持久化、Milvus 五阶段时间线。
 
 生产环境要求 Kafka Topic 副本数至少 `3`、`min.insync.replicas` 至少 `2`，并应使用多 Broker 集群和独立 MinIO/S3 服务。API 实例可设置 `OAF_KAFKA_CONSUMER_ENABLED=false`，专用 Worker 按角色独立扩容。
 
@@ -308,6 +309,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P60 多资源发布门禁 | 已完成 | Agent、Prompt、工作流发布检查，真实P95、安全与成本配额，限时豁免审批 |
 | P61 灾备演练闭环 | 已完成 | MySQL一致性备份、SHA-256校验、隔离恢复、核心表冒烟查询和RTO测量脚本 |
 | P62 可部署供应链证明 | 已完成 | GHCR不可变镜像、Cosign镜像签名、GitHub provenance、平台准入回写和跨故障域调度 |
+| P63 Memory生产级增强 | 已完成 | LLM结构化事实提取、Redis短期记忆、Kafka异步沉淀、MySQL事实版本、Milvus ANN、租户标量过滤、混合排序、PII与冲突策略、容量配额、反馈学习、治理扫描、向量重建、用户遗忘和运营指标 |
 
 ## 演示建议
 

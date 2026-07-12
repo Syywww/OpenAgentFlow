@@ -10,8 +10,10 @@
 
     <!-- 彩色控制台输出，适合 IDEA Run Console 直接查看。 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <!-- 只输出携带请求ID/Trace ID的链路日志；无上下文时仅保留ERROR。 -->
+        <filter class="com.openagentflow.config.RequestContextConsoleLogFilter"/>
         <encoder charset="UTF-8">
-            <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr(${APP_NAME}){cyan} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){blue} %clr(:){faint} %m%n%wEx</pattern>
+            <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr(${APP_NAME}){cyan} %clr([%15.15t]){faint} %clr([req:%X{requestId:--} trace:%X{traceId:--}]){magenta} %clr(%-40.40logger{39}){blue} %clr(:){faint} %m%n%wEx</pattern>
         </encoder>
     </appender>
 
@@ -23,6 +25,10 @@
         <logger name="com.baomidou.mybatisplus" level="${OAF_MYBATIS_LOG_LEVEL:-INFO}"/>
         <logger name="org.mybatis" level="${OAF_MYBATIS_LOG_LEVEL:-INFO}"/>
         <logger name="org.springframework.jdbc" level="${OAF_JDBC_LOG_LEVEL:-INFO}"/>
+        <logger name="org.springframework.jdbc.core.JdbcTemplate" level="${OAF_JDBC_LOG_LEVEL:-DEBUG}"/>
+        <logger name="org.springframework.jdbc.core.StatementCreatorUtils" level="WARN"/>
+        <logger name="com.openagentflow.database" level="${OAF_SQL_ACCESS_LOG_LEVEL:-INFO}"/>
+        <logger name="com.openagentflow.http.access" level="${OAF_HTTP_ACCESS_LOG_LEVEL:-INFO}"/>
         <root level="${CONSOLE_LOG_LEVEL}">
             <appender-ref ref="CONSOLE"/>
         </root>
@@ -35,6 +41,10 @@
         <logger name="com.baomidou.mybatisplus" level="${OAF_MYBATIS_LOG_LEVEL:-WARN}"/>
         <logger name="org.mybatis" level="${OAF_MYBATIS_LOG_LEVEL:-WARN}"/>
         <logger name="org.springframework.jdbc" level="${OAF_JDBC_LOG_LEVEL:-WARN}"/>
+        <logger name="org.springframework.jdbc.core.JdbcTemplate" level="${OAF_JDBC_LOG_LEVEL:-DEBUG}"/>
+        <logger name="org.springframework.jdbc.core.StatementCreatorUtils" level="WARN"/>
+        <logger name="com.openagentflow.database" level="${OAF_SQL_ACCESS_LOG_LEVEL:-INFO}"/>
+        <logger name="com.openagentflow.http.access" level="${OAF_HTTP_ACCESS_LOG_LEVEL:-INFO}"/>
         <!-- Spring Security 默认 INFO 足够确认过滤链启动；需要排查鉴权时设置 OAF_SECURITY_LOG_LEVEL=DEBUG。 -->
         <logger name="org.springframework.security" level="${OAF_SECURITY_LOG_LEVEL:-INFO}"/>
         <root level="${CONSOLE_LOG_LEVEL}">

@@ -91,7 +91,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
                                            JdbcTemplate jdbcTemplate,
                                            ObjectMapper objectMapper,
                                            KeywordSearchService keywordSearchService,
-                                           @Value("${openagentflow.document-pipeline.embedding-shard-size:128}") int embeddingShardSize) {
+                                           @Value("${openagentflow.document-pipeline.embedding-shard-size:16}") int embeddingShardSize) {
         this.asyncTaskService = asyncTaskService;
         this.stageService = stageService;
         this.documentParseService = documentParseService;
@@ -223,6 +223,10 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         List<PipelineSegment> shard = embeddingSegments;
         ModelConfigEntity model = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
         EmbeddingBatchResult result = embeddingService.embedWithTrace(model, shard.stream().map(PipelineSegment::content).toList());
+        if (result.getVectors() == null || result.getVectors().size() != shard.size()) {
+            throw new IllegalStateException("Embedding分片向量数量不一致：expected=" + shard.size()
+                    + ", actual=" + (result.getVectors() == null ? 0 : result.getVectors().size()));
+        }
         List<VectorItem> vectors = new ArrayList<>();
         for (int index = 0; index < shard.size(); index++) {
             vectors.add(new VectorItem(shard.get(index).id(), result.getVectors().get(index)));
@@ -345,14 +349,18 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         List<PipelineSegment> result = new ArrayList<>();
         int chunkNo = 1;
         for (KnowledgeChunkingService.ChunkSegment segment : source) {
-            String id = UUID.nameUUIDFromBytes((document.getId() + ":" + segment.level() + ":" + segment.ordinal()
-                    + ":" + segment.startOffset()).getBytes(StandardCharsets.UTF_8)).toString();
+            int assignedChunkNo = chunkNo++;
+            String contentHash = DigestUtils.md5DigestAsHex(segment.content().getBytes(StandardCharsets.UTF_8));
+            // 子分片序号和偏移量可能在不同父分片内重新计数，必须加入全局分片号和内容哈希避免稳定ID碰撞。
+            String id = UUID.nameUUIDFromBytes((document.getId() + ":" + assignedChunkNo + ":" + segment.level()
+                    + ":" + segment.ordinal() + ":" + segment.parentOrdinal() + ":" + segment.startOffset()
+                    + ":" + contentHash).getBytes(StandardCharsets.UTF_8)).toString();
             String parentId = segment.parentOrdinal() == null ? null : parentIds.get(segment.parentOrdinal());
             if ("parent".equals(segment.level())) parentIds.put(segment.ordinal(), id);
-            result.add(new PipelineSegment(id, parentId, chunkNo++, segment.level(), segment.content(),
+            result.add(new PipelineSegment(id, parentId, assignedChunkNo, segment.level(), segment.content(),
                     segment.sectionTitle(), segment.sectionPath(), segment.paragraphNo(), segment.startOffset(), segment.endOffset(),
                     chunkingService.estimateTokens(segment.content()),
-                    DigestUtils.md5DigestAsHex(segment.content().getBytes(StandardCharsets.UTF_8)), segment.embeddingEnabled()));
+                    contentHash, segment.embeddingEnabled()));
         }
         return result;
     }
@@ -419,7 +427,9 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     private boolean allNodesSuccessful(String rootTaskId, String stageCode) {
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM document_pipeline_node WHERE root_task_id=? AND stage_code=?", Long.class, rootTaskId, stageCode);
         Long success = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM document_pipeline_node WHERE root_task_id=? AND stage_code=? AND status='success'", Long.class, rootTaskId, stageCode);
-        return total != null && total > 0 && total.equals(success);
+        Integer expected = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(shard_total),0) FROM document_pipeline_node WHERE root_task_id=? AND stage_code=?", Integer.class, rootTaskId, stageCode);
+        // Fan-in必须等待预期分片节点全部创建且全部成功，不能把“当前已创建节点全部成功”误认为阶段完成。
+        return total != null && expected != null && expected > 0 && total == expected.longValue() && total.equals(success);
     }
 
     /** 把当前节点产物写入DAG表，供Fan-in阶段读取。 */

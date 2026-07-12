@@ -6,6 +6,9 @@ server:
 spring:
   application:
     name: openagentflow-backend
+  main:
+    # IDEA启动阶段不打印Spring Boot Banner，请求到达后再由控制台输出链路日志。
+    banner-mode: off
   datasource:
     # MySQL 已按要求使用本地 openagentflow 数据库。
     url: ${OAF_MYSQL_URL:jdbc:mysql://localhost:3306/openagentflow?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
@@ -79,12 +82,18 @@ mybatis-plus:
   configuration:
     # 数据库字段使用下划线，Java 对象使用驼峰，开启后可以自动完成映射。
     map-underscore-to-camel-case: true
+    # SQL由安全拦截器输出，禁用MyBatis默认参数日志，避免密码和API Key泄露。
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
   global-config:
     db-config:
       # 当前 SQL 主键由 MySQL 的 UUID() 默认值生成，插入时后端可以不主动生成 ID。
       id-type: input
 
 openagentflow:
+  logging:
+    sql-enabled: ${OAF_SQL_LOG_ENABLED:true}
+    slow-sql-ms: ${OAF_SLOW_SQL_MS:1000}
+    slow-request-ms: ${OAF_SLOW_REQUEST_MS:3000}
   tenancy:
     require-workspace-context: ${OAF_REQUIRE_WORKSPACE_CONTEXT:false}
   vector-store:
@@ -97,7 +106,7 @@ openagentflow:
     trace-retention-days: ${OAF_TRACE_RETENTION_DAYS:90}
     task-log-retention-days: ${OAF_TASK_LOG_RETENTION_DAYS:30}
   document-pipeline:
-    embedding-shard-size: ${OAF_DOCUMENT_EMBEDDING_SHARD_SIZE:128}
+    embedding-shard-size: ${OAF_DOCUMENT_EMBEDDING_SHARD_SIZE:16}
   runtime:
     accept-traffic: ${OAF_RUNTIME_ACCEPT_TRAFFIC:true}
     cancel-watch-ms: ${OAF_RUNTIME_CANCEL_WATCH_MS:500}

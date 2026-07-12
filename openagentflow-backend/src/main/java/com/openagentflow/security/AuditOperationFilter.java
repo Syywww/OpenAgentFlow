@@ -7,11 +7,16 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.core.annotation.Order;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -26,11 +31,19 @@ import java.util.UUID;
 @Order(200)
 public class AuditOperationFilter extends OncePerRequestFilter {
 
+    /** HTTP访问日志分类。 */
+    private static final Logger accessLog = LoggerFactory.getLogger("com.openagentflow.http.access");
+
     /** 审计操作日志 Mapper。 */
     private final AuditOperationLogMapper auditOperationLogMapper;
 
-    public AuditOperationFilter(AuditOperationLogMapper auditOperationLogMapper) {
+    /** 慢请求阈值。 */
+    private final long slowRequestMs;
+
+    public AuditOperationFilter(AuditOperationLogMapper auditOperationLogMapper,
+                                @Value("${openagentflow.logging.slow-request-ms:3000}") long slowRequestMs) {
         this.auditOperationLogMapper = auditOperationLogMapper;
+        this.slowRequestMs = Math.max(1L, slowRequestMs);
     }
 
     @Override
@@ -38,6 +51,9 @@ public class AuditOperationFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         Instant startedAt = Instant.now();
+        String requestId = resolveRequestId(request);
+        MDC.put("requestId", requestId);
+        response.setHeader("X-Request-Id", requestId);
         Exception failure = null;
         try {
             filterChain.doFilter(request, response);
@@ -45,7 +61,12 @@ public class AuditOperationFilter extends OncePerRequestFilter {
             failure = exception;
             throw exception;
         } finally {
-            writeAuditLog(request, response, startedAt, failure);
+            try {
+                writeAccessLog(request, response, startedAt, failure, requestId);
+                writeAuditLog(request, response, startedAt, failure, requestId);
+            } finally {
+                MDC.remove("requestId");
+            }
         }
     }
 
@@ -70,17 +91,18 @@ public class AuditOperationFilter extends OncePerRequestFilter {
     private void writeAuditLog(HttpServletRequest request,
                                HttpServletResponse response,
                                Instant startedAt,
-                               Exception failure) {
+                               Exception failure,
+                               String requestId) {
         try {
             AuditOperationLogEntity log = new AuditOperationLogEntity();
             log.setId(UUID.randomUUID().toString());
-            log.setTraceId(request.getHeader("X-Request-Id"));
+            log.setTraceId(requestId);
             fillUser(log);
             log.setOperationType(resolveOperationType(request.getMethod(), request.getRequestURI()));
             log.setResourceType(resolveResourceType(request.getRequestURI()));
             log.setRequestMethod(request.getMethod());
             log.setRequestPath(request.getRequestURI());
-            log.setRequestParams(limit(request.getQueryString(), 2000));
+            log.setRequestParams(limit(sanitizeQuery(request.getQueryString()), 2000));
             log.setResponseStatus(response.getStatus());
             log.setSuccess(failure == null && response.getStatus() < 400);
             log.setFailureReason(failure == null ? null : limit(failure.getMessage(), 1000));
@@ -91,6 +113,80 @@ public class AuditOperationFilter extends OncePerRequestFilter {
         } catch (Exception ignored) {
             // 审计失败不能影响主请求，避免因为治理链路异常阻断业务接口。
         }
+    }
+
+    /**
+     * 向IDEA控制台打印前端接口调用结果。
+     */
+    private void writeAccessLog(HttpServletRequest request,
+                                HttpServletResponse response,
+                                Instant startedAt,
+                                Exception failure,
+                                String requestId) {
+        long latencyMs = Duration.between(startedAt, Instant.now()).toMillis();
+        int status = failure == null ? response.getStatus() : Math.max(500, response.getStatus());
+        String username = currentUsername();
+        String workspaceId = request.getHeader("X-Workspace-Id");
+        String message = "HTTP {} {} route={} status={} durationMs={} user={} workspace={} clientIp={} requestId={} query={}";
+        Object[] arguments = {
+                request.getMethod(), request.getRequestURI(), resolveMatchedRoute(request), status, latencyMs,
+                safeValue(username), safeValue(workspaceId), resolveClientIp(request), requestId,
+                safeValue(sanitizeQuery(request.getQueryString()))
+        };
+        if (failure != null || status >= 500) {
+            accessLog.error(message + " error={}", append(arguments, failure == null ? "HTTP " + status : failure.getMessage()));
+        } else if (status >= 400 || latencyMs >= slowRequestMs) {
+            accessLog.warn(message, arguments);
+        } else {
+            accessLog.info(message, arguments);
+        }
+    }
+
+    /** 获取当前登录用户名。 */
+    private String currentUsername() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication == null ? null : authentication.getName();
+    }
+
+    /**
+     * 获取Spring MVC实际匹配的接口模板路由。
+     *
+     * <p>例如实际请求为 {@code /agents/123} 时返回 {@code /agents/{id}}；
+     * 请求在认证阶段被拦截或没有匹配到Controller时返回短横线。</p>
+     *
+     * @param request HTTP请求
+     * @return 接口模板路由
+     */
+    private String resolveMatchedRoute(HttpServletRequest request) {
+        Object route = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        return route == null ? "-" : safeValue(route.toString());
+    }
+
+    /** 生成或复用前端传入的请求ID。 */
+    private String resolveRequestId(HttpServletRequest request) {
+        String requestId = request.getHeader("X-Request-Id");
+        return StringUtils.hasText(requestId) ? limit(requestId.replaceAll("[^a-zA-Z0-9_-]", ""), 80)
+                : UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /** 对查询参数中的敏感值进行脱敏。 */
+    private String sanitizeQuery(String query) {
+        if (!StringUtils.hasText(query)) {
+            return null;
+        }
+        return query.replaceAll("(?i)(password|token|api[_-]?key|secret|authorization)=([^&]*)", "$1=***");
+    }
+
+    /** 把异常文本追加到SLF4J参数数组。 */
+    private Object[] append(Object[] source, Object value) {
+        Object[] target = java.util.Arrays.copyOf(source, source.length + 1);
+        target[source.length] = value;
+        return target;
+    }
+
+    /** 将空值转换为短横线，方便检索日志。 */
+    private String safeValue(String value) {
+        return StringUtils.hasText(value) ? value : "-";
     }
 
     /**
