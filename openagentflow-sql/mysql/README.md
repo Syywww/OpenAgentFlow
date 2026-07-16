@@ -71,6 +71,9 @@ Redis: cache, sessions, queue state
 - `V045__demo_order_summary_intent_variants.sql`: unified order runtime intent condition and node-ID-based demo workflow graph repair.
 - `V046__promptops_production_p73.sql`: PromptOps typed variables, resource version binding, multi-environment promotion, stable gray release, A/B experiments, runtime metrics, Trace snapshots, permissions, and Chinese comments.
 - `V047__prompt_version_schema_contract_p73.sql`: immutable typed variable Schema contract for every Prompt version.
+- `V048__solution_template_marketplace_p74.sql`: enterprise solution template publishing, immutable versions, review governance, asynchronous installation mapping, three-way upgrades, ratings, comments, favorites, reports, permissions, and public seed packages.
+- `V049__solution_template_seed_contract_fix.sql`: compatibility statement repair for the first public solution template versions.
+- `V050__template_report_pending_guard_p74.sql`: pending report uniqueness guard that preserves handled report history.
 
 Recommended execution order:
 
@@ -122,6 +125,9 @@ V044__tenant_workspace_backfill.sql
 V045__demo_order_summary_intent_variants.sql
 V046__promptops_production_p73.sql
 V047__prompt_version_schema_contract_p73.sql
+V048__solution_template_marketplace_p74.sql
+V049__solution_template_seed_contract_fix.sql
+V050__template_report_pending_guard_p74.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -312,5 +318,19 @@ Knowledge and memory rows point to Milvus through:
 - `prompt_runtime_metric` 汇总版本与实验的成功率、质量、耗时、Token 和成本。
 - `runtime_llm_call` 增加实际模板、版本、内容哈希、装配层和变量来源，便于 Trace 解释最终 Prompt。
 - `V047__prompt_version_schema_contract_p73.sql` 为每个 Prompt 版本固化强类型变量 Schema，锁定版本、回滚和实验不会受模板当前变量变化影响。
+
+所有新增表与字段均包含中文注释。
+
+## P74 企业解决方案模板广场
+
+`V048__solution_template_marketplace_p74.sql`、`V049__solution_template_seed_contract_fix.sql` 与 `V050__template_report_pending_guard_p74.sql` 增加以下数据库能力：
+
+- `agent_template` 支持工作空间私有与系统公开范围、作者、审核、许可证、MinIO模板包、评分、收藏、趋势和举报聚合。
+- `agent_template_version` 保存不可变语义化版本、资源清单、依赖图、安全检查、最小运行检查和对象哈希。
+- `agent_template_resource` 保存 Agent、团队、Prompt、工具、MCP、知识库、文档、切片、向量、工作流和 Memory 快照。
+- `agent_template_install` 与资源映射表保存 Kafka 任务、安装进度、来源与目标资源、安装哈希和对象清单。
+- 三方升级冲突表保存旧模板、本地副本、新模板哈希以及用户逐项选择。
+- 收藏、评分、评论、作者回复、举报处置和待处理举报唯一守卫支撑模板广场运营治理。
+- 首批内置企业客服、知识问答、数据分析和智能运维公开解决方案模板。
 
 所有新增表与字段均包含中文注释。

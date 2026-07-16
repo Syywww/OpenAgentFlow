@@ -727,7 +727,9 @@ public class AsyncTaskService {
                         "MCP_DISCOVERY",
                         "KNOWLEDGE_GOVERNANCE_SCAN",
                         "MEMORY_CLEANUP",
-                        "USAGE_COST_RECALCULATION"))
+                        "USAGE_COST_RECALCULATION",
+                        "TEMPLATE_INSTALL",
+                        "TEMPLATE_UPGRADE"))
                 .and(wrapper -> wrapper
                         .and(pending -> pending.eq(AsyncTaskEntity::getStatus, "pending")
                                 .and(item -> item.isNull(AsyncTaskEntity::getNextRetryAt)
@@ -981,6 +983,12 @@ public class AsyncTaskService {
         }
         if ("DATA_IMPORT".equals(taskType)) {
             return "数据导入";
+        }
+        if ("TEMPLATE_INSTALL".equals(taskType)) {
+            return "解决方案模板安装";
+        }
+        if ("TEMPLATE_UPGRADE".equals(taskType)) {
+            return "解决方案模板升级";
         }
         return StringUtils.hasText(taskType) ? taskType : "未知任务";
     }

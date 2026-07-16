@@ -16,6 +16,16 @@ public class AgentTemplateEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 私有模板所属工作空间ID。 */ @TableField("workspace_id") private String workspaceId;
+    /** 模板类型。 */ @TableField("template_type") private String templateType;
+    /** 可见范围。 */ @TableField("visibility") private String visibility;
+    /** 当前版本ID。 */ @TableField("current_version_id") private String currentVersionId;
+    /** 审核状态。 */ @TableField("review_status") private String reviewStatus;
+    /** 作者用户ID。 */ @TableField("author_user_id") private String authorUserId;
+    /** 作者展示名称。 */ @TableField("author_name") private String authorName;
+    /** 许可证编码。 */ @TableField("license_code") private String licenseCode;
+    /** 兼容性声明。 */ @TableField("compatibility") private String compatibility;
+
     /** 模板编码。 */
     @TableField("template_code")
     private String templateCode;
@@ -35,6 +45,8 @@ public class AgentTemplateEntity {
     /** 字段说明：ICON。 */
     @TableField("icon")
     private String icon;
+
+    /** 模板封面地址。 */ @TableField("cover_url") private String coverUrl;
 
     /** 字段说明：TAGS。 */
     @TableField("tags")
@@ -56,6 +68,12 @@ public class AgentTemplateEntity {
     @TableField("knowledge_snapshot")
     private String knowledgeSnapshot;
 
+    /** 依赖清单JSON。 */ @TableField("dependency_manifest") private String dependencyManifest;
+    /** 模板包存储桶。 */ @TableField("package_bucket") private String packageBucket;
+    /** 模板包对象键。 */ @TableField("package_key") private String packageKey;
+    /** 模板包哈希。 */ @TableField("package_hash") private String packageHash;
+    /** 模板包大小。 */ @TableField("package_size") private Long packageSize;
+
     /** 字段说明：RECOMMENDED。 */
     @TableField("recommended")
     private Boolean recommended;
@@ -64,9 +82,17 @@ public class AgentTemplateEntity {
     @TableField("install_count")
     private Long installCount;
 
+    /** 平均评分。 */ @TableField("average_rating") private java.math.BigDecimal averageRating;
+    /** 评分人数。 */ @TableField("rating_count") private Long ratingCount;
+    /** 收藏人数。 */ @TableField("favorite_count") private Long favoriteCount;
+    /** 趋势热度分。 */ @TableField("trend_score") private java.math.BigDecimal trendScore;
+    /** 举报次数。 */ @TableField("report_count") private Long reportCount;
+
     /** 状态。 */
     @TableField("status")
     private String status;
+
+    /** 首次公开时间。 */ @TableField("published_at") private LocalDateTime publishedAt;
 
     /** 创建人ID。 */
     @TableField("created_by")
@@ -79,6 +105,9 @@ public class AgentTemplateEntity {
     /** 更新时间。 */
     @TableField("updated_at")
     private LocalDateTime updatedAt;
+
+    /** 软删除时间。 */ @TableField("deleted_at") private LocalDateTime deletedAt;
+    /** 乐观锁版本号。 */ @TableField("version") private Long version;
 
     public String getId() {
         return id;

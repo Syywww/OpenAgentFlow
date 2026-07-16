@@ -14,6 +14,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限、调试运行和 Runtime 策略解释器。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **PromptOps 生产治理**：System、User、RAG、Tool、Evaluation、Workflow Prompt 统一编译，支持强类型变量 Schema、敏感变量遮蔽、分层装配、版本锁定/跟随稳定版、差异与影响分析、开发/测试/生产晋级、灰度发布、A/B 实验、自动选优、在线指标和 Trace 快照。
+- **企业解决方案模板广场**：支持系统公开与工作空间私有模板、多个 Agent/团队及关联资源自动收集和手动增删、不可变语义化版本、自动安全门禁、人工审核、Kafka 异步独立安装、MinIO 完整模板包与向量载荷、Milvus 向量恢复、敏感凭证清空、失败补偿、三方差异升级、安全卸载、作者主页、收藏评分评论、举报处置和推荐运营。
 - **RAG 知识库**：知识库 CRUD、文档上传、解析、Parent-Child 递归结构化切片、Embedding 数量完整性校验、Milvus 写入、切片分页预览、混合召回、重排、检索缓存、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
 - **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
@@ -224,9 +225,12 @@ V044__tenant_workspace_backfill.sql
 V045__demo_order_summary_intent_variants.sql
 V046__promptops_production_p73.sql
 V047__prompt_version_schema_contract_p73.sql
+V048__solution_template_marketplace_p74.sql
+V049__solution_template_seed_contract_fix.sql
+V050__template_report_pending_guard_p74.sql
 ```
 
-后端使用 Flyway 管理迁移。空数据库按 V001-V047 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V047 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+后端使用 Flyway 管理迁移。空数据库按 V001-V050 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V050 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
 
 ```powershell
 .\scripts\sync-flyway-migrations.ps1
@@ -353,7 +357,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P62 可部署供应链证明 | 已完成 | GHCR不可变镜像、Cosign镜像签名、GitHub provenance、平台准入回写和跨故障域调度 |
 | P63 Memory生产级增强 | 已完成 | LLM结构化事实提取、Redis短期记忆、Kafka异步沉淀、MySQL事实版本、Milvus ANN、租户标量过滤、混合排序、PII与冲突策略、容量配额、反馈学习、治理扫描、向量重建、用户遗忘和运营指标 |
 | P64 自动化测试与质量门禁 | 已完成 | JUnit可靠性规则、MySQL Flyway Testcontainers、Vitest分页规则、Playwright登录冒烟、JaCoCo、Maven Enforcer和GitHub Actions阻断门禁 |
-| P65 Flyway数据库迁移治理 | 已完成 | V001-V047类路径迁移、既有库V041基线、启动校验、禁止乱序与clean、SQL主目录同步脚本和迁移集成测试 |
+| P65 Flyway数据库迁移治理 | 已完成 | V001-V050类路径迁移、既有库V041基线、启动校验、禁止乱序与clean、SQL主目录同步脚本和迁移集成测试 |
 | P66 分布式执行正确性 | 已完成 | 文档DAG代次Fencing、根任务幂等初始化、事务化Fan-out、行锁唯一Fan-in、预期/实际条目屏障、最终数量对账、停滞巡检和问题自动收口 |
 | P67 AI持续评测 | 已完成 | 黄金评测基线、RAG/工具/Memory/工作流指标、版本差异、单项退化阈值和多资源发布阻断 |
 | P68 安全与合规治理 | 已完成 | 统一敏感数据脱敏、文件类型与压缩炸弹扫描、PII同意及数据主体申请、高风险工具双人审批和一次性执行令牌 |
@@ -362,6 +366,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P71 高可用与容灾 | 已完成 | API/Runtime/Worker独立副本、外部基础设施多副本目标、RPO/RTO数据、故障切换矩阵和跨故障域调度 |
 | P72 全局租户隔离 | 已完成 | Eval/Prompt/高风险确认空间字段与旧数据回填、MyBatis核心表租户拦截、可信Kafka上下文和MySQL/Redis/Milvus/MinIO/OpenSearch命名空间巡检 |
 | P73 PromptOps生产化 | 已完成 | 统一Prompt编译Runtime、版本级强类型变量契约、敏感值遮蔽、Agent/工作流/评测版本绑定、版本差异与影响面、环境晋级、生产门禁、稳定灰度、A/B实验、自动选优、在线质量与成本指标、Trace Prompt快照和前端治理控制台 |
+| P74 企业解决方案模板广场 | 已完成 | 系统公开与空间私有模板、解决方案依赖自动收集和手动增删、语义化不可变版本、敏感配置清洗、安全与运行门禁、管理员审核、Kafka异步独立复制、安装入口SQL参数回归覆盖、MinIO完整模板包和向量载荷、Milvus兼容向量恢复、失败补偿、三方升级冲突、安全卸载、作者主页、收藏评分评论、举报处置和推荐上下架运营 |
 
 ## 演示建议
 

@@ -210,6 +210,24 @@ public class SharedObjectStorageService {
     }
 
     /**
+     * 将已有对象流式复制到新的工作空间对象键，并重新计算内容哈希。
+     *
+     * @param sourceBucket 来源存储桶
+     * @param sourceKey 来源对象键
+     * @param targetKey 目标对象键
+     * @param contentType 对象内容类型
+     * @param size 已知对象大小
+     * @return 目标对象信息
+     */
+    public StoredObject copy(String sourceBucket, String sourceKey, String targetKey, String contentType, long size) {
+        try (InputStream input = open(sourceBucket, sourceKey)) {
+            return putStream(targetKey, input, Math.max(0L, size), contentType);
+        } catch (Exception exception) {
+            throw new IllegalStateException("共享对象存储复制失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    /**
      * 返回平台文档存储桶名称。
      */
     public String bucketName() {

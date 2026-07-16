@@ -91,7 +91,7 @@ public class AsyncTaskTopicRouter {
         if ("EVALUATION_RUN".equals(taskType)) {
             return "evaluation";
         }
-        if ("MCP_DISCOVERY".equals(taskType)) {
+        if ("MCP_DISCOVERY".equals(taskType) || "TEMPLATE_INSTALL".equals(taskType) || "TEMPLATE_UPGRADE".equals(taskType)) {
             return "integration";
         }
         return "maintenance";
