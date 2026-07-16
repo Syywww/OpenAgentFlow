@@ -6,7 +6,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 /**
  * OpenAgentFlow 应用启动测试。
  */
-@SpringBootTest
+@SpringBootTest(properties = "spring.flyway.enabled=false")
 class OpenAgentFlowApplicationTests {
 
     /**

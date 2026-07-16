@@ -1,4 +1,5 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
+import { clampPage, pageCount, paginate } from '../utils/pagination';
 
 /**
  * 前端列表统一分页，每页默认10条。
@@ -12,25 +13,24 @@ export function usePagination<T>(items: Ref<T[]> | ComputedRef<T[]>, pageSize = 
   const totalItems = computed(() => items.value.length);
 
   /** 总页数，空列表也保持为1，避免分页控件出现0页。 */
-  const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / pageSize)));
+  const totalPages = computed(() => pageCount(totalItems.value, pageSize));
 
   /** 当前页需要展示的数据。 */
   const pagedItems = computed(() => {
-    const start = (currentPage.value - 1) * pageSize;
-    return items.value.slice(start, start + pageSize);
+    return paginate(items.value, currentPage.value, pageSize);
   });
 
   /** 筛选条件变化导致总页数变少时，自动回到最后一个可用页。 */
   watch(totalPages, (value) => {
     if (currentPage.value > value) {
-      currentPage.value = value;
+      currentPage.value = clampPage(currentPage.value, totalItems.value, pageSize);
     }
   });
 
   /** 列表内容变化时，如果当前页已经无数据，则回到第一页。 */
   watch(totalItems, () => {
     if (currentPage.value > totalPages.value) {
-      currentPage.value = totalPages.value;
+      currentPage.value = clampPage(currentPage.value, totalItems.value, pageSize);
     }
   });
 

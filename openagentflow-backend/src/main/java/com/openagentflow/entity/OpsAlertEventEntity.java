@@ -22,6 +22,10 @@ public class OpsAlertEventEntity {
     @TableField("event_code")
     private String eventCode;
 
+    /** 告警收敛去重键。 */
+    @TableField("dedupe_key")
+    private String dedupeKey;
+
     /** 告警规则ID。 */
     @TableField("rule_id")
     private String ruleId;
@@ -94,6 +98,14 @@ public class OpsAlertEventEntity {
     @TableField("trigger_count")
     private Integer triggerCount;
 
+    /** 当前告警升级级别。 */
+    @TableField("escalation_level")
+    private Integer escalationLevel;
+
+    /** 下一次通知补偿时间。 */
+    @TableField("next_notify_at")
+    private LocalDateTime nextNotifyAt;
+
     /** 创建时间。 */
     @TableField("created_at")
     private LocalDateTime createdAt;
@@ -117,6 +129,10 @@ public class OpsAlertEventEntity {
     public void setEventCode(String eventCode) {
         this.eventCode = eventCode;
     }
+
+    public String getDedupeKey() { return dedupeKey; }
+
+    public void setDedupeKey(String dedupeKey) { this.dedupeKey = dedupeKey; }
 
     public String getRuleId() {
         return ruleId;
@@ -261,6 +277,14 @@ public class OpsAlertEventEntity {
     public void setTriggerCount(Integer triggerCount) {
         this.triggerCount = triggerCount;
     }
+
+    public Integer getEscalationLevel() { return escalationLevel; }
+
+    public void setEscalationLevel(Integer escalationLevel) { this.escalationLevel = escalationLevel; }
+
+    public LocalDateTime getNextNotifyAt() { return nextNotifyAt; }
+
+    public void setNextNotifyAt(LocalDateTime nextNotifyAt) { this.nextNotifyAt = nextNotifyAt; }
 
     public LocalDateTime getCreatedAt() {
         return createdAt;

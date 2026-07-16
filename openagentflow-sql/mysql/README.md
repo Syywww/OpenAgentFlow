@@ -65,6 +65,12 @@ Redis: cache, sessions, queue state
 - `V039__production_closure_p43_p52.sql`: platform SLO, guardrails, release gates, consistency, and supply-chain governance.
 - `V040__production_closure_p53_p62.sql`: real retrieval engines, strong tenant context, runtime recovery, OTLP, disaster recovery, and deployment proof.
 - `V041__memory_production_p63.sql`: production Memory tenant isolation, fact versions, policy, feedback, governance issues, metrics, vector consistency, and permissions.
+- `V042__quality_migration_distributed_pipeline.sql`: Flyway migration governance and document DAG generation fencing, expected/actual cardinality, reconciliation issues, and supporting indexes.
+- `V043__production_governance_p67_p72.sql`: golden evaluation baselines, privacy consent, secure file scanning, alert delivery compensation, capacity baselines, disaster-recovery targets, and tenant-isolation audit tables.
+- `V044__tenant_workspace_backfill.sql`: trusted workspace backfill and non-null tenant constraints for historical evaluation, Prompt, and high-risk confirmation data.
+- `V045__demo_order_summary_intent_variants.sql`: unified order runtime intent condition and node-ID-based demo workflow graph repair.
+- `V046__promptops_production_p73.sql`: PromptOps typed variables, resource version binding, multi-environment promotion, stable gray release, A/B experiments, runtime metrics, Trace snapshots, permissions, and Chinese comments.
+- `V047__prompt_version_schema_contract_p73.sql`: immutable typed variable Schema contract for every Prompt version.
 
 Recommended execution order:
 
@@ -110,6 +116,12 @@ V038__production_scale_p35_p42.sql
 V039__production_closure_p43_p52.sql
 V040__production_closure_p53_p62.sql
 V041__memory_production_p63.sql
+V042__quality_migration_distributed_pipeline.sql
+V043__production_governance_p67_p72.sql
+V044__tenant_workspace_backfill.sql
+V045__demo_order_summary_intent_variants.sql
+V046__promptops_production_p73.sql
+V047__prompt_version_schema_contract_p73.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -268,3 +280,37 @@ Knowledge and memory rows point to Milvus through:
 - `software_artifact_attestation`保存SBOM、签名、漏洞、许可证和密钥扫描结果。
 
 所有新增表、字段和索引均带中文注释，初始化脚本可重复执行。
+
+## P67-P72 生产治理升级
+
+`V043__production_governance_p67_p72.sql` 增加以下数据库能力：
+
+- `evaluation_baseline`、`evaluation_regression`保存黄金评测基线、候选版本指标和退化明细。
+- `privacy_consent`、`pii_data_subject_request`保存隐私同意、撤回、导出、遗忘和限制处理申请。
+- `file_security_scan`保存上传文件真实类型、压缩包风险和扫描结果。
+- `ops_notification_delivery`保存告警渠道投递、重试次数、下次补偿时间和死信状态。
+- `capacity_baseline`保存并发、吞吐、P50/P95/P99、错误率、数据规模和资源饱和度。
+- `disaster_recovery_target`保存 MySQL、Redis、Kafka、MinIO、Milvus 的副本、RPO 和 RTO 目标。
+- `tenant_isolation_audit`保存 MySQL 与跨存储租户隔离问题。
+- 发布门禁、高风险工具、告警事件、评测任务和 Prompt 模板补充生产治理字段。
+
+所有新增表与字段均包含中文注释，字段和索引升级可重复执行。
+
+`V044__tenant_workspace_backfill.sql` 会优先按资源创建人的有效空间成员关系回填历史数据，无法匹配时使用首个启用空间，并在具备默认空间时收紧非空约束。
+
+`V045__demo_order_summary_intent_variants.sql` 将演示订单工具条件统一为 `intent:order_runtime`，并按节点 ID 修复当前工作流图和已发布版本中的 RAG、工具与 LLM 配置归属。
+
+## P73 PromptOps 生产化
+
+`V046__promptops_production_p73.sql` 增加以下数据库能力：
+
+- Agent 增加 Prompt 指定版本、绑定模式和资源级变量，支持手工、锁定版本和跟随稳定版。
+- Prompt 模板与版本增加强类型变量 Schema、内容哈希、安全检查结果、质量分、稳定版本和当前环境。
+- `prompt_binding` 统一保存 Agent、工作流、RAG、工具和评测资源的 Prompt 版本关系。
+- `prompt_environment_release` 支持开发、测试、生产环境晋级以及稳定哈希灰度比例。
+- `prompt_experiment` 与变体表增加最小样本量、自动选优、胜出变体和在线聚合指标。
+- `prompt_runtime_metric` 汇总版本与实验的成功率、质量、耗时、Token 和成本。
+- `runtime_llm_call` 增加实际模板、版本、内容哈希、装配层和变量来源，便于 Trace 解释最终 Prompt。
+- `V047__prompt_version_schema_contract_p73.sql` 为每个 Prompt 版本固化强类型变量 Schema，锁定版本、回滚和实验不会受模板当前变量变化影响。
+
+所有新增表与字段均包含中文注释。

@@ -8,7 +8,7 @@ on:
 
 jobs:
   backend:
-    name: Backend Compile
+    name: Backend Verify
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -24,8 +24,13 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Compile backend
-        run: mvn -DskipTests compile
+      - name: Check Flyway migration copies
+        shell: pwsh
+        working-directory: .
+        run: ./scripts/sync-flyway-migrations.ps1 -Check
+
+      - name: Test backend and enforce coverage
+        run: mvn -B verify
 
   frontend:
     name: Frontend Build
@@ -47,5 +52,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run frontend unit tests
+        run: npm run test:unit
+
       - name: Build frontend
         run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke tests
+        run: npm run test:e2e

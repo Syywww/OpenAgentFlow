@@ -13,7 +13,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **模型接入**：OpenAI-compatible、豆包方舟、Ollama、DeepSeek、Qwen 等供应商配置，支持连通性测试、普通对话和 SSE 流式输出。
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限、调试运行和 Runtime 策略解释器。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
-- **Prompt 模板中心**：System、User、RAG、Tool、Evaluation、Workflow Prompt 模板管理，支持变量解析、版本发布、复制、回滚和 Agent 绑定。
+- **PromptOps 生产治理**：System、User、RAG、Tool、Evaluation、Workflow Prompt 统一编译，支持强类型变量 Schema、敏感变量遮蔽、分层装配、版本锁定/跟随稳定版、差异与影响分析、开发/测试/生产晋级、灰度发布、A/B 实验、自动选优、在线指标和 Trace 快照。
 - **RAG 知识库**：知识库 CRUD、文档上传、解析、Parent-Child 递归结构化切片、Embedding 数量完整性校验、Milvus 写入、切片分页预览、混合召回、重排、检索缓存、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
 - **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
@@ -25,10 +25,14 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **交付验收中心**：面向开源发布、客户交付和部署上线，提供环境检查、核心链路检查、风险提示、交付清单和报告生成。
 - **一键演示数据**：提供 P33 演示样例包，内置 Prompt、Agent、知识库、工具、工作流、评测集、多 Agent 团队和 Memory，支持脚本快速初始化。
 - **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
-- **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台支持流式生成暂停、保留部分回答并引入补充说明继续，长对话内容、引用来源和工具调用在独立区域内滚动展示。
+- **持续评测与发布门禁**：Agent、Prompt、知识库和工作流可从成功评测任务生成黄金基线，发布时逐项比较 RAG、工具、Memory、工作流指标，超过允许退化阈值自动阻断。
+- **安全与隐私合规**：API Key 加密保存，日志与工具载荷统一脱敏，上传文件真实类型、压缩炸弹和危险内容扫描，高风险工具采用双人审批与一次性执行令牌，支持 PII 同意、撤回、导出和遗忘申请。
+- **SRE 与容量工程**：OpenTelemetry Collector、Prometheus、Tempo、Grafana、黄金信号、单次 Run 资源画像、告警收敛与渠道补偿、HMAC 游标分页、100/500/1000 并发基线和容量数据入库。
+- **高可用与全局租户隔离**：API、Runtime、文档 Worker、集成 Worker 独立扩缩，MySQL/Redis/Kafka/MinIO/Milvus 多副本目标，RPO/RTO 矩阵，MyBatis 核心表租户拦截与跨存储命名空间巡检。
+- **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台进入或切换历史会话后自动定位最新消息，并支持流式生成暂停、保留部分回答及引入补充说明继续；长对话内容、引用来源和工具调用在独立区域内滚动展示。
 - **Memory 记忆中心**：支持 Redis 短期记忆、MySQL 事实主数据、Milvus HNSW 长期记忆、LLM 结构化提取、Kafka + Outbox 异步流水线、内容哈希去重、事实版本与冲突替代、PII 策略、租户硬隔离、混合召回与时间衰减、Prompt Token 预算、反馈学习、配额、向量补偿、用户遗忘、治理问题和运营指标。
 - **分布式异步任务**：基于 Kafka + Transactional Outbox 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持分类 Topic、多实例消费、MySQL 幂等抢占、Fencing Token、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
-- **开源工程化**：Docker Compose、`.env.example`、CI、脚本、License、Issue/PR 模板和开源文档。
+- **开源工程化**：Flyway 数据库迁移、JUnit/Testcontainers、Vitest、Playwright、JaCoCo、Maven Enforcer、Docker Compose、CI、脚本、License、Issue/PR 模板和开源文档。
 
 ## 技术栈
 
@@ -38,7 +42,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 | 后端 | Java 21、Spring Boot 3.3、Spring Security、JWT、MyBatis-Plus |
 | 数据 | MySQL 8、Redis 7、Milvus 2.4、MinIO |
 | AI | OpenAI-compatible Chat、Embedding、Function Calling、MCP |
-| 工程 | Kafka、Docker Compose、GitHub Actions、PowerShell scripts |
+| 工程 | Kafka、Flyway、JUnit/Testcontainers、Vitest、Playwright、JaCoCo、Docker Compose、GitHub Actions、PowerShell scripts |
 
 ## 界面预览
 
@@ -210,9 +214,46 @@ V034__recursive_knowledge_chunking.sql
 V035__enterprise_rag_metadata_parent_child.sql
 V036__kafka_distributed_async_tasks.sql
 V037__enterprise_async_outbox_pipeline.sql
+V038__production_scale_p35_p42.sql
+V039__production_closure_p43_p52.sql
+V040__production_closure_p53_p62.sql
+V041__memory_production_p63.sql
+V042__quality_migration_distributed_pipeline.sql
+V043__production_governance_p67_p72.sql
+V044__tenant_workspace_backfill.sql
+V045__demo_order_summary_intent_variants.sql
+V046__promptops_production_p73.sql
+V047__prompt_version_schema_contract_p73.sql
 ```
 
-Docker Compose 首次初始化 MySQL 时会自动执行这些脚本。
+后端使用 Flyway 管理迁移。空数据库按 V001-V047 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V047 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+
+```powershell
+.\scripts\sync-flyway-migrations.ps1
+.\scripts\sync-flyway-migrations.ps1 -Check
+```
+
+生产环境禁止执行 Flyway clean，并保持 `OAF_FLYWAY_ENABLED=true`、`OAF_FLYWAY_BASELINE_VERSION=41`。新部署不得修改已发布迁移文件，只能追加更高版本。
+
+## 质量门禁
+
+后端要求 Maven 3.9 与 JDK 21，`verify` 阶段执行单元测试、Testcontainers 集成测试、JaCoCo 关键可靠性规则覆盖率检查和 Maven Enforcer 环境约束：
+
+```powershell
+cd openagentflow-backend
+mvn "-Dmaven.repo.local=D:\kfhj\maven\mavenopenagent" verify
+```
+
+前端门禁包括 Vitest 单元测试、TypeScript 类型检查、Vite 生产构建和 Playwright Chromium 冒烟测试：
+
+```powershell
+cd openagentflow-frontend
+npm run test:unit
+npm run build
+npm run test:e2e
+```
+
+GitHub Actions CI 会依次检查 Flyway SQL 副本、后端测试与覆盖率、前端单测、生产构建和浏览器冒烟场景。
 
 ## 五分钟完整体验
 
@@ -241,9 +282,10 @@ cd E:\xm\OpenAgentFlow-Java\dm
 
 ```text
 订单 OAF-DEMO-1001 到哪里了？如果客户要求退款应该怎么处理？
+现在有那些订单？
 ```
 
-该问题会使用演示订单 `OAF-DEMO-1001`：订单状态为运输中，物流单号为 `SF-DEMO-001`，预计明天18:00前送达；演示 REST 工具使用后端内置 mock 返回，并会从完整用户问题中提取订单号，工作流 LLM 节点会注入结构化 `toolResult`，DB 查询工具使用 `demo_order` 表。
+单笔查询会使用演示订单 `OAF-DEMO-1001`：订单状态为运输中，物流单号为 `SF-DEMO-001`，预计明天18:00前送达；订单汇总查询会返回当前共有 1 笔演示订单。演示 REST 工具使用后端内置 mock 返回，并会从完整用户问题中提取订单号，工作流 LLM 节点会注入结构化 `toolResult`，DB 查询工具使用 `demo_order` 表。
 
 体验路径：登录后依次查看智能体“客服助手”、知识库“产品手册知识库”、工具中心三类演示工具、工作流“演示客服 RAG 工具工作流”、多 Agent 团队“演示客服协作团队”、评测集“演示客服问答评测集”，最后进入交付验收中心检查演示数据项。
 
@@ -279,7 +321,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P29 Agent Runtime 可视化解释器 | 已完成 | 调试台实时链路、Trace 复盘链路、Agent 详情策略预演、调试台右侧检索结果/工具调用/引用统计原生切换、右侧栏整体滚动、Runtime 解释器双倍高度、证据区固定高度滚动、引用来源抽屉卡片切换、详情页卡片切换、步骤时间线按需展示和内部滚动 |
 | P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
 | P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |
-| P33 一键演示数据与交付样例包 | 已完成 | 幂等 SQL 样例包、PowerShell 初始化脚本、客服知识库文档、Prompt/Agent/工具/工作流/评测集/多 Agent/Memory 样例、工作流工具节点编码兼容、LLM 节点结构化工具结果注入、客服订单工具意图门控、Agent 绑定工作流入口路由、产品与优惠券知识分片、非订单问题历史污染隔离、演示工作流节点条件示例、订单汇总查询工具意图、版本快照同步、交付验收中心演示数据检查 |
+| P33 一键演示数据与交付样例包 | 已完成 | 幂等 SQL 样例包、PowerShell 初始化脚本、客服知识库文档、Prompt/Agent/工具/工作流/评测集/多 Agent/Memory 样例、工作流工具节点编码兼容、LLM 节点结构化工具结果注入、客服订单统一意图门控、Agent 绑定工作流入口路由、产品与优惠券知识分片、非订单问题历史污染隔离、节点级 `intent:order_runtime` 条件、订单汇总同义句式识别、版本快照同步、交付验收中心演示数据检查 |
 | P34 海量文档与高并发任务架构 | 已完成 | Transactional Outbox、分类 Topic、Worker 角色隔离、Fencing Token、Redis Embedding 背压、MinIO 预签名直传、流式文件处理、解析与向量检查点、结构化阶段时间线、生产副本约束 |
 | P35 文档处理 DAG 分片架构 | 已完成 | 持久化 DAG 根任务、父子任务、阶段节点、幂等键、分片协议、阶段尝试留存、根任务延迟收口和任务中心时间线 |
 | P36 Agent Runtime 执行面 | 已完成 | Runtime 专用有界线程池、队列背压、Redis 停止令牌、MySQL 控制指令、SSE 分片停止检查和超时终止 |
@@ -310,12 +352,22 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P61 灾备演练闭环 | 已完成 | MySQL一致性备份、SHA-256校验、隔离恢复、核心表冒烟查询和RTO测量脚本 |
 | P62 可部署供应链证明 | 已完成 | GHCR不可变镜像、Cosign镜像签名、GitHub provenance、平台准入回写和跨故障域调度 |
 | P63 Memory生产级增强 | 已完成 | LLM结构化事实提取、Redis短期记忆、Kafka异步沉淀、MySQL事实版本、Milvus ANN、租户标量过滤、混合排序、PII与冲突策略、容量配额、反馈学习、治理扫描、向量重建、用户遗忘和运营指标 |
+| P64 自动化测试与质量门禁 | 已完成 | JUnit可靠性规则、MySQL Flyway Testcontainers、Vitest分页规则、Playwright登录冒烟、JaCoCo、Maven Enforcer和GitHub Actions阻断门禁 |
+| P65 Flyway数据库迁移治理 | 已完成 | V001-V047类路径迁移、既有库V041基线、启动校验、禁止乱序与clean、SQL主目录同步脚本和迁移集成测试 |
+| P66 分布式执行正确性 | 已完成 | 文档DAG代次Fencing、根任务幂等初始化、事务化Fan-out、行锁唯一Fan-in、预期/实际条目屏障、最终数量对账、停滞巡检和问题自动收口 |
+| P67 AI持续评测 | 已完成 | 黄金评测基线、RAG/工具/Memory/工作流指标、版本差异、单项退化阈值和多资源发布阻断 |
+| P68 安全与合规治理 | 已完成 | 统一敏感数据脱敏、文件类型与压缩炸弹扫描、PII同意及数据主体申请、高风险工具双人审批和一次性执行令牌 |
+| P69 可观测性与SRE | 已完成 | OTel Collector、Prometheus、Tempo、Grafana、黄金信号、Run资源画像、告警去重升级和渠道失败补偿 |
+| P70 性能与容量工程 | 已完成 | 前端路由分包、HMAC游标分页、100/500/1000并发压测矩阵、容量基线入库和资源饱和度数据模型 |
+| P71 高可用与容灾 | 已完成 | API/Runtime/Worker独立副本、外部基础设施多副本目标、RPO/RTO数据、故障切换矩阵和跨故障域调度 |
+| P72 全局租户隔离 | 已完成 | Eval/Prompt/高风险确认空间字段与旧数据回填、MyBatis核心表租户拦截、可信Kafka上下文和MySQL/Redis/Milvus/MinIO/OpenSearch命名空间巡检 |
+| P73 PromptOps生产化 | 已完成 | 统一Prompt编译Runtime、版本级强类型变量契约、敏感值遮蔽、Agent/工作流/评测版本绑定、版本差异与影响面、环境晋级、生产门禁、稳定灰度、A/B实验、自动选优、在线质量与成本指标、Trace Prompt快照和前端治理控制台 |
 
 ## 演示建议
 
 1. 登录 `admin / 123456`。
 2. 在系统设置中配置真实模型 API Key。
-3. 打开 Prompt 模板中心，创建或发布 System Prompt 模板，并在 Agent 详情页绑定。
+3. 打开 Prompt 模板中心，创建并发布 System Prompt 版本，通过“发布治理”晋级环境，再在 Agent 详情页选择锁定版本或跟随生产稳定版。
 4. 在调试台发起一次模型对话，并查看 Run ID。
 5. 上传知识库文档，等待处理完成后做检索测试。
 6. 绑定知识库到 Agent，在调试台查看引用来源。
@@ -340,6 +392,8 @@ cd E:\xm\OpenAgentFlow-Java\dm
 25. 启用OpenSearch后使用BM25与向量混合召回，并通过索引版本接口完成Milvus集合Alias切换。
 26. 发布Agent前先运行评测任务，发布门禁会自动检查质量、稳定性、安全与成本指标。
 27. GitHub Actions中的“软件供应链安全”流程会生成SBOM、扫描镜像和源码，并签名SBOM证明。
+28. 使用 `docker compose -f docker-compose.observability.yml up -d` 启动 Collector、Prometheus、Tempo 和 Grafana，通过 `/sre/runs/{runId}/resources` 查看单次运行资源画像。
+29. 使用 `scripts/load-test/invoke-capacity-matrix.ps1` 建立三档并发基线，使用 `scripts/dr/invoke-ha-failover-matrix.ps1` 生成组件故障切换矩阵。
 
 本地启用OpenSearch BM25：
 

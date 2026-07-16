@@ -39,7 +39,7 @@ import {
   type WorkflowSummary,
 } from '../../api/workflows';
 import { fetchChatModels, type ModelConfigSummary } from '../../api/models';
-import { fetchPromptTemplates, type PromptTemplateSummary } from '../../api/prompts';
+import { fetchPromptTemplate, fetchPromptTemplates, type PromptTemplateDetail, type PromptTemplateSummary } from '../../api/prompts';
 import { useOverlay } from '../../composables/useOverlay';
 import { usePagination } from '../../composables/usePagination';
 
@@ -51,6 +51,7 @@ const activeTab = ref('基础信息');
 const loading = ref(false);
 const models = ref<ModelConfigSummary[]>([]);
 const promptTemplates = ref<PromptTemplateSummary[]>([]);
+const selectedPromptDetail = ref<PromptTemplateDetail | null>(null);
 const currentAgent = ref<AgentDetail | null>(null);
 const knowledgeBases = ref<KnowledgeBaseSummary[]>([]);
 const knowledgeBindings = ref<AgentKnowledgeBindingSummary[]>([]);
@@ -73,6 +74,9 @@ const form = reactive({
   agentType: 'chat_agent',
   modelId: '',
   systemPromptTemplateId: '',
+  systemPromptVersionId: '',
+  promptBindingMode: 'MANUAL' as 'MANUAL' | 'LOCKED' | 'FOLLOW_STABLE',
+  promptVariables: '{}',
   systemPrompt: '你是 OpenAgentFlow-Java 的智能体，请使用清晰、准确的中文回答用户。',
   temperature: 0.3,
   maxTokens: 2048,
@@ -91,6 +95,7 @@ const knowledgePolicy = reactive<Required<AgentKnowledgeBindingOptions>>({
 });
 
 const isNew = computed(() => route.params.id === 'new');
+const selectedPromptVersions = computed(() => selectedPromptDetail.value?.versions || []);
 const pageTitle = computed(() => (isNew.value ? '新建智能体' : form.agentName || '智能体详情'));
 const pageDescription = computed(() => form.description || '配置 Prompt、模型参数、知识库、工具、工作流与运行权限');
 const statusLabel = computed(() => currentAgent.value?.statusLabel || statusText(form.status));
@@ -186,6 +191,9 @@ async function loadAgent() {
     const detail = await fetchAgent(String(route.params.id));
     currentAgent.value = detail;
     fillForm(detail);
+    if (detail.systemPromptTemplateId) {
+      selectedPromptDetail.value = await fetchPromptTemplate(detail.systemPromptTemplateId);
+    }
     await Promise.all([loadKnowledgeBindings(detail.id), loadToolBindings(detail.id), loadWorkflowBindings(detail.id)]);
   } finally {
     loading.value = false;
@@ -238,6 +246,9 @@ function fillForm(detail: AgentDetail) {
   form.agentType = detail.agentType || 'chat_agent';
   form.modelId = detail.modelId || form.modelId;
   form.systemPromptTemplateId = detail.systemPromptTemplateId || '';
+  form.systemPromptVersionId = detail.systemPromptVersionId || '';
+  form.promptBindingMode = detail.promptBindingMode || (detail.systemPromptTemplateId ? 'FOLLOW_STABLE' : 'MANUAL');
+  form.promptVariables = detail.promptVariables || '{}';
   form.systemPrompt = detail.systemPrompt || form.systemPrompt;
   form.memoryStrategy = detail.memoryStrategy || 'none';
   form.visibility = detail.visibility || 'private';
@@ -330,6 +341,9 @@ function toRequest(): AgentRequest {
     agentType: form.agentType,
     modelId: form.modelId,
     systemPromptTemplateId: form.systemPromptTemplateId || undefined,
+    systemPromptVersionId: form.promptBindingMode === 'LOCKED' ? form.systemPromptVersionId || undefined : undefined,
+    promptBindingMode: form.systemPromptTemplateId ? form.promptBindingMode : 'MANUAL',
+    promptVariables: form.promptVariables || '{}',
     systemPrompt: form.systemPrompt,
     modelParams: JSON.stringify({
       temperature: Number(form.temperature),
@@ -341,10 +355,17 @@ function toRequest(): AgentRequest {
   };
 }
 
-function applySystemPromptTemplate() {
+async function applySystemPromptTemplate() {
   const template = promptTemplates.value.find((item) => item.id === form.systemPromptTemplateId);
   if (template) {
+    selectedPromptDetail.value = await fetchPromptTemplate(template.id);
     form.systemPrompt = template.content;
+    form.promptBindingMode = template.stableVersionId ? 'FOLLOW_STABLE' : 'LOCKED';
+    form.systemPromptVersionId = template.stableVersionId || selectedPromptDetail.value.versions?.[0]?.id || '';
+  } else {
+    selectedPromptDetail.value = null;
+    form.promptBindingMode = 'MANUAL';
+    form.systemPromptVersionId = '';
   }
 }
 
@@ -426,6 +447,24 @@ function statusText(status: string) {
               {{ template.templateName }} / {{ template.latestVersionNo || '未发布版本' }}
             </option>
           </select>
+        </label>
+        <label>版本绑定模式
+          <select v-model="form.promptBindingMode" :disabled="!form.systemPromptTemplateId">
+            <option value="MANUAL">手工 Prompt</option>
+            <option value="LOCKED">锁定指定版本</option>
+            <option value="FOLLOW_STABLE">跟随生产稳定版</option>
+          </select>
+        </label>
+        <label v-if="form.promptBindingMode === 'LOCKED'">锁定版本
+          <select v-model="form.systemPromptVersionId">
+            <option value="">请选择版本</option>
+            <option v-for="version in selectedPromptVersions" :key="version.id" :value="version.id">
+              {{ version.versionNo }} / {{ version.environment || 'development' }}
+            </option>
+          </select>
+        </label>
+        <label class="wide">Prompt 变量 JSON
+          <textarea v-model="form.promptVariables" class="code-editor compact" rows="4" placeholder='{"tenant_name":"示例企业"}' />
         </label>
         <label class="wide">System Prompt<textarea v-model="form.systemPrompt" /></label>
       </div>

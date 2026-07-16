@@ -390,11 +390,13 @@ public class OpsMonitorService {
             event = new OpsAlertEventEntity();
             event.setId(UUID.randomUUID().toString());
             event.setEventCode("ALERT-" + System.currentTimeMillis());
+            event.setDedupeKey(rule.getRuleCode() + ":" + rule.getMetricCode());
             event.setRuleId(rule.getId());
             event.setRuleCode(rule.getRuleCode());
             event.setFirstTriggeredAt(now);
             event.setTriggerCount(0);
             event.setStatus("open");
+            event.setEscalationLevel(0);
         }
         event.setAlertTitle(rule.getRuleName());
         event.setSeverity(rule.getSeverity());
@@ -407,12 +409,38 @@ public class OpsMonitorService {
         event.setNotifyStatus("station".equalsIgnoreCase(rule.getNotifyChannels()) || rule.getNotifyChannels().contains("station") ? "sent" : "pending");
         event.setLastTriggeredAt(now);
         event.setTriggerCount((event.getTriggerCount() == null ? 0 : event.getTriggerCount()) + 1);
+        event.setEscalationLevel(Math.min(3, event.getTriggerCount() / 3));
+        event.setNextNotifyAt(now.plusMinutes(Math.max(1, rule.getCooldownMinutes() == null ? 30 : rule.getCooldownMinutes())));
         if (event.getCreatedAt() == null) {
             alertEventMapper.insert(event);
         } else {
             alertEventMapper.updateById(event);
         }
         sendStationNotification(event);
+        enqueueNotificationDeliveries(event, rule.getNotifyChannels());
+    }
+
+    /** 按规则渠道创建可重试投递任务，同一告警同一渠道只保留一个活动任务。 */
+    private void enqueueNotificationDeliveries(OpsAlertEventEntity event, String channels) {
+        for (String code : StringUtils.hasText(channels) ? channels.split(",") : new String[]{"station"}) {
+            String channelCode = code.trim();
+            if (channelCode.isBlank()) continue;
+            List<Map<String, Object>> configs = jdbcTemplate.queryForList(
+                    "SELECT id,channel_type FROM ops_notify_channel WHERE channel_code=? AND enabled=1 LIMIT 1", channelCode);
+            String channelId = configs.isEmpty() ? null : String.valueOf(configs.getFirst().get("id"));
+            String channelType = configs.isEmpty() ? channelCode : String.valueOf(configs.getFirst().get("channel_type"));
+            Long active = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(1) FROM ops_notification_delivery
+                    WHERE alert_event_id=? AND channel_type=? AND status IN ('pending','failed')
+                    """, Long.class, event.getId(), channelType);
+            if (active != null && active > 0) continue;
+            jdbcTemplate.update("""
+                    INSERT INTO ops_notification_delivery
+                      (id,alert_event_id,channel_id,channel_type,status,attempt_count,next_retry_at,created_at,updated_at)
+                    VALUES (?,?,?,?,?,0,NOW(3),NOW(3),NOW(3))
+                    """, UUID.randomUUID().toString(), event.getId(), channelId, channelType,
+                    "station".equalsIgnoreCase(channelType) ? "sent" : "pending");
+        }
     }
 
     /**

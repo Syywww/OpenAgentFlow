@@ -14,6 +14,7 @@ import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.knowledge.RagRetrievalOutcome;
 import com.openagentflow.domain.memory.MemoryDtos;
 import com.openagentflow.domain.model.ModelRouteDecision;
+import com.openagentflow.domain.prompt.PromptRuntimeDtos;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentSessionEntity;
 import com.openagentflow.entity.ModelConfigEntity;
@@ -116,6 +117,9 @@ public class ChatService {
     /** Runtime流式事件断线续传服务。 */
     private final RuntimeEventStreamService runtimeEventStreamService;
 
+    /** 统一Prompt Runtime服务。 */
+    private final PromptRuntimeService promptRuntimeService;
+
     public ChatService(AgentMapper agentMapper,
                        AgentAccessService agentAccessService,
                        ModelConfigMapper modelConfigMapper,
@@ -134,7 +138,8 @@ public class ChatService {
                        @org.springframework.beans.factory.annotation.Qualifier("agentRuntimeExecutor") TaskExecutor agentRuntimeExecutor,
                        RuntimeControlService runtimeControlService,
                        AiGuardrailService aiGuardrailService,
-                       RuntimeEventStreamService runtimeEventStreamService) {
+                       RuntimeEventStreamService runtimeEventStreamService,
+                       PromptRuntimeService promptRuntimeService) {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
         this.modelConfigMapper = modelConfigMapper;
@@ -154,6 +159,7 @@ public class ChatService {
         this.runtimeControlService = runtimeControlService;
         this.aiGuardrailService = aiGuardrailService;
         this.runtimeEventStreamService = runtimeEventStreamService;
+        this.promptRuntimeService = promptRuntimeService;
     }
 
     /**
@@ -294,7 +300,10 @@ public class ChatService {
         context.setProvider(provider);
         context.setApiKey(apiKey);
         context.setRouteDecision(routeDecision);
-        context.setMessages(buildMessages(agent, request));
+        PromptRuntimeDtos.CompileResult promptCompileResult = agent == null
+                ? null : promptRuntimeService.compileForAgent(agent, request.getInput(), request.getSessionId());
+        context.setPromptCompileResult(promptCompileResult);
+        context.setMessages(buildMessages(agent, request, promptCompileResult));
         context.setSources(List.of());
         List<ToolDefinitionForModel> agentTools = toolService.listModelToolsForAgent(agent);
         context.setTools(filterToolsForInput(agentTools, request.getInput()));
@@ -971,9 +980,13 @@ public class ChatService {
      * @param request 聊天请求
      * @return 消息列表
      */
-    private List<ChatMessage> buildMessages(AgentEntity agent, ChatCompletionRequest request) {
+    private List<ChatMessage> buildMessages(AgentEntity agent,
+                                            ChatCompletionRequest request,
+                                            PromptRuntimeDtos.CompileResult promptCompileResult) {
         List<ChatMessage> messages = new ArrayList<>();
-        String systemPrompt = agent != null && StringUtils.hasText(agent.getSystemPrompt())
+        String systemPrompt = promptCompileResult != null && StringUtils.hasText(promptCompileResult.renderedPrompt)
+                ? promptCompileResult.renderedPrompt
+                : agent != null && StringUtils.hasText(agent.getSystemPrompt())
                 ? agent.getSystemPrompt()
                 : "你是 OpenAgentFlow-Java 的 AI 调试助手，请用清晰、准确的中文回答用户问题。";
         messages.add(new ChatMessage("system", systemPrompt));
@@ -1237,7 +1250,13 @@ public class ChatService {
         call.setFirstTokenLatencyMs(nullToZero(result.getFirstTokenLatencyMs()));
         call.setSuccess(success);
         call.setErrorMessage(errorMessage);
+        // Trace保存实际Prompt版本、最终内容哈希、变量来源和运行时装配层。
+        promptRuntimeService.enrichLlmCall(call, context.getPromptCompileResult(), context.getMessages());
         runtimeLlmCallMapper.insert(call);
+        promptRuntimeService.recordMetric(
+                context.getAgent() == null ? null : context.getAgent().getWorkspaceId(),
+                run.getId(), run.getAgentId(), context.getPromptCompileResult(), success,
+                call.getLatencyMs(), call.getTotalTokens(), call.getCostAmount());
         usageCostService.recordActualUsage(run, context.getProvider(), context.getModel(), call.getTotalTokens(), call.getCostAmount(), success, call.getLatencyMs());
     }
 

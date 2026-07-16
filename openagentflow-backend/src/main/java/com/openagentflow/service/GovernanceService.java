@@ -68,6 +68,8 @@ public class GovernanceService {
 
     /** JDBC 工具。 */
     private final JdbcTemplate jdbcTemplate;
+    /** 高风险工具一次性令牌服务。 */
+    private final ToolApprovalTokenService toolApprovalTokenService;
 
     public GovernanceService(AuditOperationLogMapper auditOperationLogMapper,
                              RiskGovernanceEventMapper riskGovernanceEventMapper,
@@ -77,7 +79,8 @@ public class GovernanceService {
                              ToolInvocationLogMapper toolInvocationLogMapper,
                              RuntimeGuardrailEventMapper runtimeGuardrailEventMapper,
                              ObjectMapper objectMapper,
-                             JdbcTemplate jdbcTemplate) {
+                             JdbcTemplate jdbcTemplate,
+                             ToolApprovalTokenService toolApprovalTokenService) {
         this.auditOperationLogMapper = auditOperationLogMapper;
         this.riskGovernanceEventMapper = riskGovernanceEventMapper;
         this.toolDefinitionMapper = toolDefinitionMapper;
@@ -87,6 +90,7 @@ public class GovernanceService {
         this.runtimeGuardrailEventMapper = runtimeGuardrailEventMapper;
         this.objectMapper = objectMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.toolApprovalTokenService = toolApprovalTokenService;
     }
 
     /**
@@ -249,6 +253,12 @@ public class GovernanceService {
         if (confirm == null) {
             throw new BusinessException("CONFIRMATION_NOT_FOUND", "确认请求不存在");
         }
+        if (!"pending".equals(confirm.getStatus())) {
+            throw new BusinessException("CONFIRMATION_ALREADY_DECIDED", "确认请求已处置，不能重复审批");
+        }
+        if (approved && currentUserId() != null && currentUserId().equals(confirm.getRequesterUserId())) {
+            throw new BusinessException("DUAL_APPROVAL_REQUIRED", "高风险工具必须由申请人以外的管理员审批");
+        }
         confirm.setStatus(approved ? "approved" : "rejected");
         confirm.setConfirmedBy(currentUserId());
         confirm.setConfirmedAt(LocalDateTime.now());
@@ -261,7 +271,9 @@ public class GovernanceService {
             event.setHandleNote(note);
             riskGovernanceEventMapper.updateById(event);
         }
-        return toConfirmationItem(confirm);
+        GovernanceDtos.ConfirmationItem item = toConfirmationItem(confirm);
+        if (approved) item.setExecutionToken(toolApprovalTokenService.issue(id));
+        return item;
     }
 
     /**

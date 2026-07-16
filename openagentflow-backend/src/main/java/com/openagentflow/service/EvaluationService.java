@@ -11,6 +11,7 @@ import com.openagentflow.domain.chat.ChatRunContext;
 import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.eval.EvaluationDtos;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
+import com.openagentflow.domain.prompt.PromptRuntimeDtos;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.EvalDatasetEntity;
@@ -32,6 +33,7 @@ import com.openagentflow.mapper.EvalScoreMapper;
 import com.openagentflow.mapper.EvalTaskMapper;
 import com.openagentflow.mapper.EvalTaskRunMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
+import com.openagentflow.security.WorkspaceContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -110,6 +112,9 @@ public class EvaluationService implements DistributedTaskHandler {
     /** 统一异步任务中心。 */
     private final AsyncTaskService asyncTaskService;
 
+    /** 统一Prompt Runtime服务。 */
+    private final PromptRuntimeService promptRuntimeService;
+
     public EvaluationService(EvalDatasetMapper evalDatasetMapper,
                              EvalSampleMapper evalSampleMapper,
                              EvalMetricMapper evalMetricMapper,
@@ -124,7 +129,8 @@ public class EvaluationService implements DistributedTaskHandler {
                              ModelProviderService modelProviderService,
                              OpenAiCompatibleClient openAiCompatibleClient,
                              ObjectMapper objectMapper,
-                             AsyncTaskService asyncTaskService) {
+                             AsyncTaskService asyncTaskService,
+                             PromptRuntimeService promptRuntimeService) {
         this.evalDatasetMapper = evalDatasetMapper;
         this.evalSampleMapper = evalSampleMapper;
         this.evalMetricMapper = evalMetricMapper;
@@ -140,6 +146,7 @@ public class EvaluationService implements DistributedTaskHandler {
         this.openAiCompatibleClient = openAiCompatibleClient;
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
+        this.promptRuntimeService = promptRuntimeService;
     }
 
     /**
@@ -562,11 +569,16 @@ public class EvaluationService implements DistributedTaskHandler {
             context.setModel(model);
             context.setProvider(provider);
             context.setApiKey(modelProviderService.findApiKeyValue(provider.getId()));
+            PromptRuntimeDtos.CompileResult compiledPrompt = compileJudgePrompt(run, sample, response, request);
+            context.setPromptCompileResult(compiledPrompt);
             context.setMessages(List.of(
-                    new ChatMessage("system", judgeSystemPrompt(request)),
+                    new ChatMessage("system", compiledPrompt.renderedPrompt),
                     new ChatMessage("user", judgeUserPrompt(sample, response))
             ));
             LlmCallResult result = openAiCompatibleClient.complete(context, 0D, 900);
+            promptRuntimeService.recordMetric(null, run.getRunId(), request.getAgentId(), compiledPrompt,
+                    true, result.getLatencyMs() == null ? 0 : result.getLatencyMs(),
+                    result.getTotalTokens() == null ? 0 : result.getTotalTokens(), BigDecimal.ZERO);
             JudgeResult judge = parseJudgeResult(result.getContent(), model);
             judge.setLatencyMs(result.getLatencyMs() == null ? 0 : result.getLatencyMs());
             judge.setTotalTokens(result.getTotalTokens() == null ? 0 : result.getTotalTokens());
@@ -575,6 +587,36 @@ public class EvaluationService implements DistributedTaskHandler {
         } catch (Exception exception) {
             return JudgeResult.failed(exception.getMessage(), judgeModelId, modelName(judgeModelId), 0, 0, "");
         }
+    }
+
+    /**
+     * 通过统一Runtime编译Judge Prompt，支持模板版本、强类型变量和实验分流。
+     */
+    private PromptRuntimeDtos.CompileResult compileJudgePrompt(EvalTaskRunEntity run,
+                                                               EvalSampleEntity sample,
+                                                               ChatCompletionResponse response,
+                                                               EvaluationDtos.RunTaskRequest request) {
+        PromptRuntimeDtos.CompileRequest compileRequest = new PromptRuntimeDtos.CompileRequest();
+        compileRequest.resourceType = "evaluation";
+        compileRequest.resourceId = run.getTaskId();
+        compileRequest.agentId = request.getAgentId();
+        compileRequest.templateId = request.getPromptTemplateId();
+        compileRequest.versionId = request.getPromptVersionId();
+        compileRequest.bindingMode = StringUtils.hasText(request.getPromptBindingMode())
+                ? request.getPromptBindingMode()
+                : (StringUtils.hasText(request.getPromptTemplateId()) ? "FOLLOW_STABLE" : "MANUAL");
+        compileRequest.content = judgeSystemPrompt(request);
+        compileRequest.variables = mapOf(
+                "question", nullToBlank(sample.getQuestion()),
+                "expected_answer", nullToBlank(sample.getExpectedAnswer()),
+                "actual_answer", nullToBlank(response.getContent()),
+                "reference_context", nullToBlank(sample.getReferenceContext()),
+                "sources", sourceSummary(response.getSources()),
+                "tool_results", toJson(response.getToolResults() == null ? List.of() : response.getToolResults())
+        );
+        compileRequest.routingKey = run.getId();
+        compileRequest.strict = false;
+        return promptRuntimeService.compile(compileRequest);
     }
 
     /**
@@ -769,6 +811,7 @@ public class EvaluationService implements DistributedTaskHandler {
     private EvalTaskEntity createTaskEntity(EvaluationDtos.RunTaskRequest request, int totalRuns) {
         EvalTaskEntity task = new EvalTaskEntity();
         task.setId(newId());
+        task.setWorkspaceId(WorkspaceContextHolder.current());
         // 任务编码追加短随机后缀，避免多人或连续点击在同一秒内创建任务时撞唯一索引。
         task.setTaskCode("eval_" + DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())
                 + "_" + UUID.randomUUID().toString().substring(0, 8));
@@ -777,6 +820,7 @@ public class EvaluationService implements DistributedTaskHandler {
         task.setAgentId(request.getAgentId());
         task.setBaselineModelId(request.getBaselineModelId());
         task.setCompareModelIds(toJson(request.getCompareModelIds() == null ? List.of() : request.getCompareModelIds()));
+        task.setPromptTemplateId(request.getPromptTemplateId());
         task.setEvalConfig(toJson(evalConfigMap(request)));
         task.setStatus("pending");
         task.setTotalSamples(totalRuns);
@@ -983,6 +1027,9 @@ public class EvaluationService implements DistributedTaskHandler {
     private Map<String, Object> evalConfigMap(EvaluationDtos.RunTaskRequest request) {
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("promptStrategy", request.getPromptStrategy());
+        config.put("promptTemplateId", request.getPromptTemplateId());
+        config.put("promptVersionId", request.getPromptVersionId());
+        config.put("promptBindingMode", request.getPromptBindingMode());
         config.put("promptVariantText", request.getPromptVariantText());
         config.put("knowledgeStrategy", request.getKnowledgeStrategy());
         config.put("temperature", request.getTemperature());

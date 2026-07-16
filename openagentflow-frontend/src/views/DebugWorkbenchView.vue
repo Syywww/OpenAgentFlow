@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { AlertCircle, CornerDownRight, FileSearch, History, MessageSquarePlus, Send, Sparkles, Square, Trash2 } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
@@ -17,6 +17,7 @@ import {
   type AgentSessionSummary,
 } from '../api/sessions';
 import { useOverlay } from '../composables/useOverlay';
+import { scrollToLatest } from '../utils/chatScroll';
 
 interface UiMessage {
   role: 'user' | 'assistant';
@@ -37,6 +38,8 @@ const selectedModelId = ref('');
 const selectedSessionId = ref('');
 const inputText = ref('请介绍一下 OpenAgentFlow-Java 当前平台能力，并给出下一步建设建议。');
 const messages = ref<UiMessage[]>([]);
+/** 中间对话消息容器，用于打开历史会话后定位到最新消息。 */
+const chatMessagesRef = ref<HTMLElement | null>(null);
 const sessions = ref<AgentSessionSummary[]>([]);
 const sessionsLoading = ref(false);
 const loading = ref(false);
@@ -203,6 +206,11 @@ async function openSession(sessionId: string) {
   toolResults.value = [];
   trustedAnswer.value = null;
   generationPaused.value = false;
+  // 等待历史消息完成渲染，再把独立消息容器定位到最后一条消息。
+  await nextTick();
+  if (messages.value.length > 0) {
+    scrollToLatest(chatMessagesRef.value);
+  }
 }
 
 function startNewSession() {
@@ -522,7 +530,7 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
     </aside>
 
     <div class="chat-panel">
-      <div class="chat-messages">
+      <div ref="chatMessagesRef" class="chat-messages">
         <div v-if="!messages.length" class="empty-state">
           <Sparkles :size="22" />
           <b>真实模型调试已就绪</b>

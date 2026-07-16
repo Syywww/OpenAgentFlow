@@ -27,6 +27,8 @@ import com.openagentflow.mapper.ToolConfirmRequestMapper;
 import com.openagentflow.mapper.ToolDefinitionMapper;
 import com.openagentflow.mapper.ToolInvocationLogMapper;
 import com.openagentflow.security.AuthUserDetails;
+import com.openagentflow.security.SensitiveDataSanitizer;
+import com.openagentflow.security.WorkspaceContextHolder;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -106,6 +108,10 @@ public class ToolService {
 
     /** AI工具参数安全护栏。 */
     private final AiGuardrailService aiGuardrailService;
+    /** 高风险工具一次性令牌服务。 */
+    private final ToolApprovalTokenService toolApprovalTokenService;
+    /** 工具日志敏感数据脱敏器。 */
+    private final SensitiveDataSanitizer sensitiveDataSanitizer;
 
     public ToolService(ToolDefinitionMapper toolDefinitionMapper,
                        AgentToolBindingMapper agentToolBindingMapper,
@@ -118,7 +124,9 @@ public class ToolService {
                        AgentAccessService agentAccessService,
                        McpClientService mcpClientService,
                        WorkspaceGovernanceService workspaceGovernanceService,
-                       AiGuardrailService aiGuardrailService) {
+                       AiGuardrailService aiGuardrailService,
+                       ToolApprovalTokenService toolApprovalTokenService,
+                       SensitiveDataSanitizer sensitiveDataSanitizer) {
         this.toolDefinitionMapper = toolDefinitionMapper;
         this.agentToolBindingMapper = agentToolBindingMapper;
         this.agentMapper = agentMapper;
@@ -131,6 +139,8 @@ public class ToolService {
         this.mcpClientService = mcpClientService;
         this.workspaceGovernanceService = workspaceGovernanceService;
         this.aiGuardrailService = aiGuardrailService;
+        this.toolApprovalTokenService = toolApprovalTokenService;
+        this.sensitiveDataSanitizer = sensitiveDataSanitizer;
     }
 
     /**
@@ -359,6 +369,21 @@ public class ToolService {
         return executeHttpTool(tool, inputParams);
     }
 
+    /** 使用审批后的一次性令牌执行高风险工具。 */
+    @Transactional(rollbackFor = Exception.class)
+    public ToolExecutionResult executeApprovedConfirmation(String confirmationId, String executionToken) {
+        ToolConfirmRequestEntity confirm = toolConfirmRequestMapper.selectById(confirmationId);
+        if (confirm == null) throw new BusinessException("CONFIRMATION_NOT_FOUND", "确认请求不存在");
+        toolApprovalTokenService.consume(confirmationId, executionToken);
+        ToolDefinitionEntity tool = requireTool(confirm.getToolId());
+        Map<String, Object> input = parseMap(confirm.getRequestPayload());
+        ToolExecutionResult result = executeToolInternal(tool, input);
+        saveInvocationLog(tool, input, result, confirm.getAgentId(), confirm.getRunId(), null, confirm.getRequesterUserId());
+        jdbcTemplate.update("UPDATE tool_confirm_request SET status=? WHERE id=? AND status='executing'",
+                Boolean.TRUE.equals(result.getSuccess()) ? "executed" : "failed", confirmationId);
+        return result;
+    }
+
     /**
      * 执行 REST API 或 Webhook 工具。
      *
@@ -524,8 +549,8 @@ public class ToolService {
                 .map(String::valueOf)
                 .map(this::normalizeText)
                 .reduce("", (left, right) -> left + " " + right);
-        return StringUtils.hasText(text) && containsAny(text,
-                "多少订单", "几个订单", "几笔订单", "订单数量", "订单数", "我的订单", "订单列表", "所有订单", "有哪些订单");
+        // 复用统一策略，确保“有那些订单”等口语表达能返回汇总结果。
+        return OrderQueryIntentPolicy.isSummaryQuery(text);
     }
 
     /**
@@ -608,6 +633,7 @@ public class ToolService {
                                                           String callerUserId) {
         ToolConfirmRequestEntity confirm = new ToolConfirmRequestEntity();
         confirm.setId(newId());
+        confirm.setWorkspaceId(WorkspaceContextHolder.current());
         confirm.setToolId(tool.getId());
         confirm.setRequesterUserId(callerUserId);
         confirm.setAgentId(agentId);
@@ -704,12 +730,12 @@ public class ToolService {
         log.setStepId(stepId);
         log.setCallerUserId(callerUserId);
         log.setToolCode(tool.getToolCode());
-        log.setInputParams(toJson(inputParams));
-        log.setOutputResult(toJson(result));
+        log.setInputParams(toJson(sensitiveDataSanitizer.sanitizeObject(inputParams)));
+        log.setOutputResult(sensitiveDataSanitizer.sanitize(toJson(result)));
         log.setSuccess(Boolean.TRUE.equals(result.getSuccess()));
         log.setRiskLevel(tool.getRiskLevel());
         log.setLatencyMs(result.getLatencyMs());
-        log.setErrorMessage(result.getErrorMessage());
+        log.setErrorMessage(sensitiveDataSanitizer.sanitize(result.getErrorMessage()));
         toolInvocationLogMapper.insert(log);
     }
 

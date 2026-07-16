@@ -530,6 +530,15 @@ public final class EvaluationDtos {
         /** Prompt 策略名称。 */
         private String promptStrategy;
 
+        /** 评测或Judge使用的Prompt模板ID。 */
+        private String promptTemplateId;
+
+        /** 锁定的Prompt版本ID。 */
+        private String promptVersionId;
+
+        /** Prompt绑定模式。 */
+        private String promptBindingMode;
+
         /** Prompt 补充文本，会拼接进评测输入用于 A/B 对比。 */
         private String promptVariantText;
 
@@ -604,6 +613,13 @@ public final class EvaluationDtos {
         public void setPromptStrategy(String promptStrategy) {
             this.promptStrategy = promptStrategy;
         }
+
+        public String getPromptTemplateId() { return promptTemplateId; }
+        public void setPromptTemplateId(String promptTemplateId) { this.promptTemplateId = promptTemplateId; }
+        public String getPromptVersionId() { return promptVersionId; }
+        public void setPromptVersionId(String promptVersionId) { this.promptVersionId = promptVersionId; }
+        public String getPromptBindingMode() { return promptBindingMode; }
+        public void setPromptBindingMode(String promptBindingMode) { this.promptBindingMode = promptBindingMode; }
 
         public String getPromptVariantText() {
             return promptVariantText;

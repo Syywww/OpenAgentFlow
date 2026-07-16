@@ -16,6 +16,10 @@ public class ToolConfirmRequestEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 工作空间ID。 */
+    @TableField("workspace_id")
+    private String workspaceId;
+
     /** 工具ID。 */
     @TableField("tool_id")
     private String toolId;
@@ -44,6 +48,18 @@ public class ToolConfirmRequestEntity {
     @TableField("status")
     private String status;
 
+    /** 一次性执行令牌哈希。 */
+    @TableField("approval_token_hash")
+    private String approvalTokenHash;
+
+    /** 一次性执行令牌失效时间。 */
+    @TableField("approval_token_expires_at")
+    private LocalDateTime approvalTokenExpiresAt;
+
+    /** 一次性执行令牌使用时间。 */
+    @TableField("approval_token_used_at")
+    private LocalDateTime approvalTokenUsedAt;
+
     /** CONFIRMED人。 */
     @TableField("confirmed_by")
     private String confirmedBy;
@@ -67,6 +83,10 @@ public class ToolConfirmRequestEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getWorkspaceId() { return workspaceId; }
+
+    public void setWorkspaceId(String workspaceId) { this.workspaceId = workspaceId; }
 
     public String getToolId() {
         return toolId;
@@ -123,6 +143,18 @@ public class ToolConfirmRequestEntity {
     public void setStatus(String status) {
         this.status = status;
     }
+
+    public String getApprovalTokenHash() { return approvalTokenHash; }
+
+    public void setApprovalTokenHash(String approvalTokenHash) { this.approvalTokenHash = approvalTokenHash; }
+
+    public LocalDateTime getApprovalTokenExpiresAt() { return approvalTokenExpiresAt; }
+
+    public void setApprovalTokenExpiresAt(LocalDateTime approvalTokenExpiresAt) { this.approvalTokenExpiresAt = approvalTokenExpiresAt; }
+
+    public LocalDateTime getApprovalTokenUsedAt() { return approvalTokenUsedAt; }
+
+    public void setApprovalTokenUsedAt(LocalDateTime approvalTokenUsedAt) { this.approvalTokenUsedAt = approvalTokenUsedAt; }
 
     public String getConfirmedBy() {
         return confirmedBy;

@@ -45,6 +45,12 @@ public class RuntimeLlmCallEntity {
     @TableField("route_decision")
     private String routeDecision;
 
+    /** 本次调用实际Prompt模板ID。 */ @TableField("prompt_template_id") private String promptTemplateId;
+    /** 本次调用实际Prompt版本ID。 */ @TableField("prompt_version_id") private String promptVersionId;
+    /** 最终Prompt内容哈希。 */ @TableField("prompt_content_hash") private String promptContentHash;
+    /** Prompt分层装配摘要JSON。 */ @TableField("prompt_layers") private String promptLayers;
+    /** Prompt变量来源JSON。 */ @TableField("prompt_variable_sources") private String promptVariableSources;
+
     /** 是否使用模型回退。 */
     @TableField("fallback_used")
     private Boolean fallbackUsed;
@@ -160,6 +166,17 @@ public class RuntimeLlmCallEntity {
     public void setRouteDecision(String routeDecision) {
         this.routeDecision = routeDecision;
     }
+
+    public String getPromptTemplateId() { return promptTemplateId; }
+    public void setPromptTemplateId(String promptTemplateId) { this.promptTemplateId = promptTemplateId; }
+    public String getPromptVersionId() { return promptVersionId; }
+    public void setPromptVersionId(String promptVersionId) { this.promptVersionId = promptVersionId; }
+    public String getPromptContentHash() { return promptContentHash; }
+    public void setPromptContentHash(String promptContentHash) { this.promptContentHash = promptContentHash; }
+    public String getPromptLayers() { return promptLayers; }
+    public void setPromptLayers(String promptLayers) { this.promptLayers = promptLayers; }
+    public String getPromptVariableSources() { return promptVariableSources; }
+    public void setPromptVariableSources(String promptVariableSources) { this.promptVariableSources = promptVariableSources; }
 
     public Boolean getFallbackUsed() {
         return fallbackUsed;

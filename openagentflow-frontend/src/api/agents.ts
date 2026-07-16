@@ -26,6 +26,9 @@ export interface AgentSummary {
 export interface AgentDetail extends AgentSummary {
   avatarUrl?: string;
   systemPromptTemplateId?: string;
+  systemPromptVersionId?: string;
+  promptBindingMode?: 'MANUAL' | 'LOCKED' | 'FOLLOW_STABLE';
+  promptVariables?: string;
   systemPrompt?: string;
   modelParams?: string;
   memoryStrategy?: string;
@@ -43,6 +46,9 @@ export interface AgentRequest {
   agentType?: string;
   modelId?: string;
   systemPromptTemplateId?: string;
+  systemPromptVersionId?: string;
+  promptBindingMode?: 'MANUAL' | 'LOCKED' | 'FOLLOW_STABLE';
+  promptVariables?: string;
   systemPrompt?: string;
   modelParams?: string;
   memoryStrategy?: string;

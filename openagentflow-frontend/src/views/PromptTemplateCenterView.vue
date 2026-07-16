@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { Copy, GitBranch, Plus, RefreshCw, RotateCcw, Save, Send, Trash2, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
+import PromptOpsPanel from '../components/PromptOpsPanel.vue';
 import StatCard from '../components/StatCard.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import {
@@ -30,7 +31,7 @@ const overview = ref<PromptOverview | null>(null);
 const templates = ref<PromptTemplateSummary[]>([]);
 const selectedTemplate = ref<PromptTemplateDetail | null>(null);
 const total = ref(0);
-const activePanel = ref<'templates' | 'versions'>('templates');
+const activePanel = ref<'templates' | 'versions' | 'preview' | 'governance' | 'experiments' | 'metrics'>('templates');
 const templateModalOpen = ref(false);
 const publishModalOpen = ref(false);
 const editingTemplateId = ref('');
@@ -49,8 +50,10 @@ const templateForm = reactive<PromptTemplateRequest>({
   promptType: 'system',
   content: '',
   variables: '',
+  variableSchema: '[]',
   description: '',
   status: 'draft',
+  riskLevel: 'low',
 });
 
 const publishForm = reactive({
@@ -60,6 +63,11 @@ const publishForm = reactive({
 
 const variablePreview = computed(() => selectedTemplate.value?.variableNames || []);
 const versions = computed(() => selectedTemplate.value?.versions || []);
+const promptOpsMode = computed<'preview' | 'governance' | 'experiments' | 'metrics'>(() => {
+  return ['preview', 'governance', 'experiments', 'metrics'].includes(activePanel.value)
+    ? activePanel.value as 'preview' | 'governance' | 'experiments' | 'metrics'
+    : 'preview';
+});
 const { currentPage: versionPage, pagedItems: pagedVersions } = usePagination(versions);
 
 async function loadData() {
@@ -106,8 +114,10 @@ function resetTemplateForm() {
   templateForm.promptType = 'system';
   templateForm.content = '你是专业的 AI 助手，请结合 {{user_input}} 输出可执行、可验证的回答。';
   templateForm.variables = '';
+  templateForm.variableSchema = '[]';
   templateForm.description = '';
   templateForm.status = 'draft';
+  templateForm.riskLevel = 'low';
 }
 
 function openCreateTemplateModal() {
@@ -122,8 +132,10 @@ function openEditTemplateModal(template: PromptTemplateSummary) {
   templateForm.promptType = template.promptType;
   templateForm.content = template.content;
   templateForm.variables = template.variables;
+  templateForm.variableSchema = template.variableSchema || template.variables || '[]';
   templateForm.description = template.description || '';
   templateForm.status = template.status;
+  templateForm.riskLevel = template.riskLevel || 'low';
   templateModalOpen.value = true;
 }
 
@@ -300,6 +312,26 @@ onMounted(() => {
       <b>{{ versions.length }}</b>
       <small>{{ selectedTemplate?.templateName || '请选择模板' }}</small>
     </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'preview' }" type="button" @click="activePanel = 'preview'">
+      <span>编译预览</span>
+      <b>{{ selectedTemplate?.variableNames.length || 0 }}</b>
+      <small>变量、分层与最终 Prompt</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'governance' }" type="button" @click="activePanel = 'governance'">
+      <span>发布治理</span>
+      <b>{{ selectedTemplate?.bindingCount || 0 }}</b>
+      <small>影响面、差异、环境与灰度</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'experiments' }" type="button" @click="activePanel = 'experiments'">
+      <span>A/B 实验</span>
+      <b>{{ overview?.runningExperimentCount || 0 }}</b>
+      <small>稳定分流与自动选优</small>
+    </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'metrics' }" type="button" @click="activePanel = 'metrics'">
+      <span>运行指标</span>
+      <b>{{ selectedTemplate?.versions.length || 0 }}</b>
+      <small>质量、耗时、Token 与成本</small>
+    </button>
   </section>
 
   <section class="section-block prompt-center-panel">
@@ -336,7 +368,7 @@ onMounted(() => {
       <div v-if="templates.length === 0" class="empty-state">暂无 Prompt 模板</div>
     </template>
 
-    <template v-else>
+    <template v-else-if="activePanel === 'versions'">
       <div class="section-title">
         <h2>版本治理</h2>
         <div class="title-actions">
@@ -380,6 +412,11 @@ onMounted(() => {
       </template>
       <div v-else class="empty-state">请选择一个 Prompt 模板</div>
     </template>
+    <PromptOpsPanel
+      v-else
+      :template="selectedTemplate"
+      :mode="promptOpsMode"
+    />
   </section>
 
   <div v-if="templateModalOpen" class="overlay-backdrop" @click.self="closeTemplateModal">
@@ -411,9 +448,17 @@ onMounted(() => {
             <option value="archived">已归档</option>
           </select>
         </label>
+        <label>风险等级
+          <select v-model="templateForm.riskLevel">
+            <option value="low">低风险</option>
+            <option value="medium">中风险</option>
+            <option value="high">高风险</option>
+          </select>
+        </label>
         <label class="wide">描述<textarea v-model="templateForm.description" rows="2" /></label>
         <label class="wide">Prompt 内容<textarea v-model="templateForm.content" class="code-editor" rows="10" /></label>
         <label class="wide">变量定义 JSON<textarea v-model="templateForm.variables" class="code-editor compact" placeholder="留空时后端自动从 {{变量名}} 解析" /></label>
+        <label class="wide">强类型变量 Schema<textarea v-model="templateForm.variableSchema" class="code-editor compact" rows="6" placeholder='[{"name":"user_input","type":"string","required":true,"sensitive":false}]' /></label>
       </div>
       <div class="toolbar compact">
         <button class="secondary-button" type="button" @click="closeTemplateModal">取消</button>

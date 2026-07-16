@@ -1,6 +1,7 @@
 package com.openagentflow.domain.prompt;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -26,6 +27,15 @@ public final class PromptDtos {
 
         /** 模板版本总数。 */
         public Long versionCount;
+
+        /** 运行中实验数。 */
+        public Long runningExperimentCount;
+
+        /** 生产环境发布数。 */
+        public Long productionReleaseCount;
+
+        /** 启用资源绑定数。 */
+        public Long activeBindingCount;
     }
 
     /**
@@ -53,6 +63,18 @@ public final class PromptDtos {
         /** 变量定义JSON。 */
         public String variables;
 
+        /** 强类型变量Schema JSON。 */
+        public String variableSchema;
+
+        /** 当前稳定版本ID。 */
+        public String stableVersionId;
+
+        /** 当前最高晋级环境。 */
+        public String currentEnvironment;
+
+        /** Prompt风险等级。 */
+        public String riskLevel;
+
         /** 变量名称列表。 */
         public List<String> variableNames;
 
@@ -70,6 +92,9 @@ public final class PromptDtos {
 
         /** 最近版本号。 */
         public String latestVersionNo;
+
+        /** 绑定资源数量。 */
+        public Long bindingCount;
 
         /** 所有者用户ID。 */
         public String ownerUserId;
@@ -108,6 +133,27 @@ public final class PromptDtos {
         /** 变量定义JSON。 */
         public String variables;
 
+        /** 该版本固化的强类型变量Schema JSON。 */
+        public String variableSchema;
+
+        /** 内容SHA-256。 */
+        public String contentHash;
+
+        /** 校验状态。 */
+        public String validationStatus;
+
+        /** 校验结果JSON。 */
+        public String validationResult;
+
+        /** 质量得分。 */
+        public BigDecimal qualityScore;
+
+        /** 当前环境。 */
+        public String environment;
+
+        /** 发布时间。 */
+        public LocalDateTime publishedAt;
+
         /** 变量名称列表。 */
         public List<String> variableNames;
 
@@ -140,11 +186,17 @@ public final class PromptDtos {
         /** 变量定义JSON，为空时后端会从 {{变量名}} 中自动解析。 */
         public String variables;
 
+        /** 强类型变量Schema JSON，为空时兼容使用variables。 */
+        public String variableSchema;
+
         /** 模板描述。 */
         public String description;
 
         /** 模板状态。 */
         public String status;
+
+        /** Prompt风险等级。 */
+        public String riskLevel;
     }
 
     /**

@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 工具中心与 Agent 工具绑定接口。
@@ -126,5 +127,12 @@ public class ToolController {
     public ApiResponse<List<AgentToolBindingSummary>> saveAgentToolBindings(@PathVariable String agentId,
                                                                             @RequestBody AgentToolBindingRequest request) {
         return ApiResponse.ok(toolService.saveAgentToolBindings(agentId, request));
+    }
+
+    /** 使用审批后的一次性令牌执行高风险工具。 */
+    @PostMapping("/tools/confirmations/{id}/execute")
+    public ApiResponse<ToolExecutionResult> executeApprovedConfirmation(@PathVariable String id,
+                                                                         @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(toolService.executeApprovedConfirmation(id, request.get("executionToken")));
     }
 }

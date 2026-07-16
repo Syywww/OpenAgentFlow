@@ -52,6 +52,18 @@ public class AgentEntity {
     @TableField("system_prompt_template_id")
     private String systemPromptTemplateId;
 
+    /** 锁定的System Prompt版本ID。 */
+    @TableField("system_prompt_version_id")
+    private String systemPromptVersionId;
+
+    /** Prompt绑定模式：MANUAL、LOCKED、FOLLOW_STABLE。 */
+    @TableField("prompt_binding_mode")
+    private String promptBindingMode;
+
+    /** Agent级Prompt变量值JSON。 */
+    @TableField("prompt_variables")
+    private String promptVariables;
+
     /** SYSTEM提示词。 */
     @TableField("system_prompt")
     private String systemPrompt;
@@ -178,6 +190,30 @@ public class AgentEntity {
 
     public void setSystemPromptTemplateId(String systemPromptTemplateId) {
         this.systemPromptTemplateId = systemPromptTemplateId;
+    }
+
+    public String getSystemPromptVersionId() {
+        return systemPromptVersionId;
+    }
+
+    public void setSystemPromptVersionId(String systemPromptVersionId) {
+        this.systemPromptVersionId = systemPromptVersionId;
+    }
+
+    public String getPromptBindingMode() {
+        return promptBindingMode;
+    }
+
+    public void setPromptBindingMode(String promptBindingMode) {
+        this.promptBindingMode = promptBindingMode;
+    }
+
+    public String getPromptVariables() {
+        return promptVariables;
+    }
+
+    public void setPromptVariables(String promptVariables) {
+        this.promptVariables = promptVariables;
     }
 
     public String getSystemPrompt() {

@@ -13,6 +13,7 @@ import com.openagentflow.mapper.KnowledgeDocumentMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.DigestUtils;
 
 import java.io.InputStream;
@@ -79,6 +80,9 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     /** 单个Embedding分片最大切片数。 */
     private final int embeddingShardSize;
 
+    /** 阶段节点与Outbox批量原子提交模板。 */
+    private final TransactionTemplate transactionTemplate;
+
     public PhysicalDocumentPipelineService(AsyncTaskService asyncTaskService,
                                            AsyncTaskStageService stageService,
                                            DocumentParseService documentParseService,
@@ -91,7 +95,8 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
                                            JdbcTemplate jdbcTemplate,
                                            ObjectMapper objectMapper,
                                            KeywordSearchService keywordSearchService,
-                                           @Value("${openagentflow.document-pipeline.embedding-shard-size:16}") int embeddingShardSize) {
+                                           @Value("${openagentflow.document-pipeline.embedding-shard-size:16}") int embeddingShardSize,
+                                           TransactionTemplate transactionTemplate) {
         this.asyncTaskService = asyncTaskService;
         this.stageService = stageService;
         this.documentParseService = documentParseService;
@@ -105,6 +110,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         this.objectMapper = objectMapper;
         this.keywordSearchService = keywordSearchService;
         this.embeddingShardSize = Math.max(16, Math.min(embeddingShardSize, 1000));
+        this.transactionTemplate = transactionTemplate;
     }
 
     /** 返回主阶段类型。 */
@@ -155,16 +161,24 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     private Map<String, Object> parse(AsyncTaskEntity task) {
         Map<String, Object> payload = payload(task);
         KnowledgeDocumentEntity document = requireDocument(text(payload.get("documentId")));
+        assertCurrentPipeline(document, payload, rootTaskId(task, payload));
         Path localFile = objectStorageService.materializeTempFile(document.getStorageBucket(), document.getStorageKey(), document.getFileExt());
         try {
             String parsedText = documentParseService.parse(localFile, document.getFileExt());
-            String artifactKey = artifactKey(document, rootTaskId(task, payload), "parsed/parsed.txt");
+            String currentRootTaskId = rootTaskId(task, payload);
+            jdbcTemplate.update("""
+                    UPDATE knowledge_document SET metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),
+                      '$.expectedChunkCount',0,'$.expectedEmbeddingCount',0)
+                    WHERE id=? AND current_pipeline_root_id=? AND pipeline_generation=?
+                    """, document.getId(), currentRootTaskId, integer(payload.get("pipelineGeneration"), 0));
+            String artifactKey = artifactKey(document, currentRootTaskId, "parsed/parsed.txt");
             objectStorageService.put(artifactKey, parsedText.getBytes(StandardCharsets.UTF_8), "text/plain;charset=UTF-8");
             Map<String, Object> next = withBase(payload, task);
             next.put("parsedArtifactKey", artifactKey);
             createNodeAndTask(task, "chunk", "DOCUMENT_PIPELINE_CHUNK", 0, 1,
                     "切分知识文档：" + document.getDocName(), next);
-            updateDocumentProgress(document.getId(), "parsed", 20, "文档解析完成，已投递物理切片任务");
+            updateDocumentProgress(document.getId(), payload, currentRootTaskId,
+                    "parsed", 20, "文档解析完成，已投递物理切片任务");
             return Map.of("artifactKey", artifactKey, "textLength", parsedText.length());
         } finally {
             try { Files.deleteIfExists(localFile); } catch (Exception ignored) { }
@@ -175,6 +189,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     private Map<String, Object> chunk(AsyncTaskEntity task) {
         Map<String, Object> payload = payload(task);
         KnowledgeDocumentEntity document = requireDocument(text(payload.get("documentId")));
+        assertCurrentPipeline(document, payload, rootTaskId(task, payload));
         KnowledgeBaseEntity kb = requireKnowledgeBase(document.getKbId());
         String parsedText = readUtf8(document.getStorageBucket(), text(payload.get("parsedArtifactKey")));
         List<KnowledgeChunkingService.ChunkSegment> sourceSegments = chunkingService.splitSegments(
@@ -187,27 +202,37 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         Map<String, PipelineSegment> allSegments = new LinkedHashMap<>();
         segments.forEach(segment -> allSegments.put(segment.id(), segment));
         int shardTotal = Math.max(1, (embeddingSegments.size() + embeddingShardSize - 1) / embeddingShardSize);
-        for (int shardNo = 0; shardNo < shardTotal; shardNo++) {
-            int start = shardNo * embeddingShardSize;
-            int end = Math.min(start + embeddingShardSize, embeddingSegments.size());
-            List<PipelineSegment> shardSegments = new ArrayList<>();
-            Set<String> includedIds = new java.util.LinkedHashSet<>();
-            for (PipelineSegment segment : embeddingSegments.subList(start, end)) {
-                // 子分片写入前携带其父分片，确保任意Worker只读取当前分片工件即可独立入库。
-                if (segment.parentChunkId() != null && includedIds.add(segment.parentChunkId())) {
-                    PipelineSegment parent = allSegments.get(segment.parentChunkId());
-                    if (parent != null) shardSegments.add(parent);
+        transactionTemplate.executeWithoutResult(transactionStatus -> {
+            for (int shardNo = 0; shardNo < shardTotal; shardNo++) {
+                int start = shardNo * embeddingShardSize;
+                int end = Math.min(start + embeddingShardSize, embeddingSegments.size());
+                List<PipelineSegment> shardSegments = new ArrayList<>();
+                Set<String> includedIds = new java.util.LinkedHashSet<>();
+                for (PipelineSegment segment : embeddingSegments.subList(start, end)) {
+                    // 子分片写入前携带其父分片，确保任意Worker只读取当前分片工件即可独立入库。
+                    if (segment.parentChunkId() != null && includedIds.add(segment.parentChunkId())) {
+                        PipelineSegment parent = allSegments.get(segment.parentChunkId());
+                        if (parent != null) shardSegments.add(parent);
+                    }
+                    if (includedIds.add(segment.id())) shardSegments.add(segment);
                 }
-                if (includedIds.add(segment.id())) shardSegments.add(segment);
+                String shardArtifactKey = artifactKey(document, rootTaskId(task, payload), "chunks/shard-" + shardNo + ".json");
+                putJson(shardArtifactKey, shardSegments);
+                Map<String, Object> next = withBase(payload, task);
+                next.put("segmentArtifactKey", shardArtifactKey);
+                next.put("expectedItemCount", end - start);
+                createNodeAndTask(task, "embedding", "DOCUMENT_PIPELINE_EMBED", shardNo, shardTotal,
+                        "生成文档向量分片 " + (shardNo + 1) + "/" + shardTotal, next);
             }
-            String shardArtifactKey = artifactKey(document, rootTaskId(task, payload), "chunks/shard-" + shardNo + ".json");
-            putJson(shardArtifactKey, shardSegments);
-            Map<String, Object> next = withBase(payload, task);
-            next.put("segmentArtifactKey", shardArtifactKey);
-            createNodeAndTask(task, "embedding", "DOCUMENT_PIPELINE_EMBED", shardNo, shardTotal,
-                    "生成文档向量分片 " + (shardNo + 1) + "/" + shardTotal, next);
-        }
-        updateDocumentProgress(document.getId(), "chunked", 35, "已生成" + segments.size() + "个分片并扇出" + shardTotal + "个Embedding任务");
+            jdbcTemplate.update("""
+                    UPDATE knowledge_document SET metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),
+                      '$.expectedChunkCount',?,'$.expectedEmbeddingCount',?,'$.expectedShardTotal',?)
+                    WHERE id=? AND current_pipeline_root_id=? AND pipeline_generation=?
+                    """, segments.size(), embeddingSegments.size(), shardTotal, document.getId(),
+                    rootTaskId(task, payload), integer(payload.get("pipelineGeneration"), 0));
+        });
+        updateDocumentProgress(document.getId(), payload, rootTaskId(task, payload),
+                "chunked", 35, "已生成" + segments.size() + "个分片并扇出" + shardTotal + "个Embedding任务");
         return Map.of("artifactPrefix", artifactKey(document, rootTaskId(task, payload), "chunks/"), "chunkCount", segments.size(),
                 "embeddingChunkCount", embeddingSegments.size(), "shardTotal", shardTotal);
     }
@@ -216,6 +241,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     private Map<String, Object> embed(AsyncTaskEntity task) {
         Map<String, Object> payload = payload(task);
         KnowledgeDocumentEntity document = requireDocument(text(payload.get("documentId")));
+        assertCurrentPipeline(document, payload, rootTaskId(task, payload));
         KnowledgeBaseEntity kb = requireKnowledgeBase(document.getKbId());
         List<PipelineSegment> segments = readJson(document.getStorageBucket(), text(payload.get("segmentArtifactKey")), new TypeReference<>() { });
         List<PipelineSegment> embeddingSegments = segments.stream().filter(PipelineSegment::embeddingEnabled).toList();
@@ -223,10 +249,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         List<PipelineSegment> shard = embeddingSegments;
         ModelConfigEntity model = embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId());
         EmbeddingBatchResult result = embeddingService.embedWithTrace(model, shard.stream().map(PipelineSegment::content).toList());
-        if (result.getVectors() == null || result.getVectors().size() != shard.size()) {
-            throw new IllegalStateException("Embedding分片向量数量不一致：expected=" + shard.size()
-                    + ", actual=" + (result.getVectors() == null ? 0 : result.getVectors().size()));
-        }
+        DocumentPipelineReliability.requireVectorCardinality(shard.size(), result.getVectors(), "Embedding分片");
         List<VectorItem> vectors = new ArrayList<>();
         for (int index = 0; index < shard.size(); index++) {
             vectors.add(new VectorItem(shard.get(index).id(), result.getVectors().get(index)));
@@ -239,7 +262,8 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         if (allNodesSuccessful(rootTaskId(task, payload), "embedding")) {
             scheduleVectorWriteTasks(task, document, payload);
         }
-        updateDocumentProgress(document.getId(), "embedding", 35 + progress(task, 30), "Embedding分片" + (value(task.getShardNo()) + 1) + "已完成");
+        updateDocumentProgress(document.getId(), payload, rootTaskId(task, payload),
+                "embedding", 35 + progress(task, 30), "Embedding分片" + (value(task.getShardNo()) + 1) + "已完成");
         return output;
     }
 
@@ -247,6 +271,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     private Map<String, Object> writeVector(AsyncTaskEntity task) {
         Map<String, Object> payload = payload(task);
         KnowledgeDocumentEntity document = requireDocument(text(payload.get("documentId")));
+        assertCurrentPipeline(document, payload, rootTaskId(task, payload));
         KnowledgeBaseEntity kb = requireKnowledgeBase(document.getKbId());
         List<PipelineSegment> segments = readJson(document.getStorageBucket(), text(payload.get("segmentArtifactKey")), new TypeReference<>() { });
         List<VectorItem> vectors = readJson(document.getStorageBucket(), text(payload.get("vectorArtifactKey")), new TypeReference<>() { });
@@ -269,6 +294,7 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
             embeddingEntities.add(embedding);
             vectorValues.add(vector.vector());
         }
+        DocumentPipelineReliability.requireVectorCardinality(vectors.size(), embeddingEntities, "向量持久化分片");
         milvusService.upsertKnowledgeChunks(kb.getMilvusCollectionName(), embeddingEntities, chunkEntities, vectorValues);
         keywordSearchService.indexChunks(kb.getId(), chunkEntities);
         LocalDateTime now = LocalDateTime.now();
@@ -278,11 +304,10 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         Map<String, Object> output = Map.of("writtenCount", vectors.size(), "milvusSynced", true);
         updateNodeOutput(task.getId(), output);
         if (allNodesSuccessful(rootTaskId(task, payload), "persist")) {
-            Map<String, Object> next = withBase(payload, task);
-            createNodeAndTask(task, "index", "DOCUMENT_PIPELINE_FINALIZE", 0, 1,
-                    "完成知识文档索引：" + document.getDocName(), next);
+            scheduleFinalizeTask(task, document, payload);
         }
-        updateDocumentProgress(document.getId(), "persist", 65 + progress(task, 30), "向量写入分片" + (value(task.getShardNo()) + 1) + "已完成");
+        updateDocumentProgress(document.getId(), payload, rootTaskId(task, payload),
+                "persist", 65 + progress(task, 30), "向量写入分片" + (value(task.getShardNo()) + 1) + "已完成");
         return output;
     }
 
@@ -290,34 +315,68 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
     private Map<String, Object> finalizeDocument(AsyncTaskEntity task) {
         Map<String, Object> payload = payload(task);
         String documentId = text(payload.get("documentId"));
+        KnowledgeDocumentEntity document = requireDocument(documentId);
+        String rootTaskId = rootTaskId(task, payload);
+        assertCurrentPipeline(document, payload, rootTaskId);
         long chunkCount = scalar("SELECT COUNT(1) FROM knowledge_chunk WHERE document_id=?", documentId);
         long embeddingCount = scalar("SELECT COUNT(1) FROM knowledge_embedding e JOIN knowledge_chunk c ON c.id=e.chunk_id WHERE c.document_id=? AND e.sync_status='synced'", documentId);
+        long expectedChunkCount = scalar("SELECT COALESCE(JSON_EXTRACT(metadata,'$.expectedChunkCount'),0) FROM knowledge_document WHERE id=?", documentId);
+        long expectedEmbeddingCount = scalar("SELECT COALESCE(JSON_EXTRACT(metadata,'$.expectedEmbeddingCount'),0) FROM knowledge_document WHERE id=?", documentId);
+        DocumentPipelineReliability.requireFinalCardinality(expectedChunkCount, chunkCount,
+                expectedEmbeddingCount, embeddingCount);
         jdbcTemplate.update("""
                 UPDATE knowledge_document
                 SET parse_status='parsed', parse_error=NULL,
                     metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),'$.processStage','done','$.processStageLabel','处理完成',
                       '$.progressPercent',100,'$.lastMessage','物理DAG全部分片处理完成','$.milvusSynced',true)
-                WHERE id=?
-                """, documentId);
+                WHERE id=? AND current_pipeline_root_id=? AND pipeline_generation=?
+                """, documentId, rootTaskId, integer(payload.get("pipelineGeneration"), 0));
         return Map.of("documentId", documentId, "chunkCount", chunkCount, "embeddingCount", embeddingCount, "milvusSynced", true);
     }
 
     /** 最后一个Embedding分片完成后，按分片产物创建向量写入任务。 */
     private void scheduleVectorWriteTasks(AsyncTaskEntity task, KnowledgeDocumentEntity document, Map<String, Object> payload) {
-        List<Map<String, Object>> nodes = jdbcTemplate.queryForList("""
-                SELECT shard_no, shard_total, output_json FROM document_pipeline_node
-                WHERE root_task_id=? AND stage_code='embedding' AND status='success' ORDER BY shard_no
-                """, rootTaskId(task, payload));
-        for (Map<String, Object> node : nodes) {
-            Map<String, Object> embeddingOutput = map(text(node.get("output_json")));
-            int shardNo = integer(node.get("shard_no"), 0);
-            int shardTotal = integer(node.get("shard_total"), nodes.size());
+        transactionTemplate.executeWithoutResult(status -> {
+            // 锁定文档行并二次判断，保证并发Fan-in只有一个Worker负责发布下一阶段。
+            jdbcTemplate.queryForObject("SELECT id FROM knowledge_document WHERE id=? FOR UPDATE",
+                    String.class, document.getId());
+            assertCurrentPipeline(document, payload, rootTaskId(task, payload));
+            long existing = scalar("SELECT COUNT(1) FROM document_pipeline_node WHERE root_task_id=? AND stage_code='persist'",
+                    rootTaskId(task, payload));
+            if (existing > 0) return;
+            List<Map<String, Object>> nodes = jdbcTemplate.queryForList("""
+                    SELECT shard_no, shard_total,output_json FROM document_pipeline_node
+                    WHERE root_task_id=? AND stage_code='embedding' AND status='success' ORDER BY shard_no
+                    """, rootTaskId(task, payload));
+            // 同一阶段的节点、任务和Outbox必须整体提交，避免消费者只看到部分分片。
+            for (Map<String, Object> node : nodes) {
+                Map<String, Object> embeddingOutput = map(text(node.get("output_json")));
+                int shardNo = integer(node.get("shard_no"), 0);
+                int shardTotal = integer(node.get("shard_total"), nodes.size());
+                Map<String, Object> next = withBase(payload, task);
+                next.put("segmentArtifactKey", embeddingOutput.get("segmentArtifactKey"));
+                next.put("vectorArtifactKey", embeddingOutput.get("artifactKey"));
+                next.put("expectedItemCount", integer(embeddingOutput.get("vectorCount"), 0));
+                createNodeAndTask(task, "persist", "DOCUMENT_PIPELINE_VECTOR_WRITE", shardNo, shardTotal,
+                        "写入文档向量分片 " + (shardNo + 1) + "/" + shardTotal, next);
+            }
+        });
+    }
+
+    /** 最后一个持久化Worker通过行锁幂等发布唯一收口任务。 */
+    private void scheduleFinalizeTask(AsyncTaskEntity task, KnowledgeDocumentEntity document, Map<String, Object> payload) {
+        transactionTemplate.executeWithoutResult(status -> {
+            jdbcTemplate.queryForObject("SELECT id FROM knowledge_document WHERE id=? FOR UPDATE",
+                    String.class, document.getId());
+            assertCurrentPipeline(document, payload, rootTaskId(task, payload));
+            long existing = scalar("SELECT COUNT(1) FROM document_pipeline_node WHERE root_task_id=? AND stage_code='index'",
+                    rootTaskId(task, payload));
+            if (existing > 0) return;
             Map<String, Object> next = withBase(payload, task);
-            next.put("segmentArtifactKey", embeddingOutput.get("segmentArtifactKey"));
-            next.put("vectorArtifactKey", embeddingOutput.get("artifactKey"));
-            createNodeAndTask(task, "persist", "DOCUMENT_PIPELINE_VECTOR_WRITE", shardNo, shardTotal,
-                    "写入文档向量分片 " + (shardNo + 1) + "/" + shardTotal, next);
-        }
+            next.put("expectedItemCount", 1);
+            createNodeAndTask(task, "index", "DOCUMENT_PIPELINE_FINALIZE", 0, 1,
+                    "完成知识文档索引：" + document.getDocName(), next);
+        });
     }
 
     /** 创建DAG节点和对应Kafka子任务。 */
@@ -332,10 +391,12 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         String nodeKey = rootTaskId + ":" + stageCode + ":" + shardNo;
         jdbcTemplate.update("""
                 INSERT IGNORE INTO document_pipeline_node
-                  (id,root_task_id,document_id,kb_id,stage_code,shard_no,shard_total,dependency_count,status,idempotency_key,input_json,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,0,'queued',?,?,NOW(3),NOW(3))
-                """, UUID.randomUUID().toString(), rootTaskId, payload.get("documentId"), payload.get("kbId"),
-                stageCode, shardNo, shardTotal, nodeKey, json(payload));
+                  (id,root_task_id,generation_no,document_id,kb_id,stage_code,shard_no,shard_total,dependency_count,status,
+                   idempotency_key,input_json,expected_item_count,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,0,'queued',?,?,?,NOW(3),NOW(3))
+                """, UUID.randomUUID().toString(), rootTaskId, integer(payload.get("pipelineGeneration"), 0),
+                payload.get("documentId"), payload.get("kbId"), stageCode, shardNo, shardTotal, nodeKey, json(payload),
+                integer(payload.get("expectedItemCount"), 0));
         AsyncTaskEntity child = asyncTaskService.createDagChildTask(parent, taskName, taskType, shardNo, shardTotal,
                 nodeKey + ":task", payload);
         jdbcTemplate.update("UPDATE document_pipeline_node SET task_id=? WHERE idempotency_key=?", child.getId(), nodeKey);
@@ -352,9 +413,8 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
             int assignedChunkNo = chunkNo++;
             String contentHash = DigestUtils.md5DigestAsHex(segment.content().getBytes(StandardCharsets.UTF_8));
             // 子分片序号和偏移量可能在不同父分片内重新计数，必须加入全局分片号和内容哈希避免稳定ID碰撞。
-            String id = UUID.nameUUIDFromBytes((document.getId() + ":" + assignedChunkNo + ":" + segment.level()
-                    + ":" + segment.ordinal() + ":" + segment.parentOrdinal() + ":" + segment.startOffset()
-                    + ":" + contentHash).getBytes(StandardCharsets.UTF_8)).toString();
+            String id = DocumentPipelineReliability.stableChunkId(document.getId(), assignedChunkNo, segment.level(),
+                    segment.ordinal(), segment.parentOrdinal(), segment.startOffset(), segment.content());
             String parentId = segment.parentOrdinal() == null ? null : parentIds.get(segment.parentOrdinal());
             if ("parent".equals(segment.level())) parentIds.put(segment.ordinal(), id);
             result.add(new PipelineSegment(id, parentId, assignedChunkNo, segment.level(), segment.content(),
@@ -429,20 +489,33 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         Long success = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM document_pipeline_node WHERE root_task_id=? AND stage_code=? AND status='success'", Long.class, rootTaskId, stageCode);
         Integer expected = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(shard_total),0) FROM document_pipeline_node WHERE root_task_id=? AND stage_code=?", Integer.class, rootTaskId, stageCode);
         // Fan-in必须等待预期分片节点全部创建且全部成功，不能把“当前已创建节点全部成功”误认为阶段完成。
-        return total != null && expected != null && expected > 0 && total == expected.longValue() && total.equals(success);
+        return DocumentPipelineReliability.stageComplete(total == null ? 0 : total, success == null ? 0 : success,
+                expected == null ? 0 : expected);
     }
 
     /** 把当前节点产物写入DAG表，供Fan-in阶段读取。 */
     private void updateNodeOutput(String taskId, Map<String, Object> output) {
-        jdbcTemplate.update("UPDATE document_pipeline_node SET status='success', output_json=?, finished_at=NOW(3), updated_at=NOW(3) WHERE task_id=?", json(output), taskId);
+        int actualItemCount = integer(output.get("vectorCount"), integer(output.get("writtenCount"), 0));
+        jdbcTemplate.update("""
+                UPDATE document_pipeline_node
+                SET status='success',output_json=?,actual_item_count=?,finished_at=NOW(3),updated_at=NOW(3)
+                WHERE task_id=?
+                """, json(output), actualItemCount, taskId);
     }
 
     /** 更新文档面向前端的总体进度。 */
-    private void updateDocumentProgress(String documentId, String stage, int progress, String message) {
+    private void updateDocumentProgress(String documentId,
+                                        Map<String, Object> payload,
+                                        String rootTaskId,
+                                        String stage,
+                                        int progress,
+                                        String message) {
         jdbcTemplate.update("""
                 UPDATE knowledge_document SET metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),
-                  '$.processStage',?,'$.progressPercent',?,'$.lastMessage',?) WHERE id=?
-                """, stage, Math.min(99, progress), message, documentId);
+                  '$.processStage',?,'$.progressPercent',?,'$.lastMessage',?)
+                WHERE id=? AND current_pipeline_root_id=? AND pipeline_generation=?
+                """, stage, Math.min(99, progress), message, documentId, rootTaskId,
+                integer(payload.get("pipelineGeneration"), 0));
     }
 
     private int progress(AsyncTaskEntity task, int span) {
@@ -485,6 +558,17 @@ public class PhysicalDocumentPipelineService implements DistributedTaskHandler {
         KnowledgeDocumentEntity entity = knowledgeDocumentMapper.selectById(id);
         if (entity == null) throw new IllegalStateException("知识文档不存在：" + id);
         return entity;
+    }
+
+    /** 使用数据库中的当前根任务作为fencing token，拒绝迟到的旧代际Worker。 */
+    private void assertCurrentPipeline(KnowledgeDocumentEntity document,
+                                       Map<String, Object> payload,
+                                       String workerRootTaskId) {
+        Map<String, Object> current = jdbcTemplate.queryForMap(
+                "SELECT current_pipeline_root_id,pipeline_generation FROM knowledge_document WHERE id=?", document.getId());
+        DocumentPipelineReliability.requireCurrentPipeline(text(current.get("current_pipeline_root_id")),
+                ((Number) current.get("pipeline_generation")).longValue(), workerRootTaskId,
+                integer(payload.get("pipelineGeneration"), 0));
     }
 
     private KnowledgeBaseEntity requireKnowledgeBase(String id) {

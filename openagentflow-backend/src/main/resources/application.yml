@@ -15,6 +15,15 @@ spring:
     username: ${OAF_MYSQL_USERNAME:root}
     password: ${OAF_MYSQL_PASSWORD:123456}
     driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    # 空库执行全部迁移；既有非空库从V041建立基线后继续执行后续版本。
+    enabled: ${OAF_FLYWAY_ENABLED:true}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: ${OAF_FLYWAY_BASELINE_VERSION:41}
+    validate-on-migrate: true
+    out-of-order: false
+    clean-disabled: true
   data:
     redis:
       # Redis 使用本地默认连接，后续如有密码只需要补充 password。
@@ -90,6 +99,8 @@ mybatis-plus:
       id-type: input
 
 openagentflow:
+  pagination:
+    cursor-secret: ${OAF_CURSOR_SECRET:openagentflow-local-cursor-secret-change-me}
   logging:
     sql-enabled: ${OAF_SQL_LOG_ENABLED:true}
     slow-sql-ms: ${OAF_SLOW_SQL_MS:1000}
@@ -107,6 +118,10 @@ openagentflow:
     task-log-retention-days: ${OAF_TASK_LOG_RETENTION_DAYS:30}
   document-pipeline:
     embedding-shard-size: ${OAF_DOCUMENT_EMBEDDING_SHARD_SIZE:16}
+    reconcile-enabled: ${OAF_DOCUMENT_RECONCILE_ENABLED:true}
+    reconcile-delay-ms: ${OAF_DOCUMENT_RECONCILE_DELAY_MS:60000}
+    reconcile-stale-minutes: ${OAF_DOCUMENT_RECONCILE_STALE_MINUTES:15}
+    reconcile-batch-size: ${OAF_DOCUMENT_RECONCILE_BATCH_SIZE:100}
   runtime:
     accept-traffic: ${OAF_RUNTIME_ACCEPT_TRAFFIC:true}
     cancel-watch-ms: ${OAF_RUNTIME_CANCEL_WATCH_MS:500}

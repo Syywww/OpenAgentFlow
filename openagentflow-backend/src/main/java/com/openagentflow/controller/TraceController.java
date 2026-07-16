@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 运行日志与 Trace 查询接口。
@@ -64,6 +65,15 @@ public class TraceController {
     @GetMapping("/stats")
     public ApiResponse<RunStats> getRunStats() {
         return ApiResponse.ok(traceService.getRunStats());
+    }
+
+    /** 使用签名游标查询海量运行数据。 */
+    @GetMapping("/cursor")
+    public ApiResponse<Map<String, Object>> listRunsByCursor(@RequestParam(required = false) String cursor,
+                                                              @RequestParam(defaultValue = "10") Integer pageSize,
+                                                              @RequestParam(required = false) String status,
+                                                              @RequestParam(required = false) String agentId) {
+        return ApiResponse.ok(traceService.listRunsByCursor(cursor, pageSize, status, agentId));
     }
 
     /**

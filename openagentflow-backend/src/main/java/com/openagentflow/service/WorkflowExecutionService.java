@@ -9,6 +9,7 @@ import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.model.ModelRouteDecision;
+import com.openagentflow.domain.prompt.PromptRuntimeDtos;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.domain.workflow.WorkflowDtos;
 import com.openagentflow.entity.AgentEntity;
@@ -125,6 +126,9 @@ public class WorkflowExecutionService {
     /** JSON 工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 统一Prompt Runtime服务。 */
+    private final PromptRuntimeService promptRuntimeService;
+
     public WorkflowExecutionService(WorkflowService workflowService,
                                     WorkflowVersionMapper workflowVersionMapper,
                                     WorkflowNodeMapper workflowNodeMapper,
@@ -144,7 +148,8 @@ public class WorkflowExecutionService {
                                     UsageCostService usageCostService,
                                     ModelGatewayService modelGatewayService,
                                     JdbcTemplate jdbcTemplate,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    PromptRuntimeService promptRuntimeService) {
         this.workflowService = workflowService;
         this.workflowVersionMapper = workflowVersionMapper;
         this.workflowNodeMapper = workflowNodeMapper;
@@ -165,6 +170,7 @@ public class WorkflowExecutionService {
         this.modelGatewayService = modelGatewayService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.promptRuntimeService = promptRuntimeService;
     }
 
     /**
@@ -469,7 +475,9 @@ public class WorkflowExecutionService {
         chatContext.setApiKey(routeDecision.getApiKey());
         chatContext.setRouteDecision(routeDecision);
         chatContext.setSources(sourcesFromContext(context));
-        chatContext.setMessages(buildMessages(agent, config, context));
+        PromptRuntimeDtos.CompileResult promptCompileResult = compileWorkflowPrompt(agent, config, context, runtimeRun.getId());
+        chatContext.setPromptCompileResult(promptCompileResult);
+        chatContext.setMessages(buildMessages(agent, config, context, promptCompileResult));
         traceStep.setModelId(model.getId());
         traceStep.setPromptText(toJson(chatContext.getMessages()));
 
@@ -1285,7 +1293,12 @@ public class WorkflowExecutionService {
         call.setLatencyMs(nullToZero(result.getLatencyMs()));
         call.setSuccess(success);
         call.setErrorMessage(errorMessage);
+        promptRuntimeService.enrichLlmCall(call, context.getPromptCompileResult(), context.getMessages());
         runtimeLlmCallMapper.insert(call);
+        promptRuntimeService.recordMetric(
+                context.getAgent() == null ? null : context.getAgent().getWorkspaceId(),
+                run.getId(), run.getAgentId(), context.getPromptCompileResult(), success,
+                call.getLatencyMs(), call.getTotalTokens(), call.getCostAmount());
         usageCostService.recordActualUsage(run, context.getProvider(), context.getModel(), call.getTotalTokens(), call.getCostAmount(), success, call.getLatencyMs());
     }
 
@@ -1307,24 +1320,64 @@ public class WorkflowExecutionService {
     /**
      * 构建 LLM 消息列表。
      */
-    private List<ChatMessage> buildMessages(AgentEntity agent, Map<String, Object> config, Map<String, Object> context) {
+    private List<ChatMessage> buildMessages(AgentEntity agent,
+                                            Map<String, Object> config,
+                                            Map<String, Object> context,
+                                            PromptRuntimeDtos.CompileResult promptCompileResult) {
         List<ChatMessage> messages = new ArrayList<>();
-        String systemPrompt = stringValue(config.get("systemPrompt"),
+        String systemPrompt = promptCompileResult != null && StringUtils.hasText(promptCompileResult.renderedPrompt)
+                ? promptCompileResult.renderedPrompt
+                : stringValue(config.get("systemPrompt"),
                 agent != null && StringUtils.hasText(agent.getSystemPrompt())
                         ? agent.getSystemPrompt()
                         : "你是 OpenAgentFlow-Java 工作流中的 LLM 节点，请根据上下文给出清晰、准确的中文回答。");
         messages.add(new ChatMessage("system", renderTemplate(systemPrompt, context)));
-        List<KnowledgeSource> sources = sourcesFromContext(context);
-        if (!sources.isEmpty()) {
-            messages.add(new ChatMessage("system", buildRagPrompt(sources)));
-        }
-        String workflowContextPrompt = buildWorkflowContextPrompt(context);
-        if (StringUtils.hasText(workflowContextPrompt)) {
-            messages.add(new ChatMessage("system", workflowContextPrompt));
+        if (promptCompileResult == null) {
+            List<KnowledgeSource> sources = sourcesFromContext(context);
+            if (!sources.isEmpty()) messages.add(new ChatMessage("system", buildRagPrompt(sources)));
+            String workflowContextPrompt = buildWorkflowContextPrompt(context);
+            if (StringUtils.hasText(workflowContextPrompt)) messages.add(new ChatMessage("system", workflowContextPrompt));
         }
         String promptTemplate = stringValue(config.get("promptTemplate"), "{{input}}");
         messages.add(new ChatMessage("user", renderTemplate(promptTemplate, context)));
         return messages;
+    }
+
+    /**
+     * 通过统一Runtime编译工作流LLM节点Prompt，并把RAG、工具和上下文作为可解释装配层。
+     */
+    private PromptRuntimeDtos.CompileResult compileWorkflowPrompt(AgentEntity agent,
+                                                                  Map<String, Object> config,
+                                                                  Map<String, Object> context,
+                                                                  String runId) {
+        PromptRuntimeDtos.CompileRequest request = new PromptRuntimeDtos.CompileRequest();
+        request.resourceType = "workflow";
+        request.resourceId = stringValue(context.get("workflowId"), "");
+        request.agentId = agent == null ? null : agent.getId();
+        request.runId = runId;
+        request.templateId = stringValue(config.get("promptTemplateId"), agent == null ? "" : agent.getSystemPromptTemplateId());
+        request.versionId = stringValue(config.get("promptVersionId"), agent == null ? "" : agent.getSystemPromptVersionId());
+        request.bindingMode = stringValue(config.get("promptBindingMode"), agent == null ? "MANUAL" : agent.getPromptBindingMode());
+        request.content = stringValue(config.get("systemPrompt"),
+                agent != null && StringUtils.hasText(agent.getSystemPrompt()) ? agent.getSystemPrompt()
+                        : "你是 OpenAgentFlow-Java 工作流中的 LLM 节点，请根据上下文给出清晰、准确的中文回答。");
+        request.variableSchema = stringValue(config.get("variableSchema"), "[]");
+        request.variables = new LinkedHashMap<>(context);
+        request.variables.put("context", toJson(context));
+        request.routingKey = firstText(stringValue(context.get("sessionId"), ""), runId);
+        request.strict = false;
+        List<KnowledgeSource> sources = sourcesFromContext(context);
+        if (!sources.isEmpty()) {
+            request.layers.add(new PromptRuntimeDtos.PromptLayer("rag", "RAG证据", buildRagPrompt(sources), 40));
+        }
+        String workflowContextPrompt = buildWorkflowContextPrompt(context);
+        if (StringUtils.hasText(workflowContextPrompt)) {
+            request.layers.add(new PromptRuntimeDtos.PromptLayer("workflow", "工作流上下文", workflowContextPrompt, 60));
+        }
+        if (config.containsKey("safetyPrompt") && StringUtils.hasText(String.valueOf(config.get("safetyPrompt")))) {
+            request.layers.add(new PromptRuntimeDtos.PromptLayer("safety", "安全约束", String.valueOf(config.get("safetyPrompt")), 90));
+        }
+        return promptRuntimeService.compile(request);
     }
 
     /**
@@ -1476,6 +1529,11 @@ public class WorkflowExecutionService {
         String expr = safeText(expression).trim();
         if (!StringUtils.hasText(expr) || "always".equalsIgnoreCase(expr) || "default".equalsIgnoreCase(expr)) {
             return true;
+        }
+        if (expr.toLowerCase(Locale.ROOT).startsWith("intent:")) {
+            // 意图条件调用统一领域策略，避免工作流节点继续维护易碎的整句关键词列表。
+            String intentCode = expr.substring("intent:".length()).trim();
+            return OrderQueryIntentPolicy.matchesIntent(intentCode, stringValue(context.get("input"), ""));
         }
         if (expr.contains("&&")) {
             for (String part : expr.split("&&")) {

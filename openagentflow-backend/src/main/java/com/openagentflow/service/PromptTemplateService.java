@@ -11,6 +11,7 @@ import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.PromptTemplateMapper;
 import com.openagentflow.mapper.PromptTemplateVersionMapper;
 import com.openagentflow.security.AuthUserDetails;
+import com.openagentflow.security.WorkspaceContextHolder;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -52,19 +53,19 @@ public class PromptTemplateService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
-    /** 发布质量门禁服务。 */
-    private final ReleaseGateService releaseGateService;
+    /** Prompt编译器，用于发布前变量、注入和敏感信息检查。 */
+    private final PromptCompiler promptCompiler;
 
     public PromptTemplateService(PromptTemplateMapper promptTemplateMapper,
                                  PromptTemplateVersionMapper promptTemplateVersionMapper,
                                  JdbcTemplate jdbcTemplate,
                                  ObjectMapper objectMapper,
-                                 ReleaseGateService releaseGateService) {
+                                 PromptCompiler promptCompiler) {
         this.promptTemplateMapper = promptTemplateMapper;
         this.promptTemplateVersionMapper = promptTemplateVersionMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
-        this.releaseGateService = releaseGateService;
+        this.promptCompiler = promptCompiler;
     }
 
     /**
@@ -78,6 +79,9 @@ public class PromptTemplateService {
         overview.publishedCount = count("SELECT COUNT(1) FROM prompt_template WHERE status = 'published'");
         overview.draftCount = count("SELECT COUNT(1) FROM prompt_template WHERE status = 'draft'");
         overview.versionCount = count("SELECT COUNT(1) FROM prompt_template_version");
+        overview.runningExperimentCount = count("SELECT COUNT(1) FROM prompt_experiment WHERE status='running'");
+        overview.productionReleaseCount = count("SELECT COUNT(1) FROM prompt_environment_release WHERE environment='production' AND status='active'");
+        overview.activeBindingCount = count("SELECT COUNT(1) FROM prompt_binding WHERE enabled=1");
         return overview;
     }
 
@@ -132,6 +136,7 @@ public class PromptTemplateService {
     public PromptDtos.TemplateDetail createTemplate(PromptDtos.TemplateRequest request) {
         PromptTemplateEntity entity = new PromptTemplateEntity();
         entity.setId(newId());
+        entity.setWorkspaceId(WorkspaceContextHolder.current());
         fillTemplate(entity, request, true);
         entity.setOwnerUserId(currentUserId());
         entity.setVersion(0L);
@@ -180,9 +185,12 @@ public class PromptTemplateService {
                 ? request.versionNo.trim()
                 : nextVersionNo(entity.getId());
         ensureVersionNoAvailable(entity.getId(), versionNo);
-        releaseGateService.assertCanRelease("prompt", entity.getId(), null, versionNo);
-        saveVersion(entity, versionNo, request == null ? null : request.changeNote);
+        PromptTemplateVersionEntity publishedVersion = saveVersion(entity, versionNo, request == null ? null : request.changeNote);
         entity.setStatus("published");
+        // 首个版本可作为初始稳定基线；后续版本必须经过环境晋级与生产门禁后才能替换稳定版。
+        if (!StringUtils.hasText(entity.getStableVersionId())) {
+            entity.setStableVersionId(publishedVersion.getId());
+        }
         entity.setVersion(entity.getVersion() == null ? 1L : entity.getVersion() + 1);
         promptTemplateMapper.updateById(entity);
         return getTemplate(entity.getId());
@@ -206,6 +214,8 @@ public class PromptTemplateService {
         // 回滚会把历史版本内容写回当前模板，同时新增一个版本快照，方便后续审计和再次回滚。
         entity.setContent(version.getContent());
         entity.setVariables(version.getVariables());
+        entity.setVariableSchema(StringUtils.hasText(version.getVariableSchema())
+                ? version.getVariableSchema() : version.getVariables());
         entity.setStatus("draft");
         entity.setVersion(entity.getVersion() == null ? 1L : entity.getVersion() + 1);
         promptTemplateMapper.updateById(entity);
@@ -225,6 +235,7 @@ public class PromptTemplateService {
         PromptTemplateEntity source = requireTemplate(id);
         PromptTemplateEntity copy = new PromptTemplateEntity();
         copy.setId(newId());
+        copy.setWorkspaceId(source.getWorkspaceId());
         copy.setTemplateCode(uniqueCode(StringUtils.hasText(request == null ? null : request.templateCode)
                 ? request.templateCode
                 : source.getTemplateCode() + "-copy"));
@@ -234,6 +245,9 @@ public class PromptTemplateService {
         copy.setPromptType(source.getPromptType());
         copy.setContent(source.getContent());
         copy.setVariables(source.getVariables());
+        copy.setVariableSchema(source.getVariableSchema());
+        copy.setCurrentEnvironment("development");
+        copy.setRiskLevel(source.getRiskLevel());
         copy.setDescription(source.getDescription());
         copy.setStatus("draft");
         copy.setOwnerUserId(currentUserId());
@@ -280,6 +294,13 @@ public class PromptTemplateService {
         entity.setPromptType(promptType);
         entity.setContent(request.content);
         entity.setVariables(normalizeVariables(request.variables, request.content));
+        entity.setVariableSchema(normalizeVariables(
+                StringUtils.hasText(request.variableSchema) ? request.variableSchema : request.variables,
+                request.content));
+        if (create) {
+            entity.setCurrentEnvironment("development");
+        }
+        entity.setRiskLevel(StringUtils.hasText(request.riskLevel) ? request.riskLevel : "low");
         entity.setDescription(request.description);
         entity.setStatus(StringUtils.hasText(request.status) ? request.status : "draft");
     }
@@ -291,16 +312,31 @@ public class PromptTemplateService {
      * @param versionNo 版本号
      * @param changeNote 变更说明
      */
-    private void saveVersion(PromptTemplateEntity entity, String versionNo, String changeNote) {
+    private PromptTemplateVersionEntity saveVersion(PromptTemplateEntity entity, String versionNo, String changeNote) {
+        // 发布前执行统一编译检查，密钥明文或注入语句会阻断进入稳定版本。
+        var validation = promptCompiler.compile(entity.getContent(), entity.getVariableSchema(), Map.of(), List.of(), false);
+        if (!validation.warnings.isEmpty()) {
+            throw new BusinessException("PROMPT_RELEASE_SECURITY_BLOCKED", String.join("；", validation.warnings));
+        }
         PromptTemplateVersionEntity version = new PromptTemplateVersionEntity();
         version.setId(newId());
         version.setTemplateId(entity.getId());
         version.setVersionNo(versionNo);
         version.setContent(entity.getContent());
         version.setVariables(entity.getVariables());
+        version.setVariableSchema(entity.getVariableSchema());
+        version.setContentHash(validation.contentHash);
+        version.setValidationStatus("passed");
+        version.setValidationResult(toJson(Map.of(
+                "warnings", validation.warnings,
+                "missingVariables", validation.missingVariables,
+                "estimatedTokens", validation.estimatedTokens)));
+        version.setEnvironment("development");
+        version.setPublishedAt(LocalDateTime.now());
         version.setChangeNote(StringUtils.hasText(changeNote) ? changeNote : "发布 Prompt 模板版本");
         version.setCreatedBy(currentUserId());
         promptTemplateVersionMapper.insert(version);
+        return version;
     }
 
     /**
@@ -382,12 +418,17 @@ public class PromptTemplateService {
         summary.promptTypeLabel = promptTypeLabel(entity.getPromptType());
         summary.content = entity.getContent();
         summary.variables = entity.getVariables();
+        summary.variableSchema = entity.getVariableSchema();
+        summary.stableVersionId = entity.getStableVersionId();
+        summary.currentEnvironment = entity.getCurrentEnvironment();
+        summary.riskLevel = entity.getRiskLevel();
         summary.variableNames = readVariableNames(entity.getVariables(), entity.getContent());
         summary.description = entity.getDescription();
         summary.status = entity.getStatus();
         summary.statusLabel = statusLabel(entity.getStatus());
         summary.versionCount = count("SELECT COUNT(1) FROM prompt_template_version WHERE template_id = ?", entity.getId());
         summary.latestVersionNo = latestVersionNo(entity.getId());
+        summary.bindingCount = count("SELECT COUNT(1) FROM prompt_binding WHERE template_id=? AND enabled=1", entity.getId());
         summary.ownerUserId = entity.getOwnerUserId();
         summary.createdAt = entity.getCreatedAt();
         summary.updatedAt = entity.getUpdatedAt();
@@ -407,6 +448,13 @@ public class PromptTemplateService {
         summary.versionNo = entity.getVersionNo();
         summary.content = entity.getContent();
         summary.variables = entity.getVariables();
+        summary.variableSchema = entity.getVariableSchema();
+        summary.contentHash = entity.getContentHash();
+        summary.validationStatus = entity.getValidationStatus();
+        summary.validationResult = entity.getValidationResult();
+        summary.qualityScore = entity.getQualityScore();
+        summary.environment = entity.getEnvironment();
+        summary.publishedAt = entity.getPublishedAt();
         summary.variableNames = readVariableNames(entity.getVariables(), entity.getContent());
         summary.changeNote = entity.getChangeNote();
         summary.createdBy = entity.getCreatedBy();
@@ -428,12 +476,17 @@ public class PromptTemplateService {
         target.promptTypeLabel = source.promptTypeLabel;
         target.content = source.content;
         target.variables = source.variables;
+        target.variableSchema = source.variableSchema;
+        target.stableVersionId = source.stableVersionId;
+        target.currentEnvironment = source.currentEnvironment;
+        target.riskLevel = source.riskLevel;
         target.variableNames = source.variableNames;
         target.description = source.description;
         target.status = source.status;
         target.statusLabel = source.statusLabel;
         target.versionCount = source.versionCount;
         target.latestVersionNo = source.latestVersionNo;
+        target.bindingCount = source.bindingCount;
         target.ownerUserId = source.ownerUserId;
         target.createdAt = source.createdAt;
         target.updatedAt = source.updatedAt;

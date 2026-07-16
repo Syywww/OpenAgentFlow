@@ -25,6 +25,10 @@ public class PromptExperimentVariantEntity {
     @TableField("variant_code")
     private String variantCode;
 
+    /** 关联Prompt版本ID。 */
+    @TableField("prompt_version_id")
+    private String promptVersionId;
+
     /** 提示词内容。 */
     @TableField("prompt_content")
     private String promptContent;
@@ -40,6 +44,14 @@ public class PromptExperimentVariantEntity {
     /** 字段说明：METRICSSNAPSHOT。 */
     @TableField("metrics_snapshot")
     private String metricsSnapshot;
+
+    /** 累计样本数。 */ @TableField("sample_count") private Long sampleCount;
+    /** 累计成功数。 */ @TableField("success_count") private Long successCount;
+    /** 累计失败数。 */ @TableField("failure_count") private Long failureCount;
+    /** 平均质量得分。 */ @TableField("avg_quality_score") private BigDecimal avgQualityScore;
+    /** 平均耗时毫秒。 */ @TableField("avg_latency_ms") private BigDecimal avgLatencyMs;
+    /** 累计Token数量。 */ @TableField("total_tokens") private Long totalTokens;
+    /** 累计成本。 */ @TableField("total_cost") private BigDecimal totalCost;
 
     /** 创建时间。 */
     @TableField("created_at")
@@ -68,6 +80,9 @@ public class PromptExperimentVariantEntity {
     public void setVariantCode(String variantCode) {
         this.variantCode = variantCode;
     }
+
+    public String getPromptVersionId() { return promptVersionId; }
+    public void setPromptVersionId(String promptVersionId) { this.promptVersionId = promptVersionId; }
 
     public String getPromptContent() {
         return promptContent;
@@ -100,6 +115,21 @@ public class PromptExperimentVariantEntity {
     public void setMetricsSnapshot(String metricsSnapshot) {
         this.metricsSnapshot = metricsSnapshot;
     }
+
+    public Long getSampleCount() { return sampleCount; }
+    public void setSampleCount(Long sampleCount) { this.sampleCount = sampleCount; }
+    public Long getSuccessCount() { return successCount; }
+    public void setSuccessCount(Long successCount) { this.successCount = successCount; }
+    public Long getFailureCount() { return failureCount; }
+    public void setFailureCount(Long failureCount) { this.failureCount = failureCount; }
+    public BigDecimal getAvgQualityScore() { return avgQualityScore; }
+    public void setAvgQualityScore(BigDecimal avgQualityScore) { this.avgQualityScore = avgQualityScore; }
+    public BigDecimal getAvgLatencyMs() { return avgLatencyMs; }
+    public void setAvgLatencyMs(BigDecimal avgLatencyMs) { this.avgLatencyMs = avgLatencyMs; }
+    public Long getTotalTokens() { return totalTokens; }
+    public void setTotalTokens(Long totalTokens) { this.totalTokens = totalTokens; }
+    public BigDecimal getTotalCost() { return totalCost; }
+    public void setTotalCost(BigDecimal totalCost) { this.totalCost = totalCost; }
 
     public LocalDateTime getCreatedAt() {
         return createdAt;

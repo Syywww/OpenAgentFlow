@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.entity.AsyncTaskEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,12 +33,17 @@ public class DocumentPipelineDagService implements DistributedTaskHandler {
     /** JSON工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 根节点、子任务和Outbox原子提交模板。 */
+    private final TransactionTemplate transactionTemplate;
+
     public DocumentPipelineDagService(JdbcTemplate jdbcTemplate,
                                       AsyncTaskService asyncTaskService,
-                                      ObjectMapper objectMapper) {
+                                      ObjectMapper objectMapper,
+                                      TransactionTemplate transactionTemplate) {
         this.jdbcTemplate = jdbcTemplate;
         this.asyncTaskService = asyncTaskService;
         this.objectMapper = objectMapper;
+        this.transactionTemplate = transactionTemplate;
     }
 
     /** 返回文档DAG根任务类型。 */
@@ -52,23 +58,42 @@ public class DocumentPipelineDagService implements DistributedTaskHandler {
         Map<String, Object> payload = map(rootTask.getRequestPayload());
         String documentId = text(payload.get("documentId"));
         String kbId = text(payload.get("kbId"));
-        jdbcTemplate.update("""
-                INSERT IGNORE INTO document_pipeline_node
-                  (id,root_task_id,document_id,kb_id,stage_code,shard_no,shard_total,dependency_count,status,
-                   idempotency_key,input_json,created_at,updated_at)
-                VALUES (?,?,?,?, 'parse',0,1,0,'queued',?,?,NOW(3),NOW(3))
-                """, UUID.randomUUID().toString(), rootTask.getId(), documentId, kbId,
-                rootTask.getId() + ":parse:0", json(payload));
-        AsyncTaskEntity child = asyncTaskService.createDagChildTask(rootTask,
-                "解析知识文档：" + text(payload.get("fileName")), "DOCUMENT_PIPELINE_PARSE", 0, 1,
-                rootTask.getId() + ":parse-task:0", withRoot(payload, rootTask.getId()));
-        jdbcTemplate.update("UPDATE document_pipeline_node SET task_id=? WHERE root_task_id=? AND stage_code='parse'", child.getId(), rootTask.getId());
+        Map<String, Object> childHolder = new LinkedHashMap<>();
+        transactionTemplate.executeWithoutResult(status -> {
+            // 先递增文档代际并登记根任务，旧Worker从此无法继续写入。
+            int updated = jdbcTemplate.update("""
+                    UPDATE knowledge_document
+                    SET pipeline_generation=IF(current_pipeline_root_id=?,pipeline_generation,pipeline_generation+1),
+                        current_pipeline_root_id=?,
+                        metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),'$.currentPipelineRootId',?)
+                    WHERE id=?
+                    """, rootTask.getId(), rootTask.getId(), rootTask.getId(), documentId);
+            if (updated != 1) throw new IllegalStateException("知识文档不存在：" + documentId);
+            Long generation = jdbcTemplate.queryForObject(
+                    "SELECT pipeline_generation FROM knowledge_document WHERE id=?", Long.class, documentId);
+            Map<String, Object> fencedPayload = withRoot(payload, rootTask.getId());
+            fencedPayload.put("pipelineGeneration", generation == null ? 0L : generation);
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO document_pipeline_node
+                      (id,root_task_id,document_id,kb_id,stage_code,shard_no,shard_total,dependency_count,status,
+                       idempotency_key,input_json,generation_no,expected_item_count,created_at,updated_at)
+                    VALUES (?,?,?,?, 'parse',0,1,0,'queued',?,?,?,1,NOW(3),NOW(3))
+                    """, UUID.randomUUID().toString(), rootTask.getId(), documentId, kbId,
+                    rootTask.getId() + ":parse:0", json(fencedPayload), generation);
+            AsyncTaskEntity child = asyncTaskService.createDagChildTask(rootTask,
+                    "解析知识文档：" + text(payload.get("fileName")), "DOCUMENT_PIPELINE_PARSE", 0, 1,
+                    rootTask.getId() + ":parse-task:0", fencedPayload);
+            jdbcTemplate.update("UPDATE document_pipeline_node SET task_id=? WHERE root_task_id=? AND stage_code='parse'",
+                    child.getId(), rootTask.getId());
+            childHolder.put("id", child.getId());
+        });
+        String childTaskId = text(childHolder.get("id"));
         asyncTaskService.updateProgress(rootTask.getId(), "dispatched", "文档DAG已建立，等待阶段Worker执行", 5,
-                Map.of("childTaskId", child.getId(), "stageCount", 5));
+                Map.of("childTaskId", childTaskId, "stageCount", 5));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put(DEFERRED_RESULT_KEY, true);
         result.put("rootTaskId", rootTask.getId());
-        result.put("childTaskId", child.getId());
+        result.put("childTaskId", childTaskId);
         result.put("stageCount", 5);
         return result;
     }

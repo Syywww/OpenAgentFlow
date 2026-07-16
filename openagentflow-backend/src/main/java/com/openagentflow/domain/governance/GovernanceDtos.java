@@ -241,6 +241,7 @@ public final class GovernanceDtos {
         public void setCreatedAt(LocalDateTime createdAt) {
             this.createdAt = createdAt;
         }
+
     }
 
     /**
@@ -546,6 +547,9 @@ public final class GovernanceDtos {
         /** 创建时间。 */
         private LocalDateTime createdAt;
 
+        /** 审批后仅返回一次的高风险工具执行令牌。 */
+        private String executionToken;
+
         public String getId() {
             return id;
         }
@@ -649,6 +653,10 @@ public final class GovernanceDtos {
         public void setCreatedAt(LocalDateTime createdAt) {
             this.createdAt = createdAt;
         }
+
+        public String getExecutionToken() { return executionToken; }
+
+        public void setExecutionToken(String executionToken) { this.executionToken = executionToken; }
     }
 
     /**
@@ -679,4 +687,3 @@ public final class GovernanceDtos {
         }
     }
 }
-

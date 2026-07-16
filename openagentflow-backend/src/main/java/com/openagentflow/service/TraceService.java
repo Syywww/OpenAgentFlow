@@ -71,6 +71,8 @@ public class TraceService {
 
     /** Agent 权限服务。 */
     private final AgentAccessService agentAccessService;
+    /** HMAC 签名深分页游标。 */
+    private final SignedCursorCodec signedCursorCodec;
 
     public TraceService(RuntimeRunMapper runtimeRunMapper,
                         RuntimeTraceStepMapper runtimeTraceStepMapper,
@@ -81,7 +83,8 @@ public class TraceService {
                         IamUserMapper iamUserMapper,
                         JdbcTemplate jdbcTemplate,
                         ObjectMapper objectMapper,
-                        AgentAccessService agentAccessService) {
+                        AgentAccessService agentAccessService,
+                        SignedCursorCodec signedCursorCodec) {
         this.runtimeRunMapper = runtimeRunMapper;
         this.runtimeTraceStepMapper = runtimeTraceStepMapper;
         this.runtimeLlmCallMapper = runtimeLlmCallMapper;
@@ -92,6 +95,7 @@ public class TraceService {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.agentAccessService = agentAccessService;
+        this.signedCursorCodec = signedCursorCodec;
     }
 
     /**
@@ -132,6 +136,32 @@ public class TraceService {
                 .map(this::toSummary)
                 .toList();
         return new PageResult<>(records, total, current, size);
+    }
+
+    /** 使用 started_at 与 id 复合游标查询运行列表，避免大 OFFSET 扫描。 */
+    public Map<String, Object> listRunsByCursor(String cursor, Integer pageSize, String status, String agentId) {
+        int size = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
+        LambdaQueryWrapper<RuntimeRunEntity> wrapper = new LambdaQueryWrapper<RuntimeRunEntity>()
+                .orderByDesc(RuntimeRunEntity::getStartedAt).orderByDesc(RuntimeRunEntity::getId);
+        if (StringUtils.hasText(status) && !"all".equalsIgnoreCase(status)) wrapper.eq(RuntimeRunEntity::getStatus, status);
+        if (StringUtils.hasText(agentId) && !"all".equalsIgnoreCase(agentId)) wrapper.eq(RuntimeRunEntity::getAgentId, agentId);
+        if (StringUtils.hasText(cursor)) {
+            SignedCursorCodec.Cursor decoded;
+            try { decoded = signedCursorCodec.decode(cursor); }
+            catch (IllegalArgumentException exception) { throw new BusinessException("CURSOR_INVALID", exception.getMessage()); }
+            java.time.LocalDateTime time = java.time.LocalDateTime.parse(decoded.sortValue());
+            wrapper.and(item -> item.lt(RuntimeRunEntity::getStartedAt, time)
+                    .or(nested -> nested.eq(RuntimeRunEntity::getStartedAt, time).lt(RuntimeRunEntity::getId, decoded.id())));
+        }
+        List<RuntimeRunEntity> rows = runtimeRunMapper.selectList(wrapper.last("LIMIT " + (size + 1)));
+        boolean hasMore = rows.size() > size;
+        List<RuntimeRunEntity> pageRows = hasMore ? rows.subList(0, size) : rows;
+        List<RunSummary> records = pageRows.stream().filter(this::canViewRun).map(this::toSummary).toList();
+        RuntimeRunEntity tail = pageRows.isEmpty() ? null : pageRows.getLast();
+        String nextCursor = hasMore && tail != null
+                ? signedCursorCodec.encode(tail.getStartedAt().toString(), tail.getId()) : null;
+        return Map.of("records", records, "hasMore", hasMore,
+                "nextCursor", nextCursor == null ? "" : nextCursor, "pageSize", size);
     }
 
     /**

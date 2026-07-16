@@ -3,6 +3,7 @@ package com.openagentflow.entity;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
@@ -31,6 +32,17 @@ public class PromptTemplateVersionEntity {
     /** 字段说明：VARIABLES。 */
     @TableField("variables")
     private String variables;
+
+    /** 该版本固化的强类型变量Schema JSON数组。 */
+    @TableField("variable_schema")
+    private String variableSchema;
+
+    /** Prompt内容SHA-256哈希。 */ @TableField("content_hash") private String contentHash;
+    /** 校验状态。 */ @TableField("validation_status") private String validationStatus;
+    /** 校验结果JSON。 */ @TableField("validation_result") private String validationResult;
+    /** 关联评测质量得分。 */ @TableField("quality_score") private BigDecimal qualityScore;
+    /** 版本当前环境。 */ @TableField("environment") private String environment;
+    /** 版本发布时间。 */ @TableField("published_at") private LocalDateTime publishedAt;
 
     /** 变更NOTE。 */
     @TableField("change_note")
@@ -83,6 +95,22 @@ public class PromptTemplateVersionEntity {
     public void setVariables(String variables) {
         this.variables = variables;
     }
+
+    public String getVariableSchema() { return variableSchema; }
+    public void setVariableSchema(String variableSchema) { this.variableSchema = variableSchema; }
+
+    public String getContentHash() { return contentHash; }
+    public void setContentHash(String contentHash) { this.contentHash = contentHash; }
+    public String getValidationStatus() { return validationStatus; }
+    public void setValidationStatus(String validationStatus) { this.validationStatus = validationStatus; }
+    public String getValidationResult() { return validationResult; }
+    public void setValidationResult(String validationResult) { this.validationResult = validationResult; }
+    public BigDecimal getQualityScore() { return qualityScore; }
+    public void setQualityScore(BigDecimal qualityScore) { this.qualityScore = qualityScore; }
+    public String getEnvironment() { return environment; }
+    public void setEnvironment(String environment) { this.environment = environment; }
+    public LocalDateTime getPublishedAt() { return publishedAt; }
+    public void setPublishedAt(LocalDateTime publishedAt) { this.publishedAt = publishedAt; }
 
     public String getChangeNote() {
         return changeNote;

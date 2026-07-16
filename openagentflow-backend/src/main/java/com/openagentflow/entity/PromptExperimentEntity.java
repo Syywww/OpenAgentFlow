@@ -16,6 +16,10 @@ public class PromptExperimentEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 工作空间ID。 */
+    @TableField("workspace_id")
+    private String workspaceId;
+
     /** 实验编码。 */
     @TableField("experiment_code")
     private String experimentCode;
@@ -39,6 +43,12 @@ public class PromptExperimentEntity {
     /** TRAFFIC策略。 */
     @TableField("traffic_policy")
     private String trafficPolicy;
+
+    /** 主要胜出指标。 */ @TableField("metric_key") private String metricKey;
+    /** 自动选优最小样本数。 */ @TableField("min_sample_size") private Integer minSampleSize;
+    /** 自动选优置信阈值。 */ @TableField("confidence_threshold") private java.math.BigDecimal confidenceThreshold;
+    /** 是否启用自动选优。 */ @TableField("auto_winner_enabled") private Boolean autoWinnerEnabled;
+    /** 胜出变体ID。 */ @TableField("winner_variant_id") private String winnerVariantId;
 
     /** 状态。 */
     @TableField("status")
@@ -71,6 +81,9 @@ public class PromptExperimentEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getWorkspaceId() { return workspaceId; }
+    public void setWorkspaceId(String workspaceId) { this.workspaceId = workspaceId; }
 
     public String getExperimentCode() {
         return experimentCode;
@@ -119,6 +132,17 @@ public class PromptExperimentEntity {
     public void setTrafficPolicy(String trafficPolicy) {
         this.trafficPolicy = trafficPolicy;
     }
+
+    public String getMetricKey() { return metricKey; }
+    public void setMetricKey(String metricKey) { this.metricKey = metricKey; }
+    public Integer getMinSampleSize() { return minSampleSize; }
+    public void setMinSampleSize(Integer minSampleSize) { this.minSampleSize = minSampleSize; }
+    public java.math.BigDecimal getConfidenceThreshold() { return confidenceThreshold; }
+    public void setConfidenceThreshold(java.math.BigDecimal confidenceThreshold) { this.confidenceThreshold = confidenceThreshold; }
+    public Boolean getAutoWinnerEnabled() { return autoWinnerEnabled; }
+    public void setAutoWinnerEnabled(Boolean autoWinnerEnabled) { this.autoWinnerEnabled = autoWinnerEnabled; }
+    public String getWinnerVariantId() { return winnerVariantId; }
+    public void setWinnerVariantId(String winnerVariantId) { this.winnerVariantId = winnerVariantId; }
 
     public String getStatus() {
         return status;

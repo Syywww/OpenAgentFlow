@@ -16,6 +16,10 @@ public class PromptTemplateEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 工作空间ID。 */
+    @TableField("workspace_id")
+    private String workspaceId;
+
     /** 模板编码。 */
     @TableField("template_code")
     private String templateCode;
@@ -35,6 +39,22 @@ public class PromptTemplateEntity {
     /** 字段说明：VARIABLES。 */
     @TableField("variables")
     private String variables;
+
+    /** 强类型变量Schema JSON数组。 */
+    @TableField("variable_schema")
+    private String variableSchema;
+
+    /** 当前稳定版本ID。 */
+    @TableField("stable_version_id")
+    private String stableVersionId;
+
+    /** 当前最高晋级环境。 */
+    @TableField("current_environment")
+    private String currentEnvironment;
+
+    /** Prompt风险等级。 */
+    @TableField("risk_level")
+    private String riskLevel;
 
     /** 描述。 */
     @TableField("description")
@@ -67,6 +87,10 @@ public class PromptTemplateEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getWorkspaceId() { return workspaceId; }
+
+    public void setWorkspaceId(String workspaceId) { this.workspaceId = workspaceId; }
 
     public String getTemplateCode() {
         return templateCode;
@@ -107,6 +131,15 @@ public class PromptTemplateEntity {
     public void setVariables(String variables) {
         this.variables = variables;
     }
+
+    public String getVariableSchema() { return variableSchema; }
+    public void setVariableSchema(String variableSchema) { this.variableSchema = variableSchema; }
+    public String getStableVersionId() { return stableVersionId; }
+    public void setStableVersionId(String stableVersionId) { this.stableVersionId = stableVersionId; }
+    public String getCurrentEnvironment() { return currentEnvironment; }
+    public void setCurrentEnvironment(String currentEnvironment) { this.currentEnvironment = currentEnvironment; }
+    public String getRiskLevel() { return riskLevel; }
+    public void setRiskLevel(String riskLevel) { this.riskLevel = riskLevel; }
 
     public String getDescription() {
         return description;

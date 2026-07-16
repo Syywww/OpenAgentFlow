@@ -6,6 +6,7 @@ import com.openagentflow.entity.ModelProviderEntity;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.memory.MemoryDtos;
 import com.openagentflow.domain.model.ModelRouteDecision;
+import com.openagentflow.domain.prompt.PromptRuntimeDtos;
 
 import java.util.List;
 
@@ -67,6 +68,9 @@ public class ChatRunContext {
 
     /** 模型网关路由决策。 */
     private ModelRouteDecision routeDecision;
+
+    /** 本次运行实际Prompt编译结果。 */
+    private PromptRuntimeDtos.CompileResult promptCompileResult;
 
     public String getRunId() {
         return runId;
@@ -210,5 +214,13 @@ public class ChatRunContext {
 
     public void setRouteDecision(ModelRouteDecision routeDecision) {
         this.routeDecision = routeDecision;
+    }
+
+    public PromptRuntimeDtos.CompileResult getPromptCompileResult() {
+        return promptCompileResult;
+    }
+
+    public void setPromptCompileResult(PromptRuntimeDtos.CompileResult promptCompileResult) {
+        this.promptCompileResult = promptCompileResult;
     }
 }

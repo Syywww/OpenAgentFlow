@@ -35,6 +35,15 @@ public class AgentRequest {
     /** System Prompt 模板 ID。 */
     private String systemPromptTemplateId;
 
+    /** System Prompt版本ID。 */
+    private String systemPromptVersionId;
+
+    /** Prompt绑定模式：MANUAL、LOCKED、FOLLOW_STABLE。 */
+    private String promptBindingMode;
+
+    /** Agent级Prompt变量值JSON。 */
+    private String promptVariables;
+
     /** System Prompt 内容。 */
     private String systemPrompt;
 
@@ -120,6 +129,30 @@ public class AgentRequest {
 
     public void setSystemPromptTemplateId(String systemPromptTemplateId) {
         this.systemPromptTemplateId = systemPromptTemplateId;
+    }
+
+    public String getSystemPromptVersionId() {
+        return systemPromptVersionId;
+    }
+
+    public void setSystemPromptVersionId(String systemPromptVersionId) {
+        this.systemPromptVersionId = systemPromptVersionId;
+    }
+
+    public String getPromptBindingMode() {
+        return promptBindingMode;
+    }
+
+    public void setPromptBindingMode(String promptBindingMode) {
+        this.promptBindingMode = promptBindingMode;
+    }
+
+    public String getPromptVariables() {
+        return promptVariables;
+    }
+
+    public void setPromptVariables(String promptVariables) {
+        this.promptVariables = promptVariables;
     }
 
     public String getSystemPrompt() {

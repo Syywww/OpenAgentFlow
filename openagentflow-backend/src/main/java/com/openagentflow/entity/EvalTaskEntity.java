@@ -16,6 +16,10 @@ public class EvalTaskEntity {
     @TableId(value = "id")
     private String id;
 
+    /** 工作空间ID。 */
+    @TableField("workspace_id")
+    private String workspaceId;
+
     /** 任务编码。 */
     @TableField("task_code")
     private String taskCode;
@@ -91,6 +95,10 @@ public class EvalTaskEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getWorkspaceId() { return workspaceId; }
+
+    public void setWorkspaceId(String workspaceId) { this.workspaceId = workspaceId; }
 
     public String getTaskCode() {
         return taskCode;

@@ -108,6 +108,8 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
 
     /** OpenSearch关键词索引服务。 */
     private final KeywordSearchService keywordSearchService;
+    /** 上传文件安全扫描服务。 */
+    private final FileSecurityScanService fileSecurityScanService;
 
     public KnowledgeDocumentProcessingService(KnowledgeBaseMapper knowledgeBaseMapper,
                                               KnowledgeDocumentMapper knowledgeDocumentMapper,
@@ -123,7 +125,8 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
                                               AsyncTaskStageService taskStageService,
                                               SharedObjectStorageService objectStorageService,
                                               TenantResourceQuotaService tenantResourceQuotaService,
-                                              KeywordSearchService keywordSearchService) {
+                                              KeywordSearchService keywordSearchService,
+                                              FileSecurityScanService fileSecurityScanService) {
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
@@ -139,6 +142,7 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         this.objectStorageService = objectStorageService;
         this.tenantResourceQuotaService = tenantResourceQuotaService;
         this.keywordSearchService = keywordSearchService;
+        this.fileSecurityScanService = fileSecurityScanService;
     }
 
     /**
@@ -160,10 +164,13 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             tenantResourceQuotaService.assertDocumentUploadAllowed(kb.getWorkspaceId(), file.getSize());
             String fileExt = fileExt(fileName);
             String documentId = newId();
-            String storageKey = knowledgeObjectKey(kbId, documentId, fileName);
+            String storageKey = knowledgeObjectKey(kb.getWorkspaceId(), kbId, documentId, fileName);
             SharedObjectStorageService.StoredObject storedObject = objectStorageService.putStream(
                     storageKey, file.getInputStream(), file.getSize(), file.getContentType());
             String fileHash = storedObject.contentHash();
+            // 文档进入解析队列前必须完成真实类型、压缩炸弹和危险内容扫描。
+            fileSecurityScanService.scan(kb.getWorkspaceId(), documentId, storedObject.bucket(), storageKey,
+                    fileHash, fileExt, storedObject.size(), objectStorageService);
             KnowledgeDocumentEntity duplicate = findParsedDuplicateDocument(kbId, fileHash);
             if (duplicate != null) {
                 objectStorageService.delete(storedObject.bucket(), storageKey);
@@ -223,7 +230,7 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
         tenantResourceQuotaService.assertSafeDocumentType(fileName);
         tenantResourceQuotaService.assertDocumentUploadAllowed(kb.getWorkspaceId(), request.getFileSize());
         String fileExt = fileExt(fileName);
-        String storageKey = knowledgeObjectKey(kbId, documentId, fileName);
+        String storageKey = knowledgeObjectKey(kb.getWorkspaceId(), kbId, documentId, fileName);
 
         KnowledgeDocumentEntity document = new KnowledgeDocumentEntity();
         document.setId(documentId);
@@ -264,6 +271,8 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
             throw new BusinessException("DOCUMENT_UPLOAD_SIZE_MISMATCH", "MinIO 对象大小与申请大小不一致");
         }
         document.setFileHash(stored.contentHash());
+        fileSecurityScanService.scan(kb.getWorkspaceId(), documentId, stored.bucket(), stored.objectKey(),
+                stored.contentHash(), document.getFileExt(), stored.size(), objectStorageService);
         KnowledgeDocumentEntity duplicate = findParsedDuplicateDocument(kbId, stored.contentHash());
         if (duplicate != null && !duplicate.getId().equals(documentId)) {
             objectStorageService.delete(stored.bucket(), stored.objectKey());
@@ -321,6 +330,7 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
     /**
      * 查询单个文档处理状态。
      *
+     * @param workspaceId 工作空间ID
      * @param kbId 知识库 ID
      * @param documentId 文档 ID
      * @return 文档摘要和处理日志
@@ -1129,9 +1139,11 @@ public class KnowledgeDocumentProcessingService implements DistributedTaskHandle
      * @param bytes 文件字节
      * @return 存储相对路径
      */
-    private String knowledgeObjectKey(String kbId, String documentId, String fileName) {
+    private String knowledgeObjectKey(String workspaceId, String kbId, String documentId, String fileName) {
         String safeName = fileName.replaceAll("[\\\\/:*?\"<>|]+", "_");
-        return "uploads/knowledge/" + kbId + "/" + documentId + "_" + safeName;
+        String safeWorkspace = StringUtils.hasText(workspaceId)
+                ? workspaceId.replaceAll("[^a-zA-Z0-9_-]", "_") : "global";
+        return "workspaces/" + safeWorkspace + "/knowledge/" + kbId + "/" + documentId + "_" + safeName;
     }
 
     private int value(Integer value) {

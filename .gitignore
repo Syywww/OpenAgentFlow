@@ -10,6 +10,9 @@ openagentflow-backend/*.iml
 openagentflow-frontend/node_modules/
 openagentflow-frontend/dist/
 openagentflow-frontend/*.tsbuildinfo
+openagentflow-frontend/coverage/
+openagentflow-frontend/test-results/
+openagentflow-frontend/playwright-report/
 
 # Local configuration and runtime logs
 .env

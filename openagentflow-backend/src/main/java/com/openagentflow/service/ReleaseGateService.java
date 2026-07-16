@@ -20,8 +20,13 @@ public class ReleaseGateService {
 
     /** JDBC工具。 */
     private final JdbcTemplate jdbcTemplate;
+    /** 黄金基线持续评测服务。 */
+    private final ContinuousEvaluationService continuousEvaluationService;
 
-    public ReleaseGateService(JdbcTemplate jdbcTemplate) { this.jdbcTemplate = jdbcTemplate; }
+    public ReleaseGateService(JdbcTemplate jdbcTemplate, ContinuousEvaluationService continuousEvaluationService) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.continuousEvaluationService = continuousEvaluationService;
+    }
 
     /**
      * 执行发布门禁，不达标时写入明细并阻止发布事务。
@@ -48,7 +53,7 @@ public class ReleaseGateService {
                 """, resourceType, workspaceId);
         if (policies.isEmpty()) return Map.of("passed", true, "reason", "未配置发布门禁");
         Map<String, Object> policy = policies.getFirst();
-        Metrics metrics = "agent".equals(resourceType) ? agentMetrics(resourceId) : new Metrics(1D, 0D, 0, true, true, true);
+        Metrics metrics = resourceMetrics(resourceType, resourceId);
         double minScore = number(policy.get("min_eval_score"));
         double maxFailure = number(policy.get("max_failure_rate"));
         int maxLatency = ((Number) policy.get("max_p95_latency_ms")).intValue();
@@ -56,23 +61,33 @@ public class ReleaseGateService {
                 || policy.get("require_security_pass") instanceof Number number && number.intValue() == 1;
         boolean requireCost = Boolean.TRUE.equals(policy.get("require_cost_budget"))
                 || policy.get("require_cost_budget") instanceof Number number && number.intValue() == 1;
+        boolean requireBaseline = Boolean.TRUE.equals(policy.get("require_golden_baseline"))
+                || policy.get("require_golden_baseline") instanceof Number number && number.intValue() == 1;
+        double maxRegression = number(policy.get("max_metric_regression"));
+        ContinuousEvaluationService.RegressionResult regression = requireBaseline
+                ? continuousEvaluationService.compareLatest(resourceType, resourceId, workspaceId,
+                    targetVersion, maxRegression, currentUserId())
+                : new ContinuousEvaluationService.RegressionResult(true, null, null, List.of(), "未要求黄金基线");
         boolean passed = metrics.evalScore >= minScore && metrics.failureRate <= maxFailure
                 && metrics.p95LatencyMs <= maxLatency
-                && (!requireSecurity || metrics.securityPassed) && (!requireCost || metrics.costPassed);
+                && (!requireSecurity || metrics.securityPassed) && (!requireCost || metrics.costPassed)
+                && regression.passed();
         String executionId = UUID.randomUUID().toString();
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("minEvalScore", minScore);
         detail.put("maxFailureRate", maxFailure);
         detail.put("maxP95LatencyMs", maxLatency);
         detail.put("sampleAvailable", metrics.sampleAvailable);
+        detail.put("regressionReason", regression.reason());
+        detail.put("regressions", regression.regressions());
         jdbcTemplate.update("""
                 INSERT INTO release_gate_execution
-                  (id,policy_id,workspace_id,resource_type,resource_id,target_version,status,eval_score,failure_rate,
-                   p95_latency_ms,security_passed,cost_passed,detail_json,requested_by,finished_at,created_at)
-                VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?,?,NOW(3),NOW(3))
-                """, executionId, policy.get("id"), workspaceId, resourceType, resourceId, targetVersion,
+                  (id,policy_id,workspace_id,resource_type,resource_id,target_version,baseline_id,status,eval_score,failure_rate,
+                   p95_latency_ms,security_passed,cost_passed,regression_passed,detail_json,requested_by,finished_at,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(3),NOW(3))
+                """, executionId, policy.get("id"), workspaceId, resourceType, resourceId, targetVersion, regression.baselineId(),
                 passed ? "passed" : "blocked", metrics.evalScore, metrics.failureRate, metrics.p95LatencyMs,
-                metrics.securityPassed, metrics.costPassed, json(detail), currentUserId());
+                metrics.securityPassed, metrics.costPassed, regression.passed(), json(detail), currentUserId());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("executionId", executionId);
         result.put("passed", passed);
@@ -81,6 +96,8 @@ public class ReleaseGateService {
         result.put("p95LatencyMs", metrics.p95LatencyMs);
         result.put("securityPassed", metrics.securityPassed);
         result.put("costPassed", metrics.costPassed);
+        result.put("baselineId", regression.baselineId());
+        result.put("regressionPassed", regression.passed());
         if (!passed) throw new BusinessException("RELEASE_GATE_BLOCKED", "发布门禁未通过，请先完成评测并处理安全、稳定性或成本问题");
         return result;
     }
@@ -103,6 +120,10 @@ public class ReleaseGateService {
 
     /** 审批发布豁免，仅由权限层允许的治理管理员调用。 */
     public Map<String, Object> approveWaiver(String id) {
+        Map<String, Object> waiver = jdbcTemplate.queryForMap("SELECT * FROM release_gate_waiver WHERE id=?", id);
+        if (currentUserId() != null && currentUserId().equals(String.valueOf(waiver.get("requested_by")))) {
+            throw new BusinessException("DUAL_APPROVAL_REQUIRED", "发布豁免必须由申请人以外的管理员审批");
+        }
         jdbcTemplate.update("UPDATE release_gate_waiver SET status='approved',approved_by=?,approved_at=NOW(3) WHERE id=? AND status='pending'",
                 currentUserId(), id);
         return jdbcTemplate.queryForMap("SELECT * FROM release_gate_waiver WHERE id=?", id);
@@ -133,6 +154,30 @@ public class ReleaseGateService {
                 p95 == null ? 0 : p95,
                 securityRisks == null || securityRisks == 0,
                 exceededCostQuotas == null || exceededCostQuotas == 0, true);
+    }
+
+    /** 按资源类型读取真实评测质量，所有发布对象统一走评测门禁。 */
+    private Metrics resourceMetrics(String resourceType, String resourceId) {
+        if ("agent".equals(resourceType)) return agentMetrics(resourceId);
+        String predicate = switch (resourceType) {
+            case "workflow" -> "t.workflow_id=?";
+            case "prompt" -> "t.prompt_template_id=?";
+            case "knowledge" -> "JSON_UNQUOTE(JSON_EXTRACT(t.eval_config,'$.knowledgeBaseId'))=?";
+            default -> throw new BusinessException("RELEASE_RESOURCE_TYPE_INVALID", "不支持的发布资源类型");
+        };
+        List<String> tasks = jdbcTemplate.query(
+                "SELECT t.id FROM eval_task t WHERE t.status='success' AND " + predicate + " ORDER BY t.finished_at DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1), resourceId);
+        if (tasks.isEmpty()) return new Metrics(0D, 1D, Integer.MAX_VALUE, true, true, false);
+        String taskId = tasks.getFirst();
+        Map<String, Object> row = jdbcTemplate.queryForMap("""
+                SELECT COALESCE(AVG(s.score),0) eval_score,
+                       COALESCE(SUM(r.status<>'success')/NULLIF(COUNT(DISTINCT r.id),0),1) failure_rate,
+                       COALESCE(MAX(r.latency_ms),0) p95_latency
+                FROM eval_task_run r LEFT JOIN eval_score s ON s.task_run_id=r.id WHERE r.task_id=?
+                """, taskId);
+        return new Metrics(number(row.get("eval_score")), number(row.get("failure_rate")),
+                ((Number) row.get("p95_latency")).intValue(), true, true, true);
     }
 
     private String currentUserId() {

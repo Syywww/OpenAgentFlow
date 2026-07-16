@@ -36,13 +36,17 @@ public class AuditOperationFilter extends OncePerRequestFilter {
 
     /** 审计操作日志 Mapper。 */
     private final AuditOperationLogMapper auditOperationLogMapper;
+    /** 统一敏感数据脱敏器。 */
+    private final SensitiveDataSanitizer sensitiveDataSanitizer;
 
     /** 慢请求阈值。 */
     private final long slowRequestMs;
 
     public AuditOperationFilter(AuditOperationLogMapper auditOperationLogMapper,
+                                SensitiveDataSanitizer sensitiveDataSanitizer,
                                 @Value("${openagentflow.logging.slow-request-ms:3000}") long slowRequestMs) {
         this.auditOperationLogMapper = auditOperationLogMapper;
+        this.sensitiveDataSanitizer = sensitiveDataSanitizer;
         this.slowRequestMs = Math.max(1L, slowRequestMs);
     }
 
@@ -105,7 +109,7 @@ public class AuditOperationFilter extends OncePerRequestFilter {
             log.setRequestParams(limit(sanitizeQuery(request.getQueryString()), 2000));
             log.setResponseStatus(response.getStatus());
             log.setSuccess(failure == null && response.getStatus() < 400);
-            log.setFailureReason(failure == null ? null : limit(failure.getMessage(), 1000));
+            log.setFailureReason(failure == null ? null : limit(sensitiveDataSanitizer.sanitize(failure.getMessage()), 1000));
             log.setClientIp(resolveClientIp(request));
             log.setUserAgent(limit(request.getHeader("User-Agent"), 1000));
             log.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
@@ -174,7 +178,8 @@ public class AuditOperationFilter extends OncePerRequestFilter {
         if (!StringUtils.hasText(query)) {
             return null;
         }
-        return query.replaceAll("(?i)(password|token|api[_-]?key|secret|authorization)=([^&]*)", "$1=***");
+        return sensitiveDataSanitizer.sanitize(
+                query.replaceAll("(?i)(password|token|api[_-]?key|secret|authorization)=([^&]*)", "$1=***"));
     }
 
     /** 把异常文本追加到SLF4J参数数组。 */

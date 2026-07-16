@@ -1,33 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import LoginView from '../views/LoginView.vue';
-import DashboardView from '../views/DashboardView.vue';
-import AgentListView from '../views/agents/AgentListView.vue';
-import AgentDetailView from '../views/agents/AgentDetailView.vue';
-import AgentTeamView from '../views/agents/AgentTeamView.vue';
-import DebugWorkbenchView from '../views/DebugWorkbenchView.vue';
-import KnowledgeListView from '../views/knowledge/KnowledgeListView.vue';
-import KnowledgeDetailView from '../views/knowledge/KnowledgeDetailView.vue';
-import KnowledgeGovernanceView from '../views/knowledge/KnowledgeGovernanceView.vue';
-import ToolListView from '../views/tools/ToolListView.vue';
-import ToolEditView from '../views/tools/ToolEditView.vue';
-import McpServerListView from '../views/mcp/McpServerListView.vue';
-import McpToolsView from '../views/mcp/McpToolsView.vue';
-import WorkflowDesignerView from '../views/WorkflowDesignerView.vue';
-import RunLogListView from '../views/logs/RunLogListView.vue';
-import RunDetailView from '../views/logs/RunDetailView.vue';
-import UsageCenterView from '../views/UsageCenterView.vue';
-import OpsMonitorView from '../views/OpsMonitorView.vue';
-import DeliveryAcceptanceView from '../views/DeliveryAcceptanceView.vue';
-import ModelGatewayView from '../views/ModelGatewayView.vue';
-import EvalDatasetView from '../views/eval/EvalDatasetView.vue';
-import EvalResultView from '../views/eval/EvalResultView.vue';
-import WorkspaceGovernanceView from '../views/WorkspaceGovernanceView.vue';
-import TaskCenterView from '../views/TaskCenterView.vue';
-import GovernanceCenterView from '../views/GovernanceCenterView.vue';
-import PromptTemplateCenterView from '../views/PromptTemplateCenterView.vue';
-import MemoryCenterView from '../views/MemoryCenterView.vue';
-import TemplateGalleryView from '../views/TemplateGalleryView.vue';
-import SettingsView from '../views/SettingsView.vue';
 import { getAccessToken } from '../api/http';
 import { canAccessMenu, firstAllowedPath, menuAccessRules, readCurrentUser } from '../api/permissions';
 
@@ -36,35 +8,35 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/login' },
     { path: '/login', component: LoginView, meta: { public: true } },
-    { path: '/dashboard', component: DashboardView },
-    { path: '/agents', component: AgentListView },
-    { path: '/agents/:id', component: AgentDetailView },
-    { path: '/agent-teams', component: AgentTeamView },
-    { path: '/debug', component: DebugWorkbenchView },
-    { path: '/knowledge', component: KnowledgeListView },
-    { path: '/knowledge/:id', component: KnowledgeDetailView },
-    { path: '/knowledge-governance', component: KnowledgeGovernanceView },
-    { path: '/tools', component: ToolListView },
-    { path: '/tools/:id', component: ToolEditView },
-    { path: '/mcp', component: McpServerListView },
-    { path: '/mcp/tools', component: McpToolsView },
-    { path: '/workflow', component: WorkflowDesignerView },
-    { path: '/logs', component: RunLogListView },
-    { path: '/logs/:id', component: RunDetailView },
-    { path: '/usage', component: UsageCenterView },
-    { path: '/ops', component: OpsMonitorView },
-    { path: '/delivery', component: DeliveryAcceptanceView },
-    { path: '/model-gateway', component: ModelGatewayView },
-    { path: '/workspaces', component: WorkspaceGovernanceView },
-    { path: '/tasks', component: TaskCenterView },
-    { path: '/governance', component: GovernanceCenterView },
-    { path: '/prompts', component: PromptTemplateCenterView },
-    { path: '/memories', component: MemoryCenterView },
-    { path: '/eval', component: EvalDatasetView },
-    { path: '/eval/result', component: EvalResultView },
-    { path: '/eval/result/:id', component: EvalResultView },
-    { path: '/templates', component: TemplateGalleryView },
-    { path: '/settings', component: SettingsView },
+    { path: '/dashboard', component: () => import('../views/DashboardView.vue') },
+    { path: '/agents', component: () => import('../views/agents/AgentListView.vue') },
+    { path: '/agents/:id', component: () => import('../views/agents/AgentDetailView.vue') },
+    { path: '/agent-teams', component: () => import('../views/agents/AgentTeamView.vue') },
+    { path: '/debug', component: () => import('../views/DebugWorkbenchView.vue') },
+    { path: '/knowledge', component: () => import('../views/knowledge/KnowledgeListView.vue') },
+    { path: '/knowledge/:id', component: () => import('../views/knowledge/KnowledgeDetailView.vue') },
+    { path: '/knowledge-governance', component: () => import('../views/knowledge/KnowledgeGovernanceView.vue') },
+    { path: '/tools', component: () => import('../views/tools/ToolListView.vue') },
+    { path: '/tools/:id', component: () => import('../views/tools/ToolEditView.vue') },
+    { path: '/mcp', component: () => import('../views/mcp/McpServerListView.vue') },
+    { path: '/mcp/tools', component: () => import('../views/mcp/McpToolsView.vue') },
+    { path: '/workflow', component: () => import('../views/WorkflowDesignerView.vue') },
+    { path: '/logs', component: () => import('../views/logs/RunLogListView.vue') },
+    { path: '/logs/:id', component: () => import('../views/logs/RunDetailView.vue') },
+    { path: '/usage', component: () => import('../views/UsageCenterView.vue') },
+    { path: '/ops', component: () => import('../views/OpsMonitorView.vue') },
+    { path: '/delivery', component: () => import('../views/DeliveryAcceptanceView.vue') },
+    { path: '/model-gateway', component: () => import('../views/ModelGatewayView.vue') },
+    { path: '/workspaces', component: () => import('../views/WorkspaceGovernanceView.vue') },
+    { path: '/tasks', component: () => import('../views/TaskCenterView.vue') },
+    { path: '/governance', component: () => import('../views/GovernanceCenterView.vue') },
+    { path: '/prompts', component: () => import('../views/PromptTemplateCenterView.vue') },
+    { path: '/memories', component: () => import('../views/MemoryCenterView.vue') },
+    { path: '/eval', component: () => import('../views/eval/EvalDatasetView.vue') },
+    { path: '/eval/result', component: () => import('../views/eval/EvalResultView.vue') },
+    { path: '/eval/result/:id', component: () => import('../views/eval/EvalResultView.vue') },
+    { path: '/templates', component: () => import('../views/TemplateGalleryView.vue') },
+    { path: '/settings', component: () => import('../views/SettingsView.vue') },
   ],
 });
 

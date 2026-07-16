@@ -68,6 +68,14 @@ public class KnowledgeDocumentEntity {
     @TableField("parse_error")
     private String parseError;
 
+    /** 文档处理流水线代次。 */
+    @TableField("pipeline_generation")
+    private Long pipelineGeneration;
+
+    /** 当前有效文档DAG根任务ID。 */
+    @TableField("current_pipeline_root_id")
+    private String currentPipelineRootId;
+
     /** 元数据JSON。 */
     @TableField("metadata")
     private String metadata;
@@ -194,6 +202,22 @@ public class KnowledgeDocumentEntity {
 
     public void setParseError(String parseError) {
         this.parseError = parseError;
+    }
+
+    public Long getPipelineGeneration() {
+        return pipelineGeneration;
+    }
+
+    public void setPipelineGeneration(Long pipelineGeneration) {
+        this.pipelineGeneration = pipelineGeneration;
+    }
+
+    public String getCurrentPipelineRootId() {
+        return currentPipelineRootId;
+    }
+
+    public void setCurrentPipelineRootId(String currentPipelineRootId) {
+        this.currentPipelineRootId = currentPipelineRootId;
     }
 
     public String getMetadata() {

@@ -3,6 +3,9 @@ package com.openagentflow.controller;
 import com.openagentflow.api.ApiResponse;
 import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.prompt.PromptDtos;
+import com.openagentflow.domain.prompt.PromptRuntimeDtos;
+import com.openagentflow.service.PromptExperimentService;
+import com.openagentflow.service.PromptOpsService;
 import com.openagentflow.service.PromptTemplateService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,9 +26,17 @@ public class PromptTemplateController {
 
     /** Prompt 模板中心服务。 */
     private final PromptTemplateService promptTemplateService;
+    /** PromptOps 治理服务。 */
+    private final PromptOpsService promptOpsService;
+    /** Prompt 实验服务。 */
+    private final PromptExperimentService promptExperimentService;
 
-    public PromptTemplateController(PromptTemplateService promptTemplateService) {
+    public PromptTemplateController(PromptTemplateService promptTemplateService,
+                                    PromptOpsService promptOpsService,
+                                    PromptExperimentService promptExperimentService) {
         this.promptTemplateService = promptTemplateService;
+        this.promptOpsService = promptOpsService;
+        this.promptExperimentService = promptExperimentService;
     }
 
     /**
@@ -141,5 +152,102 @@ public class PromptTemplateController {
     public ApiResponse<PromptDtos.TemplateDetail> rollbackTemplate(@PathVariable String id,
                                                                    @PathVariable String versionId) {
         return ApiResponse.ok(promptTemplateService.rollbackTemplate(id, versionId));
+    }
+
+    /** 使用统一 Prompt Runtime 预览最终装配内容。 */
+    @PostMapping("/{id}/preview")
+    public ApiResponse<PromptRuntimeDtos.CompileResult> preview(@PathVariable String id,
+                                                                @RequestBody(required = false) PromptRuntimeDtos.PreviewRequest request) {
+        return ApiResponse.ok(promptOpsService.preview(id, request));
+    }
+
+    /** 对比两个 Prompt 版本的内容和变量 Schema。 */
+    @GetMapping("/{id}/diff")
+    public ApiResponse<PromptRuntimeDtos.VersionDiff> diff(@PathVariable String id,
+                                                           @RequestParam String fromVersionId,
+                                                           @RequestParam String toVersionId) {
+        return ApiResponse.ok(promptOpsService.diff(id, fromVersionId, toVersionId));
+    }
+
+    /** 查询 Prompt 模板的资源绑定影响面。 */
+    @GetMapping("/{id}/impacts")
+    public ApiResponse<java.util.List<PromptRuntimeDtos.ImpactItem>> impacts(@PathVariable String id) {
+        return ApiResponse.ok(promptOpsService.impacts(id));
+    }
+
+    /** 将 Prompt 版本晋级到指定环境。 */
+    @PostMapping("/{id}/releases")
+    public ApiResponse<PromptRuntimeDtos.EnvironmentRelease> promote(@PathVariable String id,
+                                                                     @RequestBody PromptRuntimeDtos.PromotionRequest request) {
+        return ApiResponse.ok(promptOpsService.promote(id, request));
+    }
+
+    /** 查询 Prompt 多环境发布历史。 */
+    @GetMapping("/{id}/releases")
+    public ApiResponse<java.util.List<PromptRuntimeDtos.EnvironmentRelease>> releases(@PathVariable String id) {
+        return ApiResponse.ok(promptOpsService.releases(id));
+    }
+
+    /** 查询 Prompt 版本在线运行指标。 */
+    @GetMapping("/{id}/metrics")
+    public ApiResponse<java.util.List<PromptRuntimeDtos.VersionMetric>> metrics(@PathVariable String id) {
+        return ApiResponse.ok(promptOpsService.metrics(id));
+    }
+
+    /** 查询模板下的 Prompt 实验。 */
+    @GetMapping("/{id}/experiments")
+    public ApiResponse<java.util.List<PromptRuntimeDtos.ExperimentSummary>> listExperiments(@PathVariable String id) {
+        return ApiResponse.ok(promptExperimentService.list(id));
+    }
+
+    /** 创建 Prompt 实验草稿。 */
+    @PostMapping("/{id}/experiments")
+    public ApiResponse<PromptRuntimeDtos.ExperimentSummary> createExperiment(@PathVariable String id,
+                                                                             @RequestBody PromptRuntimeDtos.ExperimentRequest request) {
+        return ApiResponse.ok(promptExperimentService.create(id, request));
+    }
+
+    /** 更新 Prompt 实验草稿。 */
+    @PutMapping("/{id}/experiments/{experimentId}")
+    public ApiResponse<PromptRuntimeDtos.ExperimentSummary> updateExperiment(@PathVariable String id,
+                                                                             @PathVariable String experimentId,
+                                                                             @RequestBody PromptRuntimeDtos.ExperimentRequest request) {
+        return ApiResponse.ok(promptExperimentService.update(id, experimentId, request));
+    }
+
+    /** 启动 Prompt 实验。 */
+    @PostMapping("/{id}/experiments/{experimentId}/start")
+    public ApiResponse<PromptRuntimeDtos.ExperimentSummary> startExperiment(@PathVariable String id,
+                                                                            @PathVariable String experimentId) {
+        return ApiResponse.ok(promptExperimentService.start(id, experimentId));
+    }
+
+    /** 停止 Prompt 实验。 */
+    @PostMapping("/{id}/experiments/{experimentId}/stop")
+    public ApiResponse<PromptRuntimeDtos.ExperimentSummary> stopExperiment(@PathVariable String id,
+                                                                           @PathVariable String experimentId) {
+        return ApiResponse.ok(promptExperimentService.stop(id, experimentId));
+    }
+
+    /** 手动指定 Prompt 实验胜出变体。 */
+    @PostMapping("/{id}/experiments/{experimentId}/winner")
+    public ApiResponse<PromptRuntimeDtos.ExperimentSummary> chooseWinner(@PathVariable String id,
+                                                                         @PathVariable String experimentId,
+                                                                         @RequestParam String variantId) {
+        return ApiResponse.ok(promptExperimentService.chooseWinner(id, experimentId, variantId));
+    }
+
+    /** 根据样本量和质量指标自动选择 Prompt 实验胜出变体。 */
+    @PostMapping("/{id}/experiments/{experimentId}/auto-winner")
+    public ApiResponse<PromptRuntimeDtos.ExperimentSummary> autoChooseWinner(@PathVariable String id,
+                                                                             @PathVariable String experimentId) {
+        return ApiResponse.ok(promptExperimentService.autoChooseWinner(id, experimentId));
+    }
+
+    /** 删除已停止的 Prompt 实验。 */
+    @DeleteMapping("/{id}/experiments/{experimentId}")
+    public ApiResponse<Void> deleteExperiment(@PathVariable String id, @PathVariable String experimentId) {
+        promptExperimentService.delete(id, experimentId);
+        return ApiResponse.ok(null);
     }
 }

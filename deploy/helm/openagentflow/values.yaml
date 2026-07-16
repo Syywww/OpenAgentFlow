@@ -20,6 +20,37 @@ integrationWorker:
 
 runtime:
   replicas: 2
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits: { cpu: "4", memory: 6Gi }
+
+# 生产环境建议全部使用外部托管或多副本组件，应用 Pod 不保存业务状态。
+highAvailability:
+  mysql:
+    mode: external-primary-replica
+    minReplicas: 2
+  redis:
+    mode: sentinel-or-cluster
+    minReplicas: 3
+  kafka:
+    mode: multi-broker
+    minBrokers: 3
+    replicationFactor: 3
+    minInSyncReplicas: 2
+  objectStorage:
+    mode: distributed-minio-or-cloud
+    minReplicas: 4
+  milvus:
+    mode: cluster
+    minQueryNodes: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+topologySpread:
+  enabled: true
+  topologyKey: kubernetes.io/hostname
 
 config:
   profile: prod
@@ -34,6 +65,8 @@ autoscaling:
   minReplicaCount: 2
   maxReplicaCount: 30
   lagThreshold: "100"
+  apiCpuTarget: 65
+  runtimeCpuTarget: 60
 
 ingress:
   enabled: false

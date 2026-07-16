@@ -143,14 +143,15 @@ public class AgentService {
         String userId = currentUserIdOrThrow();
         AgentEntity entity = new AgentEntity();
         entity.setId(newId());
+        entity.setWorkspaceId(workspaceGovernanceService.attachResource(request.getWorkspaceId(), "agent", entity.getId(), userId));
         fillEntity(entity, request, true);
         entity.setOwnerUserId(userId);
         entity.setCreatedBy(userId);
-        entity.setWorkspaceId(workspaceGovernanceService.attachResource(request.getWorkspaceId(), "agent", entity.getId(), userId));
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus() : "draft");
         entity.setPublishedVersion(null);
         entity.setVersion(0L);
         agentMapper.insert(entity);
+        syncAgentPromptBinding(entity);
         agentAccessService.grantOwner(entity.getId(), userId);
         return toDetail(entity);
     }
@@ -168,6 +169,7 @@ public class AgentService {
         agentAccessService.assertCanManage(entity);
         fillEntity(entity, request, false);
         agentMapper.updateById(entity);
+        syncAgentPromptBinding(entity);
         return getAgent(entity.getId());
     }
 
@@ -226,6 +228,9 @@ public class AgentService {
         copy.setModelId(source.getModelId());
         copy.setWorkspaceId(workspaceGovernanceService.attachResource(source.getWorkspaceId(), "agent", copy.getId(), userId));
         copy.setSystemPromptTemplateId(source.getSystemPromptTemplateId());
+        copy.setSystemPromptVersionId(source.getSystemPromptVersionId());
+        copy.setPromptBindingMode(source.getPromptBindingMode());
+        copy.setPromptVariables(source.getPromptVariables());
         copy.setSystemPrompt(source.getSystemPrompt());
         copy.setModelParams(source.getModelParams());
         copy.setMemoryStrategy(source.getMemoryStrategy());
@@ -235,6 +240,7 @@ public class AgentService {
         copy.setCreatedBy(userId);
         copy.setVersion(0L);
         agentMapper.insert(copy);
+        syncAgentPromptBinding(copy);
         agentAccessService.grantOwner(copy.getId(), userId);
         return toDetail(copy);
     }
@@ -251,6 +257,7 @@ public class AgentService {
         entity.setStatus("deleted");
         entity.setDeletedAt(LocalDateTime.now());
         agentMapper.updateById(entity);
+        jdbcTemplate.update("UPDATE prompt_binding SET enabled=0,updated_at=NOW(3) WHERE resource_type='agent' AND resource_id=?", entity.getId());
     }
 
     /**
@@ -341,22 +348,8 @@ public class AgentService {
      * @return 是否可以进入订单工作流
      */
     private boolean hasOrderRuntimeIntent(String input) {
-        String text = normalizeText(input);
-        if (!StringUtils.hasText(text)) {
-            return false;
-        }
-        boolean hasOrderNo = text.matches(".*oaf-demo-[0-9]+.*")
-                || text.matches(".*\\b[a-z]{1,8}[-_][0-9]{4,}\\b.*")
-                || text.matches(".*\\b[0-9]{8,}\\b.*");
-        boolean hasRuntimeAction = containsAny(text,
-                "订单", "order", "物流", "快递", "运单", "包裹", "到哪里", "到哪", "状态", "进度",
-                "发货", "发出", "签收", "配送", "送达", "退款", "售后");
-        boolean hasOrderSummaryIntent = containsAny(text,
-                "多少订单", "几个订单", "几笔订单", "订单数量", "订单数", "我的订单", "订单列表", "所有订单", "有哪些订单");
-        boolean knowledgeOnly = containsAny(text,
-                "天气", "你好", "您好", "我是谁", "产品", "优惠", "优惠券", "优惠卷", "活动",
-                "折扣", "满减", "促销", "会员", "积分", "价格", "套餐");
-        return ((hasOrderNo && hasRuntimeAction) || hasOrderSummaryIntent) && !knowledgeOnly;
+        // Agent 路由与订单工具共用同一套意图策略，防止同一句话在不同阶段得到不同判断。
+        return OrderQueryIntentPolicy.shouldRunOrderWorkflow(input);
     }
 
     /**
@@ -535,6 +528,19 @@ public class AgentService {
             entity.setWorkspaceId(workspaceGovernanceService.attachResource(request.getWorkspaceId(), "agent", entity.getId(), entity.getOwnerUserId()));
         }
         entity.setSystemPromptTemplateId(request.getSystemPromptTemplateId());
+        entity.setSystemPromptVersionId(request.getSystemPromptVersionId());
+        String bindingMode = StringUtils.hasText(request.getPromptBindingMode())
+                ? request.getPromptBindingMode().trim().toUpperCase(Locale.ROOT)
+                : (StringUtils.hasText(request.getSystemPromptTemplateId()) ? "LOCKED" : "MANUAL");
+        if (!List.of("MANUAL", "LOCKED", "FOLLOW_STABLE").contains(bindingMode)) {
+            throw new BusinessException("PROMPT_BINDING_MODE_INVALID", "Prompt绑定模式仅支持MANUAL、LOCKED、FOLLOW_STABLE");
+        }
+        if ("FOLLOW_STABLE".equals(bindingMode)) {
+            entity.setSystemPromptVersionId(null);
+        }
+        entity.setPromptBindingMode(bindingMode);
+        entity.setPromptVariables(StringUtils.hasText(request.getPromptVariables()) ? request.getPromptVariables() : "{}");
+        validatePromptBinding(entity);
         entity.setSystemPrompt(StringUtils.hasText(request.getSystemPrompt())
                 ? request.getSystemPrompt()
                 : "你是 OpenAgentFlow-Java 的智能体，请使用清晰、准确的中文回答用户。");
@@ -610,6 +616,9 @@ public class AgentService {
         detail.setUpdatedAt(summary.getUpdatedAt());
         detail.setAvatarUrl(entity.getAvatarUrl());
         detail.setSystemPromptTemplateId(entity.getSystemPromptTemplateId());
+        detail.setSystemPromptVersionId(entity.getSystemPromptVersionId());
+        detail.setPromptBindingMode(entity.getPromptBindingMode());
+        detail.setPromptVariables(entity.getPromptVariables());
         detail.setSystemPrompt(entity.getSystemPrompt());
         detail.setModelParams(entity.getModelParams());
         detail.setMemoryStrategy(entity.getMemoryStrategy());
@@ -636,10 +645,83 @@ public class AgentService {
         snapshot.put("modelId", entity.getModelId());
         snapshot.put("workspaceId", entity.getWorkspaceId());
         snapshot.put("systemPrompt", entity.getSystemPrompt());
+        snapshot.put("systemPromptTemplateId", entity.getSystemPromptTemplateId());
+        snapshot.put("systemPromptVersionId", entity.getSystemPromptVersionId());
+        snapshot.put("promptBindingMode", entity.getPromptBindingMode());
+        snapshot.put("promptVariables", entity.getPromptVariables());
         snapshot.put("modelParams", entity.getModelParams());
         snapshot.put("memoryStrategy", entity.getMemoryStrategy());
         snapshot.put("visibility", entity.getVisibility());
         return snapshot;
+    }
+
+    /**
+     * 同步Agent的通用Prompt绑定关系。
+     *
+     * @param entity Agent实体
+     */
+    private void syncAgentPromptBinding(AgentEntity entity) {
+        if (!StringUtils.hasText(entity.getSystemPromptTemplateId())) {
+            jdbcTemplate.update("UPDATE prompt_binding SET enabled=0,updated_at=NOW(3) WHERE resource_type='agent' AND resource_id=? AND prompt_role='system'", entity.getId());
+            return;
+        }
+        jdbcTemplate.update("""
+                INSERT INTO prompt_binding
+                  (id,workspace_id,resource_type,resource_id,prompt_role,template_id,version_id,binding_mode,variable_values,enabled,created_by)
+                VALUES (UUID(),?,'agent',?,'system',?,?,?,?,1,?)
+                ON DUPLICATE KEY UPDATE template_id=VALUES(template_id),version_id=VALUES(version_id),
+                  binding_mode=VALUES(binding_mode),variable_values=VALUES(variable_values),enabled=1,updated_at=NOW(3)
+                """,
+                entity.getWorkspaceId(), entity.getId(), entity.getSystemPromptTemplateId(), entity.getSystemPromptVersionId(),
+                entity.getPromptBindingMode(), StringUtils.hasText(entity.getPromptVariables()) ? entity.getPromptVariables() : "{}",
+                entity.getCreatedBy());
+    }
+
+    /**
+     * 校验 Agent Prompt 模板、版本归属和变量 JSON，避免把不可运行配置保存到数据库。
+     *
+     * @param entity Agent实体
+     */
+    private void validatePromptBinding(AgentEntity entity) {
+        try {
+            if (!objectMapper.readTree(entity.getPromptVariables()).isObject()) {
+                throw new BusinessException("PROMPT_VARIABLES_INVALID", "Agent Prompt变量必须是JSON对象");
+            }
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException("PROMPT_VARIABLES_INVALID", "Agent Prompt变量不是合法JSON");
+        }
+        if (!StringUtils.hasText(entity.getSystemPromptTemplateId())) {
+            entity.setPromptBindingMode("MANUAL");
+            entity.setSystemPromptVersionId(null);
+            return;
+        }
+        Integer templateCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM prompt_template WHERE id=? AND (workspace_id=? OR workspace_id IS NULL)",
+                Integer.class, entity.getSystemPromptTemplateId(), entity.getWorkspaceId());
+        if (templateCount == null || templateCount == 0) {
+            throw new BusinessException("PROMPT_TEMPLATE_NOT_FOUND", "Agent绑定的Prompt模板不存在或不属于当前工作空间");
+        }
+        if ("LOCKED".equals(entity.getPromptBindingMode())) {
+            if (!StringUtils.hasText(entity.getSystemPromptVersionId())) {
+                throw new BusinessException("PROMPT_VERSION_REQUIRED", "锁定版本模式必须选择Prompt版本");
+            }
+            Integer versionCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(1) FROM prompt_template_version WHERE id=? AND template_id=?",
+                    Integer.class, entity.getSystemPromptVersionId(), entity.getSystemPromptTemplateId());
+            if (versionCount == null || versionCount == 0) {
+                throw new BusinessException("PROMPT_VERSION_NOT_FOUND", "Agent锁定的Prompt版本不属于所选模板");
+            }
+        }
+        if ("FOLLOW_STABLE".equals(entity.getPromptBindingMode())) {
+            Integer stableCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(1) FROM prompt_template WHERE id=? AND stable_version_id IS NOT NULL",
+                    Integer.class, entity.getSystemPromptTemplateId());
+            if (stableCount == null || stableCount == 0) {
+                throw new BusinessException("PROMPT_STABLE_VERSION_REQUIRED", "所选Prompt模板尚未建立稳定版本");
+            }
+        }
     }
 
     /**
