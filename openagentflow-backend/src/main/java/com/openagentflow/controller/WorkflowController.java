@@ -2,8 +2,10 @@ package com.openagentflow.controller;
 
 import com.openagentflow.api.ApiResponse;
 import com.openagentflow.domain.workflow.WorkflowDtos;
+import com.openagentflow.domain.task.AsyncTaskDtos;
 import com.openagentflow.service.WorkflowExecutionService;
 import com.openagentflow.service.WorkflowService;
+import com.openagentflow.service.WorkflowTaskHandler;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,9 +30,15 @@ public class WorkflowController {
     /** 工作流执行服务。 */
     private final WorkflowExecutionService workflowExecutionService;
 
-    public WorkflowController(WorkflowService workflowService, WorkflowExecutionService workflowExecutionService) {
+    /** 工作流Kafka异步任务处理器。 */
+    private final WorkflowTaskHandler workflowTaskHandler;
+
+    public WorkflowController(WorkflowService workflowService,
+                              WorkflowExecutionService workflowExecutionService,
+                              WorkflowTaskHandler workflowTaskHandler) {
         this.workflowService = workflowService;
         this.workflowExecutionService = workflowExecutionService;
+        this.workflowTaskHandler = workflowTaskHandler;
     }
 
     /**
@@ -114,6 +122,19 @@ public class WorkflowController {
     public ApiResponse<WorkflowDtos.RunResult> runWorkflow(@PathVariable String id,
                                                            @RequestBody WorkflowDtos.RunRequest request) {
         return ApiResponse.ok(workflowExecutionService.runWorkflow(id, request, "manual"));
+    }
+
+    /**
+     * 将长工作流提交到 Kafka 分布式任务中心。
+     *
+     * @param id 工作流ID
+     * @param request 运行请求
+     * @return 异步任务详情
+     */
+    @PostMapping("/workflows/{id}/run/async")
+    public ApiResponse<AsyncTaskDtos.Detail> runWorkflowAsync(@PathVariable String id,
+                                                              @RequestBody WorkflowDtos.RunRequest request) {
+        return ApiResponse.ok(workflowTaskHandler.submit(id, request));
     }
 
     /**

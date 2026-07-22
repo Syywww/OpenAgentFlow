@@ -49,6 +49,18 @@ public class OpsNotifyChannelEntity {
     @TableField("last_test_at")
     private LocalDateTime lastTestAt;
 
+    /** 创建人ID。 */
+    @TableField("created_by")
+    private String createdBy;
+
+    /** 最近成功投递时间。 */
+    @TableField("last_success_at")
+    private LocalDateTime lastSuccessAt;
+
+    /** 连续失败次数。 */
+    @TableField("failure_count")
+    private Integer failureCount;
+
     /** 创建时间。 */
     @TableField("created_at")
     private LocalDateTime createdAt;
@@ -127,6 +139,30 @@ public class OpsNotifyChannelEntity {
 
     public void setLastTestAt(LocalDateTime lastTestAt) {
         this.lastTestAt = lastTestAt;
+    }
+
+    public String getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(String createdBy) {
+        this.createdBy = createdBy;
+    }
+
+    public LocalDateTime getLastSuccessAt() {
+        return lastSuccessAt;
+    }
+
+    public void setLastSuccessAt(LocalDateTime lastSuccessAt) {
+        this.lastSuccessAt = lastSuccessAt;
+    }
+
+    public Integer getFailureCount() {
+        return failureCount;
+    }
+
+    public void setFailureCount(Integer failureCount) {
+        this.failureCount = failureCount;
     }
 
     public LocalDateTime getCreatedAt() {

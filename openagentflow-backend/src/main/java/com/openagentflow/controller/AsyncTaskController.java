@@ -116,7 +116,8 @@ public class AsyncTaskController {
                 "MEMORY_CAPTURE",
                 "MEMORY_VECTOR_REBUILD",
                 "MEMORY_GOVERNANCE_SCAN",
-                "USAGE_COST_RECALCULATION").contains(task.getTaskType())) {
+                "USAGE_COST_RECALCULATION",
+                "WORKFLOW_RUN").contains(task.getTaskType())) {
             throw new BusinessException("TASK_RETRY_UNSUPPORTED", "当前任务类型暂不支持重试");
         }
         if ("DOCUMENT_PROCESS".equals(task.getTaskType())) {

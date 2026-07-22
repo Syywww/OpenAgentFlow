@@ -19,6 +19,7 @@ export const menuAccessRules: MenuAccessRule[] = [
   { path: '/logs', match: '/logs', permissions: ['trace:view', 'trace:manage', 'runtime:manage'] },
   { path: '/usage', match: '/usage', permissions: ['usage:view', 'usage:export', 'usage:quota:manage'] },
   { path: '/ops', match: '/ops', permissions: ['ops:monitor:view', 'ops:monitor:manage'] },
+  { path: '/notifications', match: '/notifications', permissions: ['notification:view'] },
   { path: '/delivery', match: '/delivery', permissions: ['delivery:acceptance:view', 'delivery:acceptance:manage'] },
   { path: '/model-gateway', match: '/model-gateway', permissions: ['model-gateway:manage', 'model:manage'] },
   { path: '/workspaces', match: '/workspaces', permissions: ['workspace:manage', 'workspace:view'] },

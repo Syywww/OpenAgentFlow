@@ -245,7 +245,7 @@ function normalizedJson(text: string, fallback: string) {
     <div class="form-grid">
       <label>服务名称<input v-model="form.serverName" /></label>
       <label>服务编码<input v-model="form.serverCode" class="mono" placeholder="不填自动生成" /></label>
-      <label>传输类型<select v-model="form.transportType"><option value="http">HTTP JSON-RPC</option><option value="sse">SSE 端点</option><option value="stdio">stdio 配置</option></select></label>
+      <label>传输类型<select v-model="form.transportType"><option value="http">Streamable HTTP</option><option value="sse">传统 SSE</option><option value="stdio">stdio 子进程</option></select></label>
       <label>状态<select v-model="form.status"><option value="stopped">已停止</option><option value="running">运行中</option><option value="error">异常</option></select></label>
       <label class="wide">描述<textarea v-model="form.description" /></label>
       <label class="wide">端点 URL<input v-model="form.endpointUrl" class="mono" placeholder="http://localhost:7001/mcp" /></label>

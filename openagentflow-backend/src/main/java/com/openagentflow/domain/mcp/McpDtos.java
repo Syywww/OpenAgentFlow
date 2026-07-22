@@ -30,11 +30,11 @@ public final class McpDtos {
         /** 服务描述，帮助管理员识别用途。 */
         private String description;
 
-        /** 传输类型，当前真实打通 http，保留 sse/stdio 配置。 */
+        /** 传输类型：http、streamable_http、sse 或 stdio。 */
         @NotBlank(message = "MCP 传输类型不能为空")
         private String transportType;
 
-        /** stdio 模式命令，当前用于配置沉淀。 */
+        /** stdio 模式启动命令，必须位于服务端安全白名单。 */
         private String command;
 
         /** stdio 模式参数 JSON 数组。 */
@@ -49,7 +49,7 @@ public final class McpDtos {
         /** 认证配置 JSON，不在工具中心重复明文展开。 */
         private String authConfig;
 
-        /** 环境变量 JSON，供后续 stdio 启动使用。 */
+        /** stdio 子进程环境变量 JSON。 */
         private String envVars;
 
         /** 允许访问路径 JSON 数组，供文件系统类 MCP 安全限制使用。 */

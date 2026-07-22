@@ -2,8 +2,11 @@ package com.openagentflow.controller;
 
 import com.openagentflow.api.ApiResponse;
 import com.openagentflow.api.PageResult;
+import com.openagentflow.domain.notification.NotificationChannelDtos;
 import com.openagentflow.domain.ops.OpsMonitorDtos;
+import com.openagentflow.service.NotificationChannelService;
 import com.openagentflow.service.OpsMonitorService;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,8 +29,13 @@ public class OpsMonitorController {
     /** 运营监控与告警中心服务。 */
     private final OpsMonitorService opsMonitorService;
 
-    public OpsMonitorController(OpsMonitorService opsMonitorService) {
+    /** 通知渠道管理服务。 */
+    private final NotificationChannelService notificationChannelService;
+
+    public OpsMonitorController(OpsMonitorService opsMonitorService,
+                                NotificationChannelService notificationChannelService) {
         this.opsMonitorService = opsMonitorService;
+        this.notificationChannelService = notificationChannelService;
     }
 
     /**
@@ -161,7 +169,64 @@ public class OpsMonitorController {
      * @return 通知渠道列表
      */
     @GetMapping("/channels")
-    public ApiResponse<List<OpsMonitorDtos.NotifyChannelSummary>> listChannels() {
-        return ApiResponse.ok(opsMonitorService.listChannels());
+    public ApiResponse<List<NotificationChannelDtos.ChannelSummary>> listChannels() {
+        return ApiResponse.ok(notificationChannelService.list());
+    }
+
+    /** 创建通知渠道。 */
+    @PostMapping("/channels")
+    @PreAuthorize("hasAnyAuthority('notification:channel:manage','ops:monitor:manage','ROLE_admin','ROLE_super_admin')")
+    public ApiResponse<NotificationChannelDtos.ChannelSummary> createChannel(
+            @RequestBody NotificationChannelDtos.ChannelRequest request) {
+        return ApiResponse.ok(notificationChannelService.create(request));
+    }
+
+    /** 更新通知渠道。 */
+    @PutMapping("/channels/{id}")
+    @PreAuthorize("hasAnyAuthority('notification:channel:manage','ops:monitor:manage','ROLE_admin','ROLE_super_admin')")
+    public ApiResponse<NotificationChannelDtos.ChannelSummary> updateChannel(
+            @PathVariable String id, @RequestBody NotificationChannelDtos.ChannelRequest request) {
+        return ApiResponse.ok(notificationChannelService.update(id, request));
+    }
+
+    /** 启用或停用通知渠道。 */
+    @PutMapping("/channels/{id}/enabled")
+    @PreAuthorize("hasAnyAuthority('notification:channel:manage','ops:monitor:manage','ROLE_admin','ROLE_super_admin')")
+    public ApiResponse<NotificationChannelDtos.ChannelSummary> setChannelEnabled(
+            @PathVariable String id, @RequestParam Boolean enabled) {
+        return ApiResponse.ok(notificationChannelService.setEnabled(id, Boolean.TRUE.equals(enabled)));
+    }
+
+    /** 删除通知渠道。 */
+    @DeleteMapping("/channels/{id}")
+    @PreAuthorize("hasAnyAuthority('notification:channel:manage','ops:monitor:manage','ROLE_admin','ROLE_super_admin')")
+    public ApiResponse<Void> deleteChannel(@PathVariable String id) {
+        notificationChannelService.delete(id);
+        return ApiResponse.ok(null);
+    }
+
+    /** 测试通知渠道连通性。 */
+    @PostMapping("/channels/{id}/test")
+    @PreAuthorize("hasAnyAuthority('notification:channel:manage','ops:monitor:manage','ROLE_admin','ROLE_super_admin')")
+    public ApiResponse<NotificationChannelDtos.TestResult> testChannel(@PathVariable String id) {
+        return ApiResponse.ok(notificationChannelService.test(id));
+    }
+
+    /** 分页查询外部通知投递明细。 */
+    @GetMapping("/deliveries")
+    public ApiResponse<PageResult<NotificationChannelDtos.DeliveryItem>> deliveries(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String channelType,
+            @RequestParam(defaultValue = "1") Integer pageNo,
+            @RequestParam(defaultValue = "10") Integer pageSize) {
+        return ApiResponse.ok(notificationChannelService.deliveries(status, channelType, pageNo, pageSize));
+    }
+
+    /** 人工重投失败或死信消息。 */
+    @PostMapping("/deliveries/{id}/retry")
+    @PreAuthorize("hasAnyAuthority('notification:channel:manage','ops:monitor:manage','ROLE_admin','ROLE_super_admin')")
+    public ApiResponse<Void> retryDelivery(@PathVariable String id) {
+        notificationChannelService.retryDelivery(id);
+        return ApiResponse.ok(null);
     }
 }

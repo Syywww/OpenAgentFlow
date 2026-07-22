@@ -57,7 +57,8 @@ export interface SampleImportRequest {
 export interface EvaluationRunTaskRequest {
   taskName: string;
   datasetId: string;
-  agentId: string;
+  agentId?: string;
+  workflowId?: string;
   baselineModelId?: string;
   compareModelIds?: string[];
   promptStrategy?: string;
@@ -80,6 +81,8 @@ export interface EvaluationTaskSummary {
   datasetName?: string;
   agentId: string;
   agentName?: string;
+  workflowId?: string;
+  workflowName?: string;
   baselineModelId?: string;
   baselineModelName?: string;
   compareModelIds?: string;

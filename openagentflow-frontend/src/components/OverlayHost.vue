@@ -4,12 +4,20 @@ import { useRouter } from 'vue-router';
 import { AlertTriangle, ArrowRight, Check, Copy, FileUp, Play, Plus, X } from 'lucide-vue-next';
 import StatusBadge from './StatusBadge.vue';
 import { useOverlay } from '../composables/useOverlay';
+import {
+  fetchNotifications,
+  markNotificationRead,
+  notifyNotificationChanged,
+  type NotificationItem,
+} from '../api/notifications';
 
 type SourceDrawerPanel = 'retrieval' | 'tools' | 'stats';
 
 const router = useRouter();
 const { overlay, closeModal, closeDrawer, toast } = useOverlay();
 const activeSourceDrawerPanel = ref<SourceDrawerPanel>('retrieval');
+const notices = ref<NotificationItem[]>([]);
+const noticesLoading = ref(false);
 
 const sourceDrawerItems = [
   {
@@ -56,9 +64,19 @@ const sourceDrawerStats = [
 
 watch(
   () => overlay.drawer,
-  (drawer) => {
+  async (drawer) => {
     if (drawer === 'sources') {
       activeSourceDrawerPanel.value = 'retrieval';
+    }
+    if (drawer === 'notices') {
+      noticesLoading.value = true;
+      try {
+        notices.value = (await fetchNotifications({ status: 'all', pageNo: 1, pageSize: 8 })).records;
+      } catch (error) {
+        toast(error instanceof Error ? error.message : '通知加载失败');
+      } finally {
+        noticesLoading.value = false;
+      }
     }
   },
 );
@@ -70,6 +88,21 @@ function go(path: string) {
 
 function switchSourceDrawerPanel(panel: SourceDrawerPanel) {
   activeSourceDrawerPanel.value = panel;
+}
+
+async function openNotice(notice: NotificationItem) {
+  if (!notice.read) {
+    await markNotificationRead(notice.id);
+    notice.read = true;
+    notifyNotificationChanged();
+  }
+  closeDrawer();
+  if (notice.actionUrl) await router.push(notice.actionUrl);
+}
+
+async function openNotificationCenter() {
+  closeDrawer();
+  await router.push('/notifications');
 }
 </script>
 
@@ -413,13 +446,25 @@ function switchSourceDrawerPanel(panel: SourceDrawerPanel) {
           </div>
         </div>
 
-        <div v-else class="drawer-stack">
-          <article v-for="notice in ['任务执行完成', 'Agent 调用告警', '知识库同步完成', '系统升级通知', '模型配额提醒']" :key="notice" class="source-item">
-            <b>{{ notice }}</b>
-            <p>工作流和模型状态已更新，可进入运行日志查看明细。</p>
-            <span>刚刚</span>
+        <div v-else class="drawer-stack notification-drawer-stack">
+          <div v-if="noticesLoading" class="empty-state">正在加载通知...</div>
+          <div v-else-if="notices.length === 0" class="empty-state">暂无通知</div>
+          <article
+            v-for="notice in notices"
+            v-else
+            :key="notice.id"
+            class="source-item notification-drawer-item"
+            :class="{ unread: !notice.read }"
+            @click="openNotice(notice)"
+          >
+            <div class="inline-meta">
+              <b>{{ notice.title }}</b>
+              <StatusBadge :label="notice.severity" :tone="notice.severity === 'critical' ? 'danger' : notice.severity === 'warning' ? 'warning' : 'info'" />
+            </div>
+            <p>{{ notice.content }}</p>
+            <span>{{ new Date(notice.createdAt).toLocaleString() }}</span>
           </article>
-          <button class="primary-button full" type="button">查看全部通知</button>
+          <button class="primary-button full" type="button" @click="openNotificationCenter">查看全部通知</button>
         </div>
       </aside>
     </div>

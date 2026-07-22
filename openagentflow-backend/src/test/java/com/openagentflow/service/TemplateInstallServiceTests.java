@@ -77,7 +77,14 @@ class TemplateInstallServiceTests {
         assertThat(jdbcTemplate.queryForObject("SELECT install_status FROM agent_template_install WHERE id=?", String.class, installId))
                 .isEqualTo("success");
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(1) FROM agent_template_install_resource WHERE install_id=?", Long.class, installId))
-                .isEqualTo(1L);
+                .isEqualTo(10L);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(DISTINCT resource_type) FROM agent_template_install_resource WHERE install_id=?", Long.class, installId))
+                .isEqualTo(10L);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(1) FROM agent_tool_binding WHERE agent_id=?", Long.class, agentId)).isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(1) FROM agent_knowledge_binding WHERE agent_id=?", Long.class, agentId)).isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(1) FROM agent_workflow_binding WHERE agent_id=?", Long.class, agentId)).isEqualTo(1L);
+        String workflowId = jdbcTemplate.queryForObject("SELECT target_resource_id FROM agent_template_install_resource WHERE install_id=? AND resource_type='workflow'", String.class, installId);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(1) FROM workflow_node WHERE workflow_id=?", Long.class, workflowId)).isGreaterThan(0L);
     }
 
     /** 从页面提交安装时必须成功创建安装实例和Kafka异步任务。 */

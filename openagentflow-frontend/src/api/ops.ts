@@ -99,10 +99,43 @@ export interface OpsNotifyChannel {
   channelCode: string;
   channelName: string;
   channelType: string;
+  config?: Record<string, unknown>;
   enabled: boolean;
   lastTestStatus?: string;
   lastTestMessage?: string;
   lastTestAt?: string;
+  lastSuccessAt?: string;
+  failureCount: number;
+}
+
+export interface OpsNotifyChannelRequest {
+  channelCode: string;
+  channelName: string;
+  channelType: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
+export interface OpsNotifyChannelTestResult {
+  success: boolean;
+  statusCode?: number;
+  latencyMs: number;
+  message: string;
+}
+
+export interface OpsNotificationDelivery {
+  id: string;
+  alertEventId: string;
+  alertTitle: string;
+  channelName?: string;
+  channelType: string;
+  status: string;
+  attemptCount: number;
+  nextRetryAt?: string;
+  responseSummary?: string;
+  errorMessage?: string;
+  sentAt?: string;
+  createdAt: string;
 }
 
 function queryString(params: Record<string, string | number | boolean | undefined> = {}) {
@@ -166,4 +199,32 @@ export async function fetchOpsChecks() {
 
 export async function fetchOpsChannels() {
   return request<OpsNotifyChannel[]>('/ops-monitor/channels');
+}
+
+export async function createOpsChannel(payload: OpsNotifyChannelRequest) {
+  return request<OpsNotifyChannel>('/ops-monitor/channels', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function updateOpsChannel(id: string, payload: OpsNotifyChannelRequest) {
+  return request<OpsNotifyChannel>(`/ops-monitor/channels/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function setOpsChannelEnabled(id: string, enabled: boolean) {
+  return request<OpsNotifyChannel>(`/ops-monitor/channels/${id}/enabled?enabled=${enabled}`, { method: 'PUT' });
+}
+
+export async function deleteOpsChannel(id: string) {
+  return request<void>(`/ops-monitor/channels/${id}`, { method: 'DELETE' });
+}
+
+export async function testOpsChannel(id: string) {
+  return request<OpsNotifyChannelTestResult>(`/ops-monitor/channels/${id}/test`, { method: 'POST' });
+}
+
+export async function fetchOpsDeliveries(params: Record<string, string | number | undefined> = {}) {
+  return request<PageResult<OpsNotificationDelivery>>(`/ops-monitor/deliveries${queryString(params)}`);
+}
+
+export async function retryOpsDelivery(id: string) {
+  return request<void>(`/ops-monitor/deliveries/${id}/retry`, { method: 'POST' });
 }

@@ -157,6 +157,11 @@ openagentflow:
     consumer-enabled: ${OAF_KAFKA_CONSUMER_ENABLED:true}
     publisher-enabled: ${OAF_KAFKA_PUBLISHER_ENABLED:true}
     max-running-tasks: ${OAF_KAFKA_MAX_RUNNING_TASKS:32}
+  mcp:
+    # MCP HTTP/SSE/stdio 单次协议请求超时。
+    request-timeout-seconds: ${OAF_MCP_REQUEST_TIMEOUT_SECONDS:30}
+    # stdio 只允许直接启动白名单命令，不经过 shell 解释器。
+    stdio-allowed-commands: ${OAF_MCP_STDIO_ALLOWED_COMMANDS:node,npx,java,python,python3,uv,uvx,docker}
   object-storage:
     # 分布式 Worker 必须从共享对象存储读取上传文档。
     enabled: ${OAF_OBJECT_STORAGE_ENABLED:true}

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.api.PageResult;
+import com.openagentflow.domain.notification.NotificationDtos;
 import com.openagentflow.domain.ops.OpsMonitorDtos;
 import com.openagentflow.domain.vector.VectorStoreStatus;
 import com.openagentflow.entity.ModelProviderEntity;
@@ -80,6 +81,9 @@ public class OpsMonitorService {
     /** JSON 工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 统一通知发布服务。 */
+    private final NotificationService notificationService;
+
     public OpsMonitorService(OpsAlertRuleMapper alertRuleMapper,
                              OpsAlertEventMapper alertEventMapper,
                              OpsHealthCheckMapper healthCheckMapper,
@@ -91,7 +95,8 @@ public class OpsMonitorService {
                              com.openagentflow.config.OpenAgentFlowProperties properties,
                              AsyncTaskTopicRouter topicRouter,
                              VectorStoreService vectorStoreService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             NotificationService notificationService) {
         this.alertRuleMapper = alertRuleMapper;
         this.alertEventMapper = alertEventMapper;
         this.healthCheckMapper = healthCheckMapper;
@@ -104,6 +109,7 @@ public class OpsMonitorService {
         this.topicRouter = topicRouter;
         this.vectorStoreService = vectorStoreService;
         this.objectMapper = objectMapper;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -447,23 +453,18 @@ public class OpsMonitorService {
      * 写入站内通知并分发给管理员。
      */
     private void sendStationNotification(OpsAlertEventEntity event) {
-        String notificationId = UUID.randomUUID().toString();
-        jdbcTemplate.update("""
-                insert into notification(id, notification_type, title, content, severity, resource_type, resource_id, payload, created_by)
-                values (?, 'ops_alert', ?, ?, ?, 'ops_alert_event', ?, ?, ?)
-                """, notificationId, event.getAlertTitle(), event.getAlertDetail(), event.getSeverity(), event.getId(),
-                toJson(Map.of("eventCode", event.getEventCode(), "metricCode", event.getMetricCode())), currentUserId());
-        List<String> userIds = jdbcTemplate.queryForList("""
-                select distinct u.id
-                from iam_user u
-                join iam_user_role ur on ur.user_id = u.id
-                join iam_role r on r.id = ur.role_id
-                where r.role_code in ('super_admin', 'admin') and u.status = 'enabled'
-                """, String.class);
-        for (String userId : userIds) {
-            jdbcTemplate.update("insert into notification_recipient(id, notification_id, user_id) values (?, ?, ?)",
-                    UUID.randomUUID().toString(), notificationId, userId);
-        }
+        NotificationDtos.PublishRequest request = new NotificationDtos.PublishRequest();
+        request.setNotificationType("ops_alert");
+        request.setTitle(event.getAlertTitle());
+        request.setContent(event.getAlertDetail());
+        request.setSeverity(event.getSeverity());
+        request.setResourceType("ops_alert_event");
+        request.setResourceId(event.getId());
+        request.setActionUrl("/ops");
+        request.setDedupeKey(event.getId() + ":" + event.getTriggerCount());
+        request.setPayload(Map.of("eventCode", event.getEventCode(), "metricCode", event.getMetricCode()));
+        request.setRecipientRoleCodes(List.of("super_admin", "admin"));
+        notificationService.publishSystem(request, currentUserId());
     }
 
     /**

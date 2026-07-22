@@ -12,6 +12,7 @@ import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.eval.EvaluationDtos;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.prompt.PromptRuntimeDtos;
+import com.openagentflow.domain.workflow.WorkflowDtos;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.EvalDatasetEntity;
@@ -115,6 +116,12 @@ public class EvaluationService implements DistributedTaskHandler {
     /** 统一Prompt Runtime服务。 */
     private final PromptRuntimeService promptRuntimeService;
 
+    /** 工作流定义服务，用于评测目标权限校验。 */
+    private final WorkflowService workflowService;
+
+    /** 工作流执行引擎，用于真实工作流评测。 */
+    private final WorkflowExecutionService workflowExecutionService;
+
     public EvaluationService(EvalDatasetMapper evalDatasetMapper,
                              EvalSampleMapper evalSampleMapper,
                              EvalMetricMapper evalMetricMapper,
@@ -130,7 +137,9 @@ public class EvaluationService implements DistributedTaskHandler {
                              OpenAiCompatibleClient openAiCompatibleClient,
                              ObjectMapper objectMapper,
                              AsyncTaskService asyncTaskService,
-                             PromptRuntimeService promptRuntimeService) {
+                             PromptRuntimeService promptRuntimeService,
+                             WorkflowService workflowService,
+                             WorkflowExecutionService workflowExecutionService) {
         this.evalDatasetMapper = evalDatasetMapper;
         this.evalSampleMapper = evalSampleMapper;
         this.evalMetricMapper = evalMetricMapper;
@@ -147,6 +156,8 @@ public class EvaluationService implements DistributedTaskHandler {
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
         this.promptRuntimeService = promptRuntimeService;
+        this.workflowService = workflowService;
+        this.workflowExecutionService = workflowExecutionService;
     }
 
     /**
@@ -285,14 +296,27 @@ public class EvaluationService implements DistributedTaskHandler {
         ensureDefaultMetrics();
         EvalDatasetEntity dataset = requireDataset(request.getDatasetId());
         assertCanViewDataset(dataset);
-        AgentEntity agent = requireAgent(request.getAgentId());
-        agentAccessService.assertCanView(agent);
+        AgentEntity agent = null;
+        if (StringUtils.hasText(request.getWorkflowId())) {
+            var workflow = workflowService.requireWorkflow(request.getWorkflowId());
+            if (!workflowService.canView(workflow)) {
+                throw new BusinessException("WORKFLOW_FORBIDDEN", "没有评测该工作流的权限");
+            }
+            if (StringUtils.hasText(request.getAgentId())) {
+                agentAccessService.assertCanView(requireAgent(request.getAgentId()));
+            }
+        } else {
+            agent = requireAgent(request.getAgentId());
+            agentAccessService.assertCanView(agent);
+        }
 
         List<EvalSampleEntity> samples = listRunnableSamples(dataset.getId(), request.getMaxSamples());
         if (samples.isEmpty()) {
             throw new BusinessException("EVAL_SAMPLE_EMPTY", "当前评测集没有可运行样本");
         }
-        List<String> modelIds = resolveModelIds(request, agent);
+        List<String> modelIds = StringUtils.hasText(request.getWorkflowId())
+                ? java.util.Collections.singletonList(null)
+                : resolveModelIds(request, agent);
         if (modelIds.isEmpty()) {
             throw new BusinessException("EVAL_MODEL_EMPTY", "请先为 Agent 绑定模型或选择基线模型");
         }
@@ -338,8 +362,10 @@ public class EvaluationService implements DistributedTaskHandler {
             evalTaskMapper.updateById(task);
 
             List<EvalSampleEntity> samples = listRunnableSamples(task.getDatasetId(), request.getMaxSamples());
-            AgentEntity agent = requireAgent(task.getAgentId());
-            List<String> modelIds = resolveModelIds(request, agent);
+            AgentEntity agent = StringUtils.hasText(task.getWorkflowId()) ? null : requireAgent(task.getAgentId());
+            List<String> modelIds = StringUtils.hasText(task.getWorkflowId())
+                    ? java.util.Collections.singletonList(null)
+                    : resolveModelIds(request, agent);
             int total = samples.size() * modelIds.size();
             int finished = 0;
             for (EvalSampleEntity sample : samples) {
@@ -428,13 +454,26 @@ public class EvaluationService implements DistributedTaskHandler {
         evalTaskRunMapper.insert(run);
 
         try {
-            ChatCompletionRequest chatRequest = new ChatCompletionRequest();
-            chatRequest.setAgentId(task.getAgentId());
-            chatRequest.setModelId(modelId);
-            chatRequest.setInput(buildEvalInput(sample, request));
-            chatRequest.setTemperature(request.getTemperature());
-            chatRequest.setMaxTokens(request.getMaxTokens());
-            ChatCompletionResponse response = agentService.runAgent(task.getAgentId(), chatRequest);
+            ChatCompletionResponse response;
+            if (StringUtils.hasText(task.getWorkflowId())) {
+                WorkflowDtos.RunRequest workflowRequest = new WorkflowDtos.RunRequest();
+                workflowRequest.setAgentId(task.getAgentId());
+                workflowRequest.setInput(buildEvalInput(sample, request));
+                workflowRequest.setVariables(Map.of("evaluationTaskId", task.getId(),
+                        "evaluationSampleId", sample.getId()));
+                workflowRequest.setIdempotencyKey("eval-" + task.getId() + "-" + sample.getId());
+                WorkflowDtos.RunResult workflowResult = workflowExecutionService.runWorkflow(
+                        task.getWorkflowId(), workflowRequest, "evaluation");
+                response = toChatResponse(workflowResult);
+            } else {
+                ChatCompletionRequest chatRequest = new ChatCompletionRequest();
+                chatRequest.setAgentId(task.getAgentId());
+                chatRequest.setModelId(modelId);
+                chatRequest.setInput(buildEvalInput(sample, request));
+                chatRequest.setTemperature(request.getTemperature());
+                chatRequest.setMaxTokens(request.getMaxTokens());
+                response = agentService.runAgent(task.getAgentId(), chatRequest);
+            }
 
             // AgentService 已经写入 runtime_run / runtime_trace_step，这里只保存 runId 作为评测追溯入口。
             run.setRunId(response.getRunId());
@@ -458,6 +497,38 @@ public class EvaluationService implements DistributedTaskHandler {
             evalTaskRunMapper.updateById(run);
             saveFailedScores(run, ex.getMessage());
         }
+    }
+
+    /** 将工作流运行结果转换为现有评分器使用的统一响应。 */
+    private ChatCompletionResponse toChatResponse(WorkflowDtos.RunResult result) {
+        ChatCompletionResponse response = new ChatCompletionResponse();
+        response.setRunId(result.getRuntimeRunId());
+        response.setContent(result.getOutputText());
+        response.setLatencyMs(result.getLatencyMs());
+        response.setTotalTokens(result.getTotalTokens());
+        response.setPromptTokens(0);
+        response.setCompletionTokens(result.getTotalTokens());
+        response.setStatus("SUCCESS".equalsIgnoreCase(result.getStatus()) ? "success" : "failed");
+        response.setErrorMessage(result.getErrorMessage());
+        List<KnowledgeSource> sources = new ArrayList<>();
+        List<Map<String, Object>> toolResults = new ArrayList<>();
+        if (result.getSteps() != null) {
+            for (WorkflowDtos.StepResult step : result.getSteps()) {
+                if ("RAG".equalsIgnoreCase(step.getNodeType()) && step.getOutput() instanceof List<?> output) {
+                    output.stream().filter(KnowledgeSource.class::isInstance)
+                            .map(KnowledgeSource.class::cast).forEach(sources::add);
+                }
+                if (List.of("TOOL", "API", "WEBHOOK", "NOTIFY", "PLUGIN").contains(
+                        (step.getNodeType() == null ? "" : step.getNodeType()).toUpperCase(Locale.ROOT))
+                        && step.getOutput() instanceof Map<?, ?> output) {
+                    toolResults.add(objectMapper.convertValue(output, new TypeReference<Map<String, Object>>() {
+                    }));
+                }
+            }
+        }
+        response.setSources(sources);
+        response.setToolResults(toolResults);
+        return response;
     }
 
     /**
@@ -818,6 +889,7 @@ public class EvaluationService implements DistributedTaskHandler {
         task.setTaskName(request.getTaskName());
         task.setDatasetId(request.getDatasetId());
         task.setAgentId(request.getAgentId());
+        task.setWorkflowId(request.getWorkflowId());
         task.setBaselineModelId(request.getBaselineModelId());
         task.setCompareModelIds(toJson(request.getCompareModelIds() == null ? List.of() : request.getCompareModelIds()));
         task.setPromptTemplateId(request.getPromptTemplateId());
@@ -842,6 +914,7 @@ public class EvaluationService implements DistributedTaskHandler {
             request.setTaskName(task.getTaskName());
             request.setDatasetId(task.getDatasetId());
             request.setAgentId(task.getAgentId());
+            request.setWorkflowId(task.getWorkflowId());
             request.setBaselineModelId(task.getBaselineModelId());
             request.setCompareModelIds(objectMapper.readValue(task.getCompareModelIds(), new TypeReference<>() {
             }));
@@ -1476,6 +1549,8 @@ public class EvaluationService implements DistributedTaskHandler {
         summary.setDatasetName(datasetName(entity.getDatasetId()));
         summary.setAgentId(entity.getAgentId());
         summary.setAgentName(agentName(entity.getAgentId()));
+        summary.setWorkflowId(entity.getWorkflowId());
+        summary.setWorkflowName(workflowName(entity.getWorkflowId()));
         summary.setBaselineModelId(entity.getBaselineModelId());
         summary.setBaselineModelName(modelName(entity.getBaselineModelId()));
         summary.setCompareModelIds(entity.getCompareModelIds());
@@ -1752,8 +1827,23 @@ public class EvaluationService implements DistributedTaskHandler {
      * @return Agent 名称
      */
     private String agentName(String agentId) {
+        if (!StringUtils.hasText(agentId)) {
+            return null;
+        }
         AgentEntity agent = agentMapper.selectById(agentId);
         return agent == null ? agentId : agent.getAgentName();
+    }
+
+    /** 根据工作流 ID 读取展示名称。 */
+    private String workflowName(String workflowId) {
+        if (!StringUtils.hasText(workflowId)) {
+            return null;
+        }
+        try {
+            return workflowService.requireWorkflow(workflowId).getWorkflowName();
+        } catch (Exception ignored) {
+            return workflowId;
+        }
     }
 
     /**

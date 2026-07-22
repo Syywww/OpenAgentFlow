@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { Handle, Position, VueFlow, type Connection } from '@vue-flow/core';
-import { Bug, Check, GitCompare, Link2, MessageSquare, Play, Plus, Rocket, Save, Settings2, Trash2, X, XCircle } from 'lucide-vue-next';
+import { Bug, Check, GitCompare, Link2, MessageSquare, Play, Plus, Rocket, Save, Settings2, Trash2, X, XCircle, ListRestart } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 import StatCard from '../components/StatCard.vue';
@@ -25,6 +25,7 @@ import {
   resumeWorkflowRun,
   retryWorkflowRun,
   runWorkflow,
+  runWorkflowAsync,
   updateWorkflow,
   type WorkflowAdvancedOverview,
   type WorkflowApiEndpointSummary,
@@ -771,6 +772,24 @@ async function handleRun() {
   }
 }
 
+async function handleRunAsync() {
+  if (!currentWorkflow.value) return;
+  if (nodes.value.length === 0) {
+    toast('当前工作流还没有节点，请双击画布添加节点');
+    return;
+  }
+  await handleSave();
+  if (!currentWorkflow.value) return;
+  const task = await runWorkflowAsync(currentWorkflow.value.id, selectedAgentId.value || undefined, runInput.value, {
+    debugMode: debugForm.debugMode,
+    dryRun: debugForm.dryRun,
+    startNodeKey: debugForm.startNodeKey || undefined,
+    maxSteps: debugForm.maxSteps,
+    idempotencyKey: `wf-async-${currentWorkflow.value.id}-${Date.now()}`,
+  });
+  toast(`已提交异步任务：${task.taskCode}`);
+}
+
 function applyRunResult(result: WorkflowRunResult) {
   runSteps.value = normalizeRunSteps(result.steps);
   const lastStep = runSteps.value[runSteps.value.length - 1];
@@ -976,7 +995,7 @@ function defaultConfig(type: string) {
   if (type === 'HUMAN') return { ...conditionDefaults, taskName: '人工确认', expireMinutes: 60, suggestion: '{{lastOutput}}' };
   if (type === 'LOOP') return { ...conditionDefaults, itemPath: 'items', itemTemplate: '{{item}}', maxLoops: 20 };
   if (type === 'SUBFLOW') return { ...conditionDefaults, workflowId: workflows.value[0]?.id || '', inputTemplate: '{{lastOutput}}' };
-  if (type === 'PLUGIN') return { ...conditionDefaults, pluginCode: 'custom-plugin' };
+  if (type === 'PLUGIN') return { ...conditionDefaults, pluginCode: 'passthrough' };
   if (type === 'PARALLEL' || type === 'JOIN') return { ...conditionDefaults, joinStrategy: 'all' };
   if (type === 'OUTPUT') return { ...conditionDefaults, outputTemplate: '{{lastOutput}}' };
   return conditionDefaults;
@@ -1240,6 +1259,7 @@ function resetDiffForm() {
         <label class="check-line"><input v-model="debugForm.dryRun" type="checkbox" /> 空跑外部调用</label>
         <label>输入<textarea v-model="runInput" /></label>
         <button class="primary-button full" type="button" @click="handleRun"><Play :size="16" /> 运行工作流</button>
+        <button class="secondary-button full" type="button" @click="handleRunAsync"><ListRestart :size="16" /> 异步运行</button>
         <div v-if="workflowRunId" class="trace-meta workflow-reliability-meta">
           <span>运行ID</span><b class="mono">{{ workflowRunId }}</b>
           <span>状态</span><b>{{ lastRunStatus || '-' }}</b>

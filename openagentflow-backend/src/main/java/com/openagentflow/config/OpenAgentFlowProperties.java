@@ -25,6 +25,9 @@ public class OpenAgentFlowProperties {
     /** MinIO 共享对象存储配置。 */
     private ObjectStorage objectStorage = new ObjectStorage();
 
+    /** MCP 原生传输配置。 */
+    private Mcp mcp = new Mcp();
+
     public Milvus getMilvus() {
         return milvus;
     }
@@ -63,6 +66,42 @@ public class OpenAgentFlowProperties {
 
     public void setObjectStorage(ObjectStorage objectStorage) {
         this.objectStorage = objectStorage;
+    }
+
+    public Mcp getMcp() {
+        return mcp;
+    }
+
+    public void setMcp(Mcp mcp) {
+        this.mcp = mcp;
+    }
+
+    /**
+     * MCP 原生传输配置。
+     */
+    public static class Mcp {
+
+        /** 单次 MCP 请求超时秒数。 */
+        private Integer requestTimeoutSeconds = 30;
+
+        /** stdio 允许启动的可执行命令，多个命令使用英文逗号分隔。 */
+        private String stdioAllowedCommands = "node,npx,java,python,python3,uv,uvx,docker";
+
+        public Integer getRequestTimeoutSeconds() {
+            return requestTimeoutSeconds;
+        }
+
+        public void setRequestTimeoutSeconds(Integer requestTimeoutSeconds) {
+            this.requestTimeoutSeconds = requestTimeoutSeconds;
+        }
+
+        public String getStdioAllowedCommands() {
+            return stdioAllowedCommands;
+        }
+
+        public void setStdioAllowedCommands(String stdioAllowedCommands) {
+            this.stdioAllowedCommands = stdioAllowedCommands;
+        }
     }
 
     /**

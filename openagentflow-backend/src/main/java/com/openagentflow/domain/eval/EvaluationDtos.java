@@ -517,9 +517,11 @@ public final class EvaluationDtos {
         @NotBlank(message = "评测集不能为空")
         private String datasetId;
 
-        /** Agent ID。 */
-        @NotBlank(message = "Agent 不能为空")
+        /** Agent ID；与工作流ID至少填写一个。 */
         private String agentId;
+
+        /** 工作流ID；填写后评测真实工作流输出。 */
+        private String workflowId;
 
         /** 基线模型 ID。 */
         private String baselineModelId;
@@ -588,6 +590,14 @@ public final class EvaluationDtos {
 
         public void setAgentId(String agentId) {
             this.agentId = agentId;
+        }
+
+        public String getWorkflowId() {
+            return workflowId;
+        }
+
+        public void setWorkflowId(String workflowId) {
+            this.workflowId = workflowId;
         }
 
         public String getBaselineModelId() {
@@ -720,6 +730,12 @@ public final class EvaluationDtos {
         /** Agent 名称。 */
         private String agentName;
 
+        /** 工作流 ID。 */
+        private String workflowId;
+
+        /** 工作流名称。 */
+        private String workflowName;
+
         /** 基线模型 ID。 */
         private String baselineModelId;
 
@@ -816,6 +832,22 @@ public final class EvaluationDtos {
 
         public void setAgentName(String agentName) {
             this.agentName = agentName;
+        }
+
+        public String getWorkflowId() {
+            return workflowId;
+        }
+
+        public void setWorkflowId(String workflowId) {
+            this.workflowId = workflowId;
+        }
+
+        public String getWorkflowName() {
+            return workflowName;
+        }
+
+        public void setWorkflowName(String workflowName) {
+            this.workflowName = workflowName;
         }
 
         public String getBaselineModelId() {

@@ -14,25 +14,26 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限、调试运行和 Runtime 策略解释器。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **PromptOps 生产治理**：System、User、RAG、Tool、Evaluation、Workflow Prompt 统一编译，支持强类型变量 Schema、敏感变量遮蔽、分层装配、版本锁定/跟随稳定版、差异与影响分析、开发/测试/生产晋级、灰度发布、A/B 实验、自动选优、在线指标和 Trace 快照。
-- **企业解决方案模板广场**：支持系统公开与工作空间私有模板、多个 Agent/团队及关联资源自动收集和手动增删、不可变语义化版本、自动安全门禁、人工审核、Kafka 异步独立安装、MinIO 完整模板包与向量载荷、Milvus 向量恢复、敏感凭证清空、失败补偿、三方差异升级、安全卸载、作者主页、收藏评分评论、举报处置和推荐运营。
+- **企业解决方案模板广场**：支持系统公开与工作空间私有模板、多个 Agent/团队及关联资源自动收集和手动增删、不可变语义化版本、自动安全门禁、人工审核、Kafka 异步独立安装、内置数据库快照包、MinIO 完整模板包与向量载荷、Milvus 向量恢复、敏感凭证清空、失败补偿、三方差异升级、安全卸载、作者主页、收藏评分评论、举报处置和推荐运营；7 个官方模板均具备可安装版本，四套解决方案包含 Prompt、工具、知识库、文档、切片、工作流、Agent、团队和 Memory 完整资源。
 - **RAG 知识库**：知识库 CRUD、文档上传、解析、Parent-Child 递归结构化切片、Embedding 数量完整性校验、Milvus 写入、切片分页预览、混合召回、重排、检索缓存、低置信度提示、可信回答模式、强制引用来源和 Agent 绑定。
 - **Tool Calling**：REST API、Webhook、数据库查询、MCP 工具，支持 Schema、连通性测试、风险等级、调用日志和 Trace。
-- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、输出节点右下角智能对话框、手动关闭后点击输出节点重新打开、节点配置保存反馈、重试超时、失败分支、变量映射、模板、API 发布、版本差异、预算、沙箱策略、对话节点输出面板、运行中节点动效、幂等运行、心跳快照、失败重跑、从失败节点恢复和 Agent 绑定工作流流式运行登录态传递。
-- **MCP 接入**：MCP Server CRUD、HTTP JSON-RPC 连接测试、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用。
+- **可视化工作流**：Vue Flow 画布，支持基础信息弹框新建、空画布、双击画布或工具栏弹出下拉式节点类型选择器、开始、LLM、RAG、工具、条件、人工确认、并行、循环、子流程、插件、API、通知、输出、结束节点，支持节点级执行条件、真正的有界线程池并行分支与确定性 JOIN、Spring Bean/Java ServiceLoader 插件 SPI、Kafka Outbox 异步运行、稳定哈希灰度版本路由、工作流批量评测、节点配置保存反馈、重试超时、失败分支、变量映射、版本差异、预算、沙箱策略、运行中节点动效、幂等运行、心跳快照、失败重跑和从失败节点恢复。
+- **MCP 接入**：MCP Server CRUD，原生支持 Streamable HTTP、传统 SSE 和 stdio 子进程传输，具备标准 initialize/initialized 会话、HTTP 会话头、JSON/SSE 响应、tools/prompts/resources 发现、同步到工具中心和 Agent/工作流调用；stdio 不经过 shell 并受可执行命令白名单限制。
 - **运行观测 Trace**：统一串联 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误、引用来源、详情页卡片切换、步骤时间线按需展示、内部滚动和 Agent Runtime 可视化解释器。
 - **成本与用量中心**：按服务商、模型、Agent、用户、工作流、评测统计 Token、成本、耗时，支持明细导出、价格配置和配额拦截。
 - **组织空间治理**：组织、工作空间、空间成员、资源归属和空间级访问控制，支持 Agent、知识库、工具、工作流按空间隔离。
 - **运营监控告警**：统一展示平台健康、关键指标、告警规则、告警事件、通知渠道和一键巡检，支撑日常运营与交付验收。
+- **通知中心与消息触达**：提供个人通知分页、未读汇总、批量已读、归档、接收偏好、角色或全员发布和业务去重；顶部铃铛、通知抽屉与完整页面均接入真实接口，Webhook、钉钉和企业微信渠道支持 CRUD、连通性测试、HMAC-SHA256 签名、指数退避、死信收敛、投递明细与人工重投。
 - **交付验收中心**：面向开源发布、客户交付和部署上线，提供环境检查、核心链路检查、风险提示、交付清单和报告生成。
 - **一键演示数据**：提供 P33 演示样例包，内置 Prompt、Agent、知识库、工具、工作流、评测集、多 Agent 团队和 Memory，支持脚本快速初始化。
-- **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比和低分样本 Trace 追溯。
+- **模型评测 Evaluation**：评测集、样本导入、批量执行 Agent 或工作流、可选工作流运行 Agent、LLM-as-Judge、规则兜底、模型/Prompt/知识库策略对比、RAG 引用与工具结果评分和低分样本 Trace 追溯。
 - **持续评测与发布门禁**：Agent、Prompt、知识库和工作流可从成功评测任务生成黄金基线，发布时逐项比较 RAG、工具、Memory、工作流指标，超过允许退化阈值自动阻断。
 - **安全与隐私合规**：API Key 加密保存，日志与工具载荷统一脱敏，上传文件真实类型、压缩炸弹和危险内容扫描，高风险工具采用双人审批与一次性执行令牌，支持 PII 同意、撤回、导出和遗忘申请。
 - **SRE 与容量工程**：OpenTelemetry Collector、Prometheus、Tempo、Grafana、黄金信号、单次 Run 资源画像、告警收敛与渠道补偿、HMAC 游标分页、100/500/1000 并发基线和容量数据入库。
 - **高可用与全局租户隔离**：API、Runtime、文档 Worker、集成 Worker 独立扩缩，MySQL/Redis/Kafka/MinIO/Milvus 多副本目标，RPO/RTO 矩阵，MyBatis 核心表租户拦截与跨存储命名空间巡检。
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台进入或切换历史会话后自动定位最新消息，并支持流式生成暂停、保留部分回答及引入补充说明继续；长对话内容、引用来源和工具调用在独立区域内滚动展示。
 - **Memory 记忆中心**：支持 Redis 短期记忆、MySQL 事实主数据、Milvus HNSW 长期记忆、LLM 结构化提取、Kafka + Outbox 异步流水线、内容哈希去重、事实版本与冲突替代、PII 策略、租户硬隔离、混合召回与时间衰减、Prompt Token 预算、反馈学习、配额、向量补偿、用户遗忘、治理问题和运营指标。
-- **分布式异步任务**：基于 Kafka + Transactional Outbox 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持分类 Topic、多实例消费、MySQL 幂等抢占、Fencing Token、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
+- **分布式异步任务**：基于 Kafka + Transactional Outbox 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、工作流运行、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持分类 Topic、多实例消费、MySQL 幂等抢占、Fencing Token、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
 - **开源工程化**：Flyway 数据库迁移、JUnit/Testcontainers、Vitest、Playwright、JaCoCo、Maven Enforcer、Docker Compose、CI、脚本、License、Issue/PR 模板和开源文档。
 
 ## 技术栈
@@ -137,6 +138,7 @@ dm/
 - Milvus 开关：`OAF_MILVUS_ENABLED`，本地开发脚本会在 19530 未监听时自动设置为 `false`，后端使用 MySQL 向量兜底启动。
 - Kafka：IDEA 本地启动默认连接 `localhost:9092`；Docker Compose 默认连接 `host.docker.internal:9092`。
 - Kafka Worker：默认消费组 `openagentflow-async-workers`，并发数由 `OAF_KAFKA_CONCURRENCY` 控制。
+- MCP：`OAF_MCP_REQUEST_TIMEOUT_SECONDS` 控制协议请求超时，`OAF_MCP_STDIO_ALLOWED_COMMANDS` 使用英文逗号配置 stdio 可执行命令白名单。
 - MinIO：默认连接 `http://localhost:9000`，存储桶为 `openagentflow`，用于分布式文档任务共享原始文件。
 - MinIO 直传：`OAF_MINIO_ENDPOINT` 供后端内部访问，`OAF_MINIO_PUBLIC_ENDPOINT` 必须是浏览器可访问地址，用于生成预签名 URL。
 - MinIO CORS：`OAF_MINIO_CORS_ALLOWED_ORIGINS` 仅配置允许上传的前端正式域名，生产环境不要使用通配来源。
@@ -228,9 +230,11 @@ V047__prompt_version_schema_contract_p73.sql
 V048__solution_template_marketplace_p74.sql
 V049__solution_template_seed_contract_fix.sql
 V050__template_report_pending_guard_p74.sql
+V051__p0_complete_builtin_solution_packages.sql
+V052__p1_notification_center.sql
 ```
 
-后端使用 Flyway 管理迁移。空数据库按 V001-V050 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V050 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+后端使用 Flyway 管理迁移。空数据库按 V001-V052 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V052 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
 
 ```powershell
 .\scripts\sync-flyway-migrations.ps1
@@ -303,19 +307,19 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P3 Tool Calling | 已完成 | REST API、Webhook、DB Query、工具日志 |
 | P4 Trace 运行观测 | 已完成 | 运行列表、步骤详情、RAG/Tool/LLM 统一链路 |
 | P5 工作流编排 | 已完成 | Vue Flow、节点执行、上下文变量、Trace |
-| P6 MCP 工具接入 | 已完成 | Server 管理、发现、同步、调用、审计 |
-| P7 模型评测 | 已完成 | 评测集、批量运行、指标、对比、Trace |
+| P6 MCP 工具接入 | 已完成 | Server 管理、Streamable HTTP/传统 SSE/stdio 原生传输、标准会话、发现、同步、调用、审计和命令白名单 |
+| P7 模型评测 | 已完成 | 评测集、Agent/工作流批量运行、指标、对比、RAG与工具评分、Trace |
 | P8 GitHub 开源发布准备 | 已完成 | Docker、CI、脚本、License、开源文档 |
 | P9 Agent 历史会话 | 已完成 | 会话列表、消息持久化、继续对话、调试台历史面板 |
 | P10 成本与用量中心 | 已完成 | 用量统计、成本明细、模型价格、配额拦截、日报、导出、Trace 跳转 |
 | P11 组织/空间/资源治理 | 已完成 | 组织、工作空间、成员、资源归属、空间权限和前端管理页 |
-| P12 异步任务中心 | 已完成 | Kafka 分布式执行、文档处理、向量重建、批量评测、MCP 发现、知识治理扫描、Memory 清理、历史成本重算、MySQL 幂等锁、心跳、补偿、延迟重试、死信回放、MinIO 文件共享 |
+| P12 异步任务中心 | 已完成 | Kafka 分布式执行、文档处理、向量重建、批量评测、工作流运行、MCP 发现、知识治理扫描、Memory 清理、历史成本重算、MySQL 幂等锁、心跳、补偿、延迟重试、死信回放、MinIO 文件共享 |
 | P13 审计与风险治理中心 | 已完成 | 操作审计采集、风险事件归集、高风险确认审批、处置闭环 |
 | P14 生产部署加固 | 已完成 | prod Profile、Secret 校验、安全头、生产 Compose、非 root 容器、部署文档 |
 | P15 模型网关与模型治理 | 已完成 | 路由策略、候选模型、健康统计、失败回退、网关调用观测 |
 | P16 知识库治理增强 | 已完成 | 治理策略、问题扫描、质量评分、风险级别、交付问题闭环 |
 | P17 平台运营监控与告警中心 | 已完成 | 运营总览、健康矩阵、告警规则、告警事件、通知渠道、一键巡检 |
-| P18 通知中心与消息触达 | 后置 | 已按优先级调整为低优先级，后续再做站内通知真实化和外部触达 |
+| P18 通知中心与消息触达 | 已完成 | 个人收件箱、未读汇总、批量已读、归档、接收偏好、统一发布、真实铃铛抽屉、渠道CRUD与测试、HMAC签名、失败补偿、死信和人工重投 |
 | P19 Prompt 模板中心与版本治理 | 已完成 | Prompt 模板 CRUD、变量解析、版本发布、复制、回滚、Agent 绑定 |
 | P20 工作台 Dashboard 全量真实化 | 已完成 | 真实指标、运行趋势、最近运行、模型排行、任务队列、告警健康、知识库质量 |
 | P21 多 Agent 协作 | 已完成 | 协作团队 CRUD、成员分工、五种协作模式、真实 Agent 调用、协作执行、Trace 追踪 |
@@ -324,7 +328,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P27 RAG 生产级召回增强 | 已完成 | Parent-Child 分片、分片元数据、已有知识库默认策略迁移、重复文件复用、Office 文档解析增强、Embedding 批处理限流、权限感知检索、Agent 链路热点检索缓存、混合召回、候选扩召、向量/关键词权重、文档/页码/元数据过滤、重排、父分片上下文扩展、引用高亮、排序原因和低置信度建议 |
 | P29 Agent Runtime 可视化解释器 | 已完成 | 调试台实时链路、Trace 复盘链路、Agent 详情策略预演、调试台右侧检索结果/工具调用/引用统计原生切换、右侧栏整体滚动、Runtime 解释器双倍高度、证据区固定高度滚动、引用来源抽屉卡片切换、详情页卡片切换、步骤时间线按需展示和内部滚动 |
 | P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
-| P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、调试模式、模板、触发入口、Schema、队列语义、并行汇聚、循环批处理、版本差异、灰度策略、空间治理、预算控制、评测接入、子流程、API 发布、插件、沙箱、对话节点输出和运行中节点动效 |
+| P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、同步/异步运行、Kafka Outbox、有界并行分支、确定性JOIN、版本快照执行、稳定哈希灰度、工作流评测、子流程、插件SPI、API发布、沙箱、对话节点输出和运行中节点动效 |
 | P33 一键演示数据与交付样例包 | 已完成 | 幂等 SQL 样例包、PowerShell 初始化脚本、客服知识库文档、Prompt/Agent/工具/工作流/评测集/多 Agent/Memory 样例、工作流工具节点编码兼容、LLM 节点结构化工具结果注入、客服订单统一意图门控、Agent 绑定工作流入口路由、产品与优惠券知识分片、非订单问题历史污染隔离、节点级 `intent:order_runtime` 条件、订单汇总同义句式识别、版本快照同步、交付验收中心演示数据检查 |
 | P34 海量文档与高并发任务架构 | 已完成 | Transactional Outbox、分类 Topic、Worker 角色隔离、Fencing Token、Redis Embedding 背压、MinIO 预签名直传、流式文件处理、解析与向量检查点、结构化阶段时间线、生产副本约束 |
 | P35 文档处理 DAG 分片架构 | 已完成 | 持久化 DAG 根任务、父子任务、阶段节点、幂等键、分片协议、阶段尝试留存、根任务延迟收口和任务中心时间线 |
@@ -366,7 +370,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P71 高可用与容灾 | 已完成 | API/Runtime/Worker独立副本、外部基础设施多副本目标、RPO/RTO数据、故障切换矩阵和跨故障域调度 |
 | P72 全局租户隔离 | 已完成 | Eval/Prompt/高风险确认空间字段与旧数据回填、MyBatis核心表租户拦截、可信Kafka上下文和MySQL/Redis/Milvus/MinIO/OpenSearch命名空间巡检 |
 | P73 PromptOps生产化 | 已完成 | 统一Prompt编译Runtime、版本级强类型变量契约、敏感值遮蔽、Agent/工作流/评测版本绑定、版本差异与影响面、环境晋级、生产门禁、稳定灰度、A/B实验、自动选优、在线质量与成本指标、Trace Prompt快照和前端治理控制台 |
-| P74 企业解决方案模板广场 | 已完成 | 系统公开与空间私有模板、解决方案依赖自动收集和手动增删、语义化不可变版本、敏感配置清洗、安全与运行门禁、管理员审核、Kafka异步独立复制、安装入口SQL参数回归覆盖、MinIO完整模板包和向量载荷、Milvus兼容向量恢复、失败补偿、三方升级冲突、安全卸载、作者主页、收藏评分评论、举报处置和推荐上下架运营 |
+| P74 企业解决方案模板广场 | 已完成 | 系统公开与空间私有模板、7个官方可安装版本、四套内置完整资源快照包、工作流画布物化、解决方案依赖收集、语义化不可变版本、敏感配置清洗、安全门禁、Kafka异步独立复制、MinIO模板包和向量载荷、Milvus向量恢复、失败补偿、三方升级冲突、安全卸载和推荐运营 |
 
 ## 演示建议
 

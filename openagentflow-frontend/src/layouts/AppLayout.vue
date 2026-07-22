@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import {
   Activity,
@@ -31,6 +31,7 @@ import {
   UsersRound,
 } from 'lucide-vue-next';
 import { logout as logoutApi } from '../api/auth';
+import { fetchNotificationOverview } from '../api/notifications';
 import { canAccessMenu, readCurrentUser } from '../api/permissions';
 import { useOverlay } from '../composables/useOverlay';
 
@@ -38,6 +39,8 @@ const route = useRoute();
 const router = useRouter();
 const { showDrawer } = useOverlay();
 const currentUser = computed(() => readCurrentUser());
+const unreadNotificationCount = ref(0);
+let notificationTimer: number | undefined;
 
 const navigation: Array<{ path: string; match: string; label: string; icon: Component }> = [
   { path: '/dashboard', match: '/dashboard', label: '工作台', icon: LayoutDashboard },
@@ -79,6 +82,26 @@ async function handleLogout() {
   }
   await router.replace('/login');
 }
+
+async function refreshNotificationCount() {
+  try {
+    const overview = await fetchNotificationOverview();
+    unreadNotificationCount.value = overview.unreadCount || 0;
+  } catch {
+    // 通知计数失败不应影响主导航使用，下一轮轮询会自动恢复。
+  }
+}
+
+onMounted(() => {
+  refreshNotificationCount();
+  window.addEventListener('oaf-notification-changed', refreshNotificationCount);
+  notificationTimer = window.setInterval(refreshNotificationCount, 30_000);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('oaf-notification-changed', refreshNotificationCount);
+  if (notificationTimer) window.clearInterval(notificationTimer);
+});
 </script>
 
 <template>
@@ -119,8 +142,11 @@ async function handleLogout() {
         </label>
 
         <div class="topbar-actions">
-          <button class="icon-button" type="button" title="通知中心" @click="showDrawer('notices')">
+          <button class="icon-button notification-bell" type="button" title="通知中心" @click="showDrawer('notices')">
             <Bell :size="18" />
+            <span v-if="unreadNotificationCount" class="notification-count">
+              {{ unreadNotificationCount > 99 ? '99+' : unreadNotificationCount }}
+            </span>
           </button>
           <button class="icon-button" type="button" title="帮助">
             <CircleHelp :size="18" />

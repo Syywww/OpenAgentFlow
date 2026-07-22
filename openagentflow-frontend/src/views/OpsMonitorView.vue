@@ -1,21 +1,28 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-vue-next';
+import { Pencil, Plus, Power, RefreshCw, RotateCcw, Save, Search, TestTube2, Trash2, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 import StatCard from '../components/StatCard.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import {
   createOpsRule,
+  createOpsChannel,
+  deleteOpsChannel,
   deleteOpsRule,
   fetchOpsChannels,
   fetchOpsChecks,
   fetchOpsEvents,
   fetchOpsHealth,
   fetchOpsOverview,
+  fetchOpsDeliveries,
   fetchOpsRules,
   handleOpsEvent,
   runOpsInspection,
+  retryOpsDelivery,
+  setOpsChannelEnabled,
+  testOpsChannel,
+  updateOpsChannel,
   updateOpsRule,
   type OpsAlertEvent,
   type OpsAlertRule,
@@ -23,6 +30,8 @@ import {
   type OpsHealthCheck,
   type OpsHealthItem,
   type OpsNotifyChannel,
+  type OpsNotifyChannelRequest,
+  type OpsNotificationDelivery,
   type OpsOverview,
 } from '../api/ops';
 import { usePagination } from '../composables/usePagination';
@@ -42,6 +51,24 @@ const selectedEvent = ref<OpsAlertEvent | null>(null);
 const editingRuleId = ref('');
 const activePanel = ref<'health' | 'events' | 'handle' | 'rules' | 'checks' | 'channels'>('health');
 const ruleModalOpen = ref(false);
+const channelModalOpen = ref(false);
+const editingChannelId = ref('');
+const channelSubPanel = ref<'channels' | 'deliveries'>('channels');
+const deliveries = ref<OpsNotificationDelivery[]>([]);
+const deliveryTotal = ref(0);
+
+const deliveryFilters = reactive({ status: 'all', channelType: 'all', pageNo: 1, pageSize: 10 });
+
+const channelForm = reactive({
+  channelCode: '',
+  channelName: '',
+  channelType: 'webhook',
+  url: '',
+  secret: '',
+  timeoutSeconds: 10,
+  headersText: '{}',
+  enabled: true,
+});
 
 const eventFilters = reactive({
   status: 'open',
@@ -154,6 +181,120 @@ async function refreshOverview() {
   healthItems.value = healthResult;
   checks.value = checkResult;
   channels.value = channelResult;
+}
+
+async function loadDeliveries() {
+  const result = await fetchOpsDeliveries(deliveryFilters);
+  deliveries.value = result.records;
+  deliveryTotal.value = result.total;
+}
+
+async function switchChannelSubPanel(panel: 'channels' | 'deliveries') {
+  channelSubPanel.value = panel;
+  if (panel === 'deliveries') await loadDeliveries();
+}
+
+function resetChannelForm() {
+  editingChannelId.value = '';
+  Object.assign(channelForm, {
+    channelCode: '', channelName: '', channelType: 'webhook', url: '', secret: '',
+    timeoutSeconds: 10, headersText: '{}', enabled: true,
+  });
+}
+
+function openCreateChannel() {
+  resetChannelForm();
+  channelModalOpen.value = true;
+}
+
+function editChannel(channel: OpsNotifyChannel) {
+  editingChannelId.value = channel.id;
+  const config = channel.config || {};
+  Object.assign(channelForm, {
+    channelCode: channel.channelCode,
+    channelName: channel.channelName,
+    channelType: channel.channelType,
+    url: String(config.url || config.webhookUrl || ''),
+    secret: String(config.secret || ''),
+    timeoutSeconds: Number(config.timeoutSeconds || 10),
+    headersText: JSON.stringify(config.headers || {}, null, 2),
+    enabled: channel.enabled,
+  });
+  channelModalOpen.value = true;
+}
+
+function closeChannelModal() {
+  channelModalOpen.value = false;
+  resetChannelForm();
+}
+
+async function saveChannel() {
+  loading.value = true;
+  try {
+    const headers = JSON.parse(channelForm.headersText || '{}') as Record<string, string>;
+    const payload: OpsNotifyChannelRequest = {
+      channelCode: channelForm.channelCode,
+      channelName: channelForm.channelName,
+      channelType: channelForm.channelType,
+      config: channelForm.channelType === 'station' ? { builtin: true } : {
+        url: channelForm.url,
+        secret: channelForm.secret,
+        timeoutSeconds: channelForm.timeoutSeconds,
+        headers,
+      },
+      enabled: channelForm.enabled,
+    };
+    if (editingChannelId.value) await updateOpsChannel(editingChannelId.value, payload);
+    else await createOpsChannel(payload);
+    closeChannelModal();
+    channels.value = await fetchOpsChannels();
+    successMessage.value = '通知渠道已保存';
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '通知渠道保存失败';
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function toggleChannel(channel: OpsNotifyChannel) {
+  try {
+    await setOpsChannelEnabled(channel.id, !channel.enabled);
+    channels.value = await fetchOpsChannels();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '渠道状态更新失败';
+  }
+}
+
+async function testChannel(channel: OpsNotifyChannel) {
+  loading.value = true;
+  try {
+    const result = await testOpsChannel(channel.id);
+    successMessage.value = result.success ? `渠道测试成功，耗时 ${result.latencyMs}ms` : '';
+    errorMessage.value = result.success ? '' : result.message;
+    channels.value = await fetchOpsChannels();
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function removeChannel(channel: OpsNotifyChannel) {
+  try {
+    await deleteOpsChannel(channel.id);
+    channels.value = await fetchOpsChannels();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '渠道删除失败';
+  }
+}
+
+async function changeDeliveryPage(page: number) {
+  deliveryFilters.pageNo = page;
+  await loadDeliveries();
+}
+
+async function retryDelivery(item: OpsNotificationDelivery) {
+  await retryOpsDelivery(item.id);
+  successMessage.value = '投递已恢复到待发送队列';
+  await loadDeliveries();
 }
 
 async function inspectNow() {
@@ -563,19 +704,60 @@ function formatNumber(value?: number) {
     </template>
 
     <template v-else>
-      <div class="section-title"><h2>通知渠道</h2><span>{{ channels.length }} 个</span></div>
-      <table class="data-table">
-        <thead><tr><th>渠道</th><th>类型</th><th>状态</th><th>最近测试</th></tr></thead>
-        <tbody>
-          <tr v-for="item in pagedChannels" :key="item.id">
-            <td><b>{{ item.channelName }}</b><span class="muted block mono">{{ item.channelCode }}</span></td>
-            <td>{{ item.channelType }}</td>
-            <td><StatusBadge :label="item.enabled ? '启用' : '停用'" :tone="item.enabled ? 'success' : 'neutral'" /></td>
-            <td>{{ item.lastTestMessage || '-' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <PaginationBar v-model:page="channelPage" :total="channels.length" />
+      <div class="tabs compact-tabs">
+        <button class="tab" :class="{ active: channelSubPanel === 'channels' }" type="button" @click="switchChannelSubPanel('channels')">渠道配置</button>
+        <button class="tab" :class="{ active: channelSubPanel === 'deliveries' }" type="button" @click="switchChannelSubPanel('deliveries')">投递明细</button>
+      </div>
+      <template v-if="channelSubPanel === 'channels'">
+        <div class="section-title"><h2>通知渠道</h2><button class="primary-button slim" type="button" @click="openCreateChannel"><Plus :size="14" /> 新增渠道</button></div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>渠道</th><th>类型</th><th>状态</th><th>最近测试</th><th>成功时间</th><th>失败数</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="item in pagedChannels" :key="item.id">
+                <td><b>{{ item.channelName }}</b><span class="muted block mono">{{ item.channelCode }}</span></td>
+                <td>{{ item.channelType }}</td>
+                <td><StatusBadge :label="item.enabled ? '启用' : '停用'" :tone="item.enabled ? 'success' : 'neutral'" /></td>
+                <td class="truncate-cell" :title="item.lastTestMessage || '-'">{{ item.lastTestMessage || '-' }}</td>
+                <td>{{ formatTime(item.lastSuccessAt) }}</td>
+                <td>{{ item.failureCount || 0 }}</td>
+                <td class="table-actions">
+                  <button class="icon-button" type="button" title="连接测试" @click="testChannel(item)"><TestTube2 :size="15" /></button>
+                  <button v-if="item.channelType !== 'station'" class="icon-button" type="button" title="编辑" @click="editChannel(item)"><Pencil :size="15" /></button>
+                  <button v-if="item.channelType !== 'station'" class="icon-button" type="button" :title="item.enabled ? '停用' : '启用'" @click="toggleChannel(item)"><Power :size="15" /></button>
+                  <button v-if="item.channelType !== 'station'" class="icon-button danger" type="button" title="删除" @click="removeChannel(item)"><Trash2 :size="15" /></button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <PaginationBar v-model:page="channelPage" :total="channels.length" />
+      </template>
+      <template v-else>
+        <div class="toolbar compact">
+          <select v-model="deliveryFilters.status" @change="loadDeliveries"><option value="all">全部状态</option><option value="pending">待发送</option><option value="failed">失败</option><option value="dead">死信</option><option value="sent">已发送</option></select>
+          <select v-model="deliveryFilters.channelType" @change="loadDeliveries"><option value="all">全部渠道</option><option value="webhook">Webhook</option><option value="dingtalk">钉钉</option><option value="wechat">企业微信</option></select>
+          <span class="toolbar-spacer" /><button class="secondary-button slim" type="button" @click="loadDeliveries"><RefreshCw :size="14" /> 刷新</button>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>告警</th><th>渠道</th><th>状态</th><th>次数</th><th>结果</th><th>发送时间</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="item in deliveries" :key="item.id">
+                <td class="truncate-cell" :title="item.alertTitle">{{ item.alertTitle }}</td>
+                <td>{{ item.channelName || item.channelType }}</td>
+                <td><StatusBadge :label="statusLabel(item.status)" :tone="tone(item.status)" /></td>
+                <td>{{ item.attemptCount }}</td>
+                <td class="truncate-cell" :title="item.errorMessage || item.responseSummary || '-'">{{ item.errorMessage || item.responseSummary || '-' }}</td>
+                <td>{{ formatTime(item.sentAt || item.createdAt) }}</td>
+                <td><button v-if="['failed', 'dead'].includes(item.status)" class="icon-button" type="button" title="重新投递" @click="retryDelivery(item)"><RotateCcw :size="15" /></button></td>
+              </tr>
+              <tr v-if="!deliveries.length"><td colspan="7"><div class="empty-state">暂无投递明细</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <PaginationBar :page="deliveryFilters.pageNo" :page-size="deliveryFilters.pageSize" :total="deliveryTotal" @update:page="changeDeliveryPage" />
+      </template>
     </template>
   </section>
 
@@ -624,6 +806,26 @@ function formatNumber(value?: number) {
         <button class="secondary-button" type="button" @click="closeRuleModal">取消</button>
         <button class="primary-button" type="button" :disabled="loading" @click="saveRule"><Save :size="16" /> 保存规则</button>
       </div>
+    </section>
+  </div>
+
+  <div v-if="channelModalOpen" class="overlay-backdrop" @click.self="closeChannelModal">
+    <section class="modal-panel ops-rule-modal">
+      <header class="overlay-header">
+        <div><h2>{{ editingChannelId ? '编辑通知渠道' : '新增通知渠道' }}</h2><p class="muted">Webhook、钉钉和企业微信支持超时、自定义请求头与HMAC签名。</p></div>
+        <button class="icon-button" type="button" title="关闭" @click="closeChannelModal"><X :size="18" /></button>
+      </header>
+      <div class="settings-form">
+        <label>渠道编码<input v-model="channelForm.channelCode" /></label>
+        <label>渠道名称<input v-model="channelForm.channelName" /></label>
+        <label>渠道类型<select v-model="channelForm.channelType"><option value="webhook">Webhook</option><option value="dingtalk">钉钉</option><option value="wechat">企业微信</option></select></label>
+        <label>请求超时秒<input v-model.number="channelForm.timeoutSeconds" type="number" min="1" max="30" /></label>
+        <label class="wide">Webhook URL<input v-model="channelForm.url" class="mono" /></label>
+        <label class="wide">HMAC密钥<input v-model="channelForm.secret" type="password" placeholder="可选；编辑时 ****** 表示保留原密钥" /></label>
+        <label class="wide">请求头JSON<textarea v-model="channelForm.headersText" class="code-editor compact" rows="5" /></label>
+        <label class="check-line"><input v-model="channelForm.enabled" type="checkbox" /> 创建后立即启用</label>
+      </div>
+      <div class="toolbar compact"><button class="secondary-button" type="button" @click="closeChannelModal">取消</button><button class="primary-button" type="button" :disabled="loading" @click="saveChannel"><Save :size="16" /> 保存渠道</button></div>
     </section>
   </div>
 </template>

@@ -25,6 +25,7 @@ const router = createRouter({
     { path: '/logs/:id', component: () => import('../views/logs/RunDetailView.vue') },
     { path: '/usage', component: () => import('../views/UsageCenterView.vue') },
     { path: '/ops', component: () => import('../views/OpsMonitorView.vue') },
+    { path: '/notifications', component: () => import('../views/NotificationCenterView.vue') },
     { path: '/delivery', component: () => import('../views/DeliveryAcceptanceView.vue') },
     { path: '/model-gateway', component: () => import('../views/ModelGatewayView.vue') },
     { path: '/workspaces', component: () => import('../views/WorkspaceGovernanceView.vue') },

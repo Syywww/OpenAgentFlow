@@ -1,31 +1,26 @@
 package com.openagentflow.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.domain.tool.ToolExecutionResult;
 import com.openagentflow.entity.McpServerEntity;
 import com.openagentflow.entity.ToolDefinitionEntity;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.McpServerMapper;
+import com.openagentflow.mcp.McpTransportRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * MCP 客户端服务。
@@ -39,19 +34,32 @@ public class McpClientService {
     private static final String MCP_PROTOCOL_VERSION = "2024-11-05";
 
     /** HTTP 客户端，统一处理 MCP JSON-RPC 请求。 */
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
-
     /** MCP Server Mapper，用于 MCP 工具调用时反查连接配置。 */
     private final McpServerMapper mcpServerMapper;
 
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
-    public McpClientService(McpServerMapper mcpServerMapper, ObjectMapper objectMapper) {
+    /** MCP 原生传输注册中心。 */
+    private final McpTransportRegistry transportRegistry;
+
+    /** 单次协议请求超时。 */
+    private final Duration requestTimeout;
+
+    /** 已完成标准握手的服务端 ID。 */
+    private final java.util.Set<String> initializedServers = ConcurrentHashMap.newKeySet();
+
+    /** 服务端级握手锁。 */
+    private final Map<String, Object> initializationLocks = new ConcurrentHashMap<>();
+
+    public McpClientService(McpServerMapper mcpServerMapper,
+                            ObjectMapper objectMapper,
+                            McpTransportRegistry transportRegistry,
+                            OpenAgentFlowProperties properties) {
         this.mcpServerMapper = mcpServerMapper;
         this.objectMapper = objectMapper;
+        this.transportRegistry = transportRegistry;
+        this.requestTimeout = Duration.ofSeconds(Math.max(1, properties.getMcp().getRequestTimeoutSeconds()));
     }
 
     /**
@@ -64,6 +72,8 @@ public class McpClientService {
         Instant startedAt = Instant.now();
         McpConnectionResult result = new McpConnectionResult();
         try {
+            // 连接测试必须使用最新配置重新建会话，避免沿用编辑前的端点或子进程。
+            resetSession(server);
             McpDiscoveryPayload payload = discover(server);
             result.setSuccess(true);
             result.setToolsCount(payload.getTools().size());
@@ -86,6 +96,16 @@ public class McpClientService {
         return result;
     }
 
+    /** 释放服务端既有会话并清除握手状态。 */
+    public void resetSession(McpServerEntity server) {
+        if (server == null || !StringUtils.hasText(server.getId())) {
+            return;
+        }
+        initializedServers.remove(server.getId());
+        initializationLocks.remove(server.getId());
+        transportRegistry.require(server).close(server.getId());
+    }
+
     /**
      * 发现 MCP Server 暴露的 tools、prompts、resources。
      *
@@ -93,9 +113,9 @@ public class McpClientService {
      * @return 发现载荷
      */
     public McpDiscoveryPayload discover(McpServerEntity server) {
-        assertHttpTransport(server);
+        assertTransport(server);
         // 初始化请求可以提前暴露认证、地址或协议不兼容问题。
-        JsonNode initializeResult = postJsonRpc(server, "initialize", initializeParams(), true);
+        JsonNode initializeResult = ensureInitialized(server);
         List<McpCapabilitySpec> tools = readCapabilities(optionalJsonRpc(server, "tools/list", objectMapper.createObjectNode()), "tools", "tool");
         List<McpCapabilitySpec> prompts = readCapabilities(optionalJsonRpc(server, "prompts/list", objectMapper.createObjectNode()), "prompts", "prompt");
         List<McpCapabilitySpec> resources = readCapabilities(optionalJsonRpc(server, "resources/list", objectMapper.createObjectNode()), "resources", "resource");
@@ -125,6 +145,7 @@ public class McpClientService {
         ToolExecutionResult result = new ToolExecutionResult();
         try {
             McpServerEntity server = requireServer(tool);
+            ensureInitialized(server);
             String toolName = StringUtils.hasText(tool.getMcpToolName()) ? tool.getMcpToolName() : tool.getToolCode();
             ObjectNode params = objectMapper.createObjectNode();
             params.put("name", toolName);
@@ -154,6 +175,15 @@ public class McpClientService {
      * @return result 节点
      */
     private JsonNode postJsonRpc(McpServerEntity server, String method, JsonNode params, boolean failOnError) {
+        return postJsonRpc(server, method, params, failOnError, true);
+    }
+
+    /** 发送 JSON-RPC 请求，并允许 Streamable HTTP 会话失效后至多重新握手一次。 */
+    private JsonNode postJsonRpc(McpServerEntity server,
+                                 String method,
+                                 JsonNode params,
+                                 boolean failOnError,
+                                 boolean allowSessionRetry) {
         try {
             ObjectNode request = objectMapper.createObjectNode();
             request.put("jsonrpc", "2.0");
@@ -161,24 +191,49 @@ public class McpClientService {
             request.put("method", method);
             request.set("params", params == null ? objectMapper.createObjectNode() : params);
 
-            HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(server.getEndpointUrl()))
-                    .timeout(Duration.ofSeconds(30))
-                    .POST(HttpRequest.BodyPublishers.ofString(toJson(request), StandardCharsets.UTF_8));
-            appendAuthHeaders(builder, server);
-            HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new BusinessException("MCP_HTTP_ERROR", "MCP HTTP 状态码异常：" + response.statusCode() + "，响应：" + response.body());
-            }
-            JsonNode body = objectMapper.readTree(response.body());
+            JsonNode body = transportRegistry.require(server).request(server, request, requestTimeout);
             if (body.hasNonNull("error") && failOnError) {
                 throw new BusinessException("MCP_RPC_ERROR", "MCP JSON-RPC 错误：" + body.get("error").toString());
             }
             return body.has("result") ? body.get("result") : objectMapper.createObjectNode();
         } catch (BusinessException exception) {
+            if (allowSessionRetry && !"initialize".equals(method)
+                    && "MCP_HTTP_ERROR".equals(exception.getCode())
+                    && exception.getMessage() != null && exception.getMessage().contains("404")) {
+                resetSession(server);
+                ensureInitialized(server);
+                return postJsonRpc(server, method, params, failOnError, false);
+            }
             throw exception;
         } catch (Exception exception) {
             throw new BusinessException("MCP_REQUEST_FAILED", "MCP 请求失败：" + exception.getMessage());
+        }
+    }
+
+    /**
+     * 保证服务端已完成 initialize 请求和 initialized 通知。
+     *
+     * @param server MCP Server 实体
+     * @return 首次握手时的 initialize 结果，已握手时返回空对象
+     */
+    private JsonNode ensureInitialized(McpServerEntity server) {
+        assertTransport(server);
+        if (initializedServers.contains(server.getId())) {
+            return objectMapper.createObjectNode();
+        }
+        Object lock = initializationLocks.computeIfAbsent(server.getId(), key -> new Object());
+        synchronized (lock) {
+            if (initializedServers.contains(server.getId())) {
+                return objectMapper.createObjectNode();
+            }
+            JsonNode result = postJsonRpc(server, "initialize", initializeParams(), true);
+            ObjectNode notification = objectMapper.createObjectNode();
+            notification.put("jsonrpc", "2.0");
+            notification.put("method", "notifications/initialized");
+            notification.set("params", objectMapper.createObjectNode());
+            transportRegistry.require(server).notify(server, notification, requestTimeout);
+            initializedServers.add(server.getId());
+            return result;
         }
     }
 
@@ -250,16 +305,18 @@ public class McpClientService {
      *
      * @param server MCP Server 实体
      */
-    private void assertHttpTransport(McpServerEntity server) {
+    private void assertTransport(McpServerEntity server) {
         if (server == null || server.getDeletedAt() != null) {
             throw new BusinessException("MCP_SERVER_NOT_FOUND", "MCP Server 不存在");
         }
         String transport = safeText(server.getTransportType()).toLowerCase(Locale.ROOT);
-        if (!List.of("http", "sse").contains(transport)) {
-            throw new BusinessException("MCP_TRANSPORT_UNSUPPORTED", "当前已真实打通 HTTP JSON-RPC；stdio 传输仍保留配置，暂未启动进程调用");
-        }
-        if (!StringUtils.hasText(server.getEndpointUrl())) {
+        transportRegistry.require(server);
+        if (List.of("http", "streamable_http", "streamable-http", "sse").contains(transport)
+                && !StringUtils.hasText(server.getEndpointUrl())) {
             throw new BusinessException("MCP_ENDPOINT_EMPTY", "HTTP/SSE MCP Server 需要配置端点 URL");
+        }
+        if ("stdio".equals(transport) && !StringUtils.hasText(server.getCommand())) {
+            throw new BusinessException("MCP_STDIO_COMMAND_EMPTY", "stdio MCP Server 需要配置启动命令");
         }
     }
 
@@ -274,7 +331,7 @@ public class McpClientService {
             throw new BusinessException("MCP_TOOL_INVALID", "MCP 工具未绑定 Server");
         }
         McpServerEntity server = mcpServerMapper.selectById(tool.getMcpServerId());
-        assertHttpTransport(server);
+        assertTransport(server);
         if (!"running".equalsIgnoreCase(safeText(server.getStatus()))) {
             throw new BusinessException("MCP_SERVER_STOPPED", "MCP Server 未处于运行中，请先连接测试或重新发现");
         }
@@ -287,29 +344,6 @@ public class McpClientService {
      * @param builder HTTP 请求构造器
      * @param server MCP Server 实体
      */
-    private void appendAuthHeaders(HttpRequest.Builder builder, McpServerEntity server) {
-        builder.header("Content-Type", "application/json");
-        builder.header("Accept", "application/json");
-        Map<String, Object> auth = parseMap(server.getAuthConfig());
-        String authType = safeText(server.getAuthType()).toLowerCase(Locale.ROOT);
-        if ("bearer".equals(authType)) {
-            Object token = auth.getOrDefault("token", auth.get("bearerToken"));
-            if (token != null) {
-                builder.header("Authorization", "Bearer " + token);
-            }
-        } else if ("api_key".equals(authType)) {
-            String headerName = String.valueOf(auth.getOrDefault("headerName", "X-API-Key"));
-            Object value = auth.getOrDefault("apiKey", auth.get("apiKeyValue"));
-            if (value != null) {
-                builder.header(headerName, String.valueOf(value));
-            }
-        } else if ("basic".equals(authType)) {
-            String user = String.valueOf(auth.getOrDefault("username", ""));
-            String password = String.valueOf(auth.getOrDefault("password", ""));
-            builder.header("Authorization", "Basic " + Base64.getEncoder().encodeToString((user + ":" + password).getBytes(StandardCharsets.UTF_8)));
-        }
-    }
-
     /**
      * 判断 MCP 能力风险等级。
      *
@@ -362,18 +396,6 @@ public class McpClientService {
      * @param json JSON 字符串
      * @return Map
      */
-    private Map<String, Object> parseMap(String json) {
-        try {
-            if (!StringUtils.hasText(json)) {
-                return new LinkedHashMap<>();
-            }
-            return objectMapper.readValue(json, new TypeReference<LinkedHashMap<String, Object>>() {
-            });
-        } catch (Exception exception) {
-            return new LinkedHashMap<>();
-        }
-    }
-
     /**
      * 转换 JSON 字符串。
      *

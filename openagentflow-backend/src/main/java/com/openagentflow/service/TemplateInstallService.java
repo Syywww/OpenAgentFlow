@@ -494,8 +494,11 @@ public class TemplateInstallService {
             if ("team".equals(type)) {
                 for (Map<String,Object> member : mapList(snapshot.get("_members"))) {
                     String agentId=idMapping.get(templateService.text(member.get("agent_id")));
-                    if (StringUtils.hasText(agentId)) jdbcTemplate.update("INSERT IGNORE INTO agent_team_member(team_id,agent_id,member_role,handoff_policy,sort_order,enabled) VALUES (?,?,?,?,?,1)",targetId,agentId,member.get("member_role"),member.get("handoff_policy"),member.get("sort_order"));
+                    if (StringUtils.hasText(agentId)) jdbcTemplate.update("INSERT IGNORE INTO agent_team_member(team_id,agent_id,member_role,handoff_policy,sort_order,enabled) VALUES (?,?,?,?,?,1)",targetId,agentId,member.get("member_role"),toJson(member.getOrDefault("handoff_policy", Map.of())),member.get("sort_order"));
                 }
+            }
+            if ("workflow".equals(type)) {
+                materializeWorkflowGraph(targetId, snapshot, idMapping);
             }
             if ("prompt_version".equals(type)) {
                 String sourceTemplateId = templateService.text(snapshot.get("template_id"));
@@ -505,6 +508,55 @@ public class TemplateInstallService {
                 }
             }
         }
+    }
+
+    /**
+     * 将模板工作流快照中的节点和连线物化到执行表。
+     *
+     * <p>资源快照保存在工作流定义之外，安装时需要重写知识库、工具等来源ID，
+     * 再写入真实节点表，确保安装后的独立副本可以直接进入设计器和执行引擎。</p>
+     */
+    private void materializeWorkflowGraph(String workflowId,
+                                          Map<String, Object> snapshot,
+                                          Map<String, String> idMapping) {
+        jdbcTemplate.update("DELETE FROM workflow_edge WHERE workflow_id=?", workflowId);
+        jdbcTemplate.update("DELETE FROM workflow_node WHERE workflow_id=?", workflowId);
+        for (Map<String, Object> sourceNode : mapList(snapshot.get("_nodes"))) {
+            Map<String, Object> node = jsonMap(remapText(toJson(sourceNode), idMapping));
+            jdbcTemplate.update("""
+                    INSERT INTO workflow_node
+                      (id,workflow_id,node_key,node_name,node_type,position_x,position_y,
+                       config_json,input_schema,output_schema,retry_policy,enabled)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, UUID.randomUUID().toString(), workflowId,
+                    firstText(templateService.text(node.get("node_key")), UUID.randomUUID().toString()),
+                    firstText(templateService.text(node.get("node_name")), "模板节点"),
+                    firstText(templateService.text(node.get("node_type")), "LLM"),
+                    decimalValue(node.get("position_x")), decimalValue(node.get("position_y")),
+                    toJson(node.getOrDefault("config_json", Map.of())),
+                    toJson(node.getOrDefault("input_schema", Map.of())),
+                    toJson(node.getOrDefault("output_schema", Map.of())),
+                    toJson(node.getOrDefault("retry_policy", Map.of())),
+                    !Boolean.FALSE.equals(node.get("enabled")));
+        }
+        for (Map<String, Object> sourceEdge : mapList(snapshot.get("_edges"))) {
+            Map<String, Object> edge = jsonMap(remapText(toJson(sourceEdge), idMapping));
+            jdbcTemplate.update("""
+                    INSERT INTO workflow_edge
+                      (id,workflow_id,edge_key,source_node_key,target_node_key,condition_expr,label,metadata)
+                    VALUES (?,?,?,?,?,?,?,?)
+                    """, UUID.randomUUID().toString(), workflowId,
+                    firstText(templateService.text(edge.get("edge_key")), UUID.randomUUID().toString()),
+                    edge.get("source_node_key"), edge.get("target_node_key"), edge.get("condition_expr"),
+                    edge.get("label"), toJson(edge.getOrDefault("metadata", Map.of())));
+        }
+    }
+
+    /** 读取模板画布坐标，缺省为零。 */
+    private BigDecimal decimalValue(Object value) {
+        if (value instanceof Number number) return BigDecimal.valueOf(number.doubleValue());
+        try { return new BigDecimal(templateService.text(value)); }
+        catch (Exception ignored) { return BigDecimal.ZERO; }
     }
 
     /** 将目标资源更新为新模板快照。 */

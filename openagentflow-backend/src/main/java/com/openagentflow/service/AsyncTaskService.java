@@ -729,7 +729,8 @@ public class AsyncTaskService {
                         "MEMORY_CLEANUP",
                         "USAGE_COST_RECALCULATION",
                         "TEMPLATE_INSTALL",
-                        "TEMPLATE_UPGRADE"))
+                        "TEMPLATE_UPGRADE",
+                        "WORKFLOW_RUN"))
                 .and(wrapper -> wrapper
                         .and(pending -> pending.eq(AsyncTaskEntity::getStatus, "pending")
                                 .and(item -> item.isNull(AsyncTaskEntity::getNextRetryAt)
@@ -989,6 +990,9 @@ public class AsyncTaskService {
         }
         if ("TEMPLATE_UPGRADE".equals(taskType)) {
             return "解决方案模板升级";
+        }
+        if ("WORKFLOW_RUN".equals(taskType)) {
+            return "工作流异步运行";
         }
         return StringUtils.hasText(taskType) ? taskType : "未知任务";
     }

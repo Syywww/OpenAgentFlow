@@ -35,6 +35,11 @@ import com.openagentflow.mapper.WorkflowNodeMapper;
 import com.openagentflow.mapper.WorkflowRunMapper;
 import com.openagentflow.mapper.WorkflowStepRunMapper;
 import com.openagentflow.mapper.WorkflowVersionMapper;
+import com.openagentflow.workflow.WorkflowGrayReleasePolicy;
+import com.openagentflow.workflow.WorkflowNodePlugin;
+import com.openagentflow.workflow.WorkflowParallelPolicy;
+import com.openagentflow.workflow.WorkflowPluginRegistry;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -50,6 +55,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Set;
+import java.util.LinkedHashSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -58,7 +68,7 @@ import java.util.regex.Pattern;
 /**
  * 工作流执行引擎。
  *
- * <p>当前实现面向 MVP：按照连线从开始节点顺序推进，支持 START、LLM、RAG、TOOL、CONDITION、OUTPUT、END。</p>
+ * <p>支持顺序、条件、循环、并行汇聚、插件、RAG、工具、人工确认和子工作流等生产执行能力。</p>
  */
 @Service
 public class WorkflowExecutionService {
@@ -129,6 +139,12 @@ public class WorkflowExecutionService {
     /** 统一Prompt Runtime服务。 */
     private final PromptRuntimeService promptRuntimeService;
 
+    /** 工作流节点插件注册中心。 */
+    private final WorkflowPluginRegistry workflowPluginRegistry;
+
+    /** 有界并行分支执行器。 */
+    private final Executor workflowParallelExecutor;
+
     public WorkflowExecutionService(WorkflowService workflowService,
                                     WorkflowVersionMapper workflowVersionMapper,
                                     WorkflowNodeMapper workflowNodeMapper,
@@ -149,7 +165,9 @@ public class WorkflowExecutionService {
                                     ModelGatewayService modelGatewayService,
                                     JdbcTemplate jdbcTemplate,
                                     ObjectMapper objectMapper,
-                                    PromptRuntimeService promptRuntimeService) {
+                                    PromptRuntimeService promptRuntimeService,
+                                    WorkflowPluginRegistry workflowPluginRegistry,
+                                    @Qualifier("workflowParallelExecutor") Executor workflowParallelExecutor) {
         this.workflowService = workflowService;
         this.workflowVersionMapper = workflowVersionMapper;
         this.workflowNodeMapper = workflowNodeMapper;
@@ -171,6 +189,8 @@ public class WorkflowExecutionService {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.promptRuntimeService = promptRuntimeService;
+        this.workflowPluginRegistry = workflowPluginRegistry;
+        this.workflowParallelExecutor = workflowParallelExecutor;
     }
 
     /**
@@ -191,9 +211,9 @@ public class WorkflowExecutionService {
             return idempotentResult;
         }
         AgentEntity agent = resolveAgent(request == null ? null : request.getAgentId());
-        WorkflowVersionEntity version = resolveVersion(workflow);
-        List<WorkflowNodeEntity> nodes = listNodes(workflowId);
-        List<WorkflowEdgeEntity> edges = listEdges(workflowId);
+        WorkflowVersionEntity version = resolveVersion(workflow, request);
+        List<WorkflowNodeEntity> nodes = listNodes(workflowId, version);
+        List<WorkflowEdgeEntity> edges = listEdges(workflowId, version);
         if (nodes.isEmpty()) {
             throw new BusinessException("WORKFLOW_GRAPH_EMPTY", "工作流没有可执行节点");
         }
@@ -234,6 +254,21 @@ public class WorkflowExecutionService {
                 if (nodeResult.output() != null && !"SKIPPED".equalsIgnoreCase(nodeResult.status())) {
                     context.put("lastOutput", nodeResult.output());
                     finalOutput = String.valueOf(nodeResult.output());
+                }
+                if ("PARALLEL".equalsIgnoreCase(current.getNodeType())) {
+                    ParallelExecutionResult parallel = executeParallelBranches(current, agent, runtimeRun, context,
+                            request, nodes, edges, maxSteps);
+                    stepResults.addAll(parallel.steps());
+                    totalPromptTokens += parallel.promptTokens();
+                    totalCompletionTokens += parallel.completionTokens();
+                    totalTokens += parallel.totalTokens();
+                    context.clear();
+                    context.putAll(parallel.context());
+                    context.put("lastOutput", parallel.output());
+                    finalOutput = String.valueOf(parallel.output());
+                    updateWorkflowProgress(workflowRun, current, parallel.joinNode(), context);
+                    current = parallel.joinNode();
+                    continue;
                 }
                 WorkflowNodeEntity next = isTerminalNode(current.getNodeType()) ? null : nextNode(current, nodes, edges, context);
                 updateWorkflowProgress(workflowRun, current, next, context);
@@ -682,7 +717,7 @@ public class WorkflowExecutionService {
     }
 
     /**
-     * 执行插件节点，当前优先复用工具执行器；未配置工具时返回插件占位输出。
+     * 执行插件节点；配置工具编码时复用工具执行器，否则调用已注册插件 SPI。
      */
     private NodeExecutionResult executePlugin(WorkflowNodeEntity node,
                                               AgentEntity agent,
@@ -693,16 +728,17 @@ public class WorkflowExecutionService {
         if (StringUtils.hasText(stringValue(config.get("toolName"), "")) || StringUtils.hasText(stringValue(config.get("toolCode"), ""))) {
             return executeTool(node, agent, runtimeRun, traceStep, context, config);
         }
-        Map<String, Object> output = new LinkedHashMap<>();
-        output.put("pluginCode", stringValue(config.get("pluginCode"), node.getNodeKey()));
-        output.put("status", "SKIPPED");
-        output.put("message", "插件节点尚未绑定执行器，已按安全策略跳过");
+        String pluginCode = stringValue(config.get("pluginCode"), node.getNodeKey());
+        WorkflowNodePlugin plugin = workflowPluginRegistry.require(pluginCode);
+        Object output = plugin.execute(new WorkflowNodePlugin.PluginContext(
+                context.get("lastOutput"), Map.copyOf(context), Map.copyOf(config), node, agent, runtimeRun));
         context.put(node.getNodeKey(), output);
+        context.put("lastPluginCode", pluginCode);
         return NodeExecutionResult.success(node, output, 0, 0, 0);
     }
 
     /**
-     * 执行并行节点。当前实现以安全顺序收集分支目标，实际分支由后续连线推进。
+     * 执行并行节点入口，实际分支调度由主执行循环完成。
      */
     private NodeExecutionResult executeParallel(WorkflowNodeEntity node,
                                                 Map<String, Object> context,
@@ -710,9 +746,176 @@ public class WorkflowExecutionService {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("mode", "parallel");
         output.put("strategy", stringValue(config.get("joinStrategy"), "all"));
-        output.put("message", "并行分支已进入可观测执行模式");
+        output.put("message", "并行分支已进入有界并发执行模式");
         context.put("parallelState", output);
         return NodeExecutionResult.success(node, output, 0, 0, 0);
+    }
+
+    /**
+     * 并发执行 PARALLEL 节点的全部分支，直到公共 JOIN 节点。
+     */
+    private ParallelExecutionResult executeParallelBranches(WorkflowNodeEntity parallelNode,
+                                                             AgentEntity agent,
+                                                             RuntimeRunEntity runtimeRun,
+                                                             Map<String, Object> baseContext,
+                                                             WorkflowDtos.RunRequest request,
+                                                             List<WorkflowNodeEntity> nodes,
+                                                             List<WorkflowEdgeEntity> edges,
+                                                             int maxSteps) {
+        List<WorkflowNodeEntity> branchStarts = edges.stream()
+                .filter(edge -> parallelNode.getNodeKey().equals(edge.getSourceNodeKey()))
+                .sorted(Comparator.comparing(WorkflowEdgeEntity::getEdgeKey, Comparator.nullsLast(String::compareTo)))
+                .map(edge -> findNode(nodes, edge.getTargetNodeKey()))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        if (branchStarts.size() < 2) {
+            throw new BusinessException("WORKFLOW_PARALLEL_BRANCH_REQUIRED", "并行节点至少需要两条有效分支");
+        }
+        WorkflowNodeEntity joinNode = findCommonJoin(branchStarts, nodes, edges);
+        if (joinNode == null) {
+            throw new BusinessException("WORKFLOW_PARALLEL_JOIN_REQUIRED", "并行分支必须汇聚到同一个 JOIN 节点");
+        }
+
+        List<CompletableFuture<BranchExecutionResult>> futures = branchStarts.stream()
+                .map(start -> CompletableFuture.supplyAsync(
+                        () -> executeParallelBranch(start, joinNode, agent, runtimeRun,
+                                new LinkedHashMap<>(baseContext), request, nodes, edges, maxSteps),
+                        workflowParallelExecutor))
+                .toList();
+
+        Map<String, Map<String, Object>> branchContexts = new LinkedHashMap<>();
+        List<WorkflowDtos.StepResult> steps = new ArrayList<>();
+        Map<String, Object> outputs = new LinkedHashMap<>();
+        int promptTokens = 0;
+        int completionTokens = 0;
+        int totalTokens = 0;
+        try {
+            // 按分支起点顺序归并，避免线程完成顺序改变上下文和 Trace 展示顺序。
+            for (int index = 0; index < branchStarts.size(); index++) {
+                BranchExecutionResult branch = futures.get(index).join();
+                String branchKey = branchStarts.get(index).getNodeKey();
+                branchContexts.put(branchKey, branch.context());
+                outputs.put(branchKey, branch.output());
+                steps.addAll(branch.steps());
+                promptTokens += branch.promptTokens();
+                completionTokens += branch.completionTokens();
+                totalTokens += branch.totalTokens();
+            }
+        } catch (CompletionException exception) {
+            futures.forEach(future -> future.cancel(true));
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new BusinessException("WORKFLOW_PARALLEL_FAILED", "并行分支执行失败：" + cause.getMessage());
+        }
+        Map<String, Object> merged = WorkflowParallelPolicy.mergeContexts(baseContext, branchContexts);
+        merged.put("parallelOutputs", outputs);
+        merged.put("parallelJoinNodeKey", joinNode.getNodeKey());
+        return new ParallelExecutionResult(merged, outputs, joinNode, steps,
+                promptTokens, completionTokens, totalTokens);
+    }
+
+    /** 执行单条并行分支，公共 JOIN 节点由父线程统一执行。 */
+    private BranchExecutionResult executeParallelBranch(WorkflowNodeEntity start,
+                                                        WorkflowNodeEntity joinNode,
+                                                        AgentEntity agent,
+                                                        RuntimeRunEntity runtimeRun,
+                                                        Map<String, Object> context,
+                                                        WorkflowDtos.RunRequest request,
+                                                        List<WorkflowNodeEntity> nodes,
+                                                        List<WorkflowEdgeEntity> edges,
+                                                        int maxSteps) {
+        WorkflowNodeEntity current = start;
+        List<WorkflowDtos.StepResult> steps = new ArrayList<>();
+        int promptTokens = 0;
+        int completionTokens = 0;
+        int totalTokens = 0;
+        Object output = context.get("lastOutput");
+        for (int guard = 0; current != null && guard < maxSteps; guard++) {
+            if (joinNode.getNodeKey().equals(current.getNodeKey())) {
+                break;
+            }
+            if ("PARALLEL".equalsIgnoreCase(current.getNodeType())) {
+                throw new BusinessException("WORKFLOW_NESTED_PARALLEL_UNSUPPORTED", "并行分支内暂不允许再次嵌套并行节点");
+            }
+            try {
+                NodeExecutionResult result = executeNode(current, agent, runtimeRun, context, request);
+                if ("WAITING".equalsIgnoreCase(result.status())) {
+                    throw new BusinessException("WORKFLOW_PARALLEL_WAITING_UNSUPPORTED", "并行分支不能停留在人工等待节点");
+                }
+                steps.add(result.stepResult());
+                promptTokens += result.promptTokens();
+                completionTokens += result.completionTokens();
+                totalTokens += result.totalTokens();
+                if (result.output() != null && !"SKIPPED".equalsIgnoreCase(result.status())) {
+                    output = result.output();
+                    context.put("lastOutput", output);
+                }
+                current = isTerminalNode(current.getNodeType()) ? null : nextNode(current, nodes, edges, context);
+            } catch (RuntimeException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                throw new BusinessException("WORKFLOW_PARALLEL_BRANCH_FAILED", "并行分支执行失败：" + exception.getMessage());
+            }
+        }
+        if (current == null || !joinNode.getNodeKey().equals(current.getNodeKey())) {
+            throw new BusinessException("WORKFLOW_PARALLEL_JOIN_UNREACHABLE", "并行分支未到达公共 JOIN 节点：" + start.getNodeName());
+        }
+        return new BranchExecutionResult(context, output, steps, promptTokens, completionTokens, totalTokens);
+    }
+
+    /** 查找所有分支都可达的最近 JOIN 节点。 */
+    private WorkflowNodeEntity findCommonJoin(List<WorkflowNodeEntity> starts,
+                                              List<WorkflowNodeEntity> nodes,
+                                              List<WorkflowEdgeEntity> edges) {
+        Set<String> common = null;
+        for (WorkflowNodeEntity start : starts) {
+            Set<String> joins = reachableJoinKeys(start, nodes, edges);
+            if (common == null) {
+                common = new LinkedHashSet<>(joins);
+            } else {
+                common.retainAll(joins);
+            }
+        }
+        if (common == null || common.isEmpty()) {
+            return null;
+        }
+        Set<String> commonJoinKeys = Set.copyOf(common);
+        return nodes.stream()
+                .filter(node -> commonJoinKeys.contains(node.getNodeKey()))
+                .filter(node -> "JOIN".equalsIgnoreCase(node.getNodeType()))
+                .sorted(Comparator.comparing(WorkflowNodeEntity::getNodeKey))
+                .findFirst().orElse(null);
+    }
+
+    /** 广度优先收集分支可达的 JOIN 节点，循环图通过 visited 防止重复遍历。 */
+    private Set<String> reachableJoinKeys(WorkflowNodeEntity start,
+                                          List<WorkflowNodeEntity> nodes,
+                                          List<WorkflowEdgeEntity> edges) {
+        Set<String> visited = new LinkedHashSet<>();
+        Set<String> joins = new LinkedHashSet<>();
+        java.util.ArrayDeque<WorkflowNodeEntity> queue = new java.util.ArrayDeque<>();
+        queue.add(start);
+        while (!queue.isEmpty() && visited.size() <= 500) {
+            WorkflowNodeEntity node = queue.removeFirst();
+            if (!visited.add(node.getNodeKey())) {
+                continue;
+            }
+            if ("JOIN".equalsIgnoreCase(node.getNodeType())) {
+                joins.add(node.getNodeKey());
+                continue;
+            }
+            edges.stream().filter(edge -> node.getNodeKey().equals(edge.getSourceNodeKey()))
+                    .map(edge -> findNode(nodes, edge.getTargetNodeKey()))
+                    .filter(java.util.Objects::nonNull)
+                    .forEach(queue::addLast);
+        }
+        return joins;
+    }
+
+    private WorkflowNodeEntity findNode(List<WorkflowNodeEntity> nodes, String nodeKey) {
+        return nodes.stream().filter(node -> node.getNodeKey().equals(nodeKey)).findFirst().orElse(null);
     }
 
     /**
@@ -1455,29 +1658,38 @@ public class WorkflowExecutionService {
     /**
      * 查找当前发布版本。
      */
-    private WorkflowVersionEntity resolveVersion(WorkflowDefinitionEntity workflow) {
-        if (StringUtils.hasText(workflow.getPublishedVersion())) {
-            WorkflowVersionEntity version = workflowVersionMapper.selectOne(new LambdaQueryWrapper<WorkflowVersionEntity>()
-                    .eq(WorkflowVersionEntity::getWorkflowId, workflow.getId())
-                    .eq(WorkflowVersionEntity::getVersionNo, workflow.getPublishedVersion())
-                    .last("limit 1"));
-            if (version != null) {
-                return version;
-            }
+    private WorkflowVersionEntity resolveVersion(WorkflowDefinitionEntity workflow, WorkflowDtos.RunRequest request) {
+        List<WorkflowVersionEntity> versions = workflowVersionMapper.selectList(new LambdaQueryWrapper<WorkflowVersionEntity>()
+                .eq(WorkflowVersionEntity::getWorkflowId, workflow.getId())
+                .eq(WorkflowVersionEntity::getStatus, "published")
+                .orderByDesc(WorkflowVersionEntity::getCreatedAt));
+        if (versions.isEmpty()) {
+            return null;
         }
-        return workflowVersionMapper.selectList(new LambdaQueryWrapper<WorkflowVersionEntity>()
-                        .eq(WorkflowVersionEntity::getWorkflowId, workflow.getId())
-                        .orderByDesc(WorkflowVersionEntity::getCreatedAt)
-                        .last("limit 1"))
-                .stream()
-                .findFirst()
-                .orElse(null);
+        WorkflowVersionEntity current = versions.stream()
+                .filter(item -> item.getVersionNo().equals(workflow.getPublishedVersion()))
+                .findFirst().orElse(versions.getFirst());
+        Map<String, Object> policy = parseMap(parseMap(workflow.getGraphJson()).get("executionPolicy"));
+        String strategy = stringValue(policy.get("releaseStrategy"), "standard");
+        int grayPercent = numberValue(policy.get("grayPercent"), 100D).intValue();
+        if (!"gray".equalsIgnoreCase(strategy) || versions.size() < 2) {
+            return current;
+        }
+        String requestKey = request == null ? "" : firstText(request.getIdempotencyKey(), safeText(request.getInput()));
+        boolean useCurrent = WorkflowGrayReleasePolicy.useCurrentVersion(workflow.getId(),
+                agentAccessService.currentUserId(), requestKey, grayPercent);
+        return useCurrent ? current : versions.stream().filter(item -> !item.getId().equals(current.getId()))
+                .findFirst().orElse(current);
     }
 
     /**
      * 查询启用节点。
      */
-    private List<WorkflowNodeEntity> listNodes(String workflowId) {
+    private List<WorkflowNodeEntity> listNodes(String workflowId, WorkflowVersionEntity version) {
+        List<Map<String, Object>> snapshot = graphItems(version == null ? null : version.getGraphJson(), "nodes");
+        if (!snapshot.isEmpty()) {
+            return snapshot.stream().map(item -> snapshotNode(workflowId, item)).filter(WorkflowNodeEntity::getEnabled).toList();
+        }
         return workflowNodeMapper.selectList(new LambdaQueryWrapper<WorkflowNodeEntity>()
                         .eq(WorkflowNodeEntity::getWorkflowId, workflowId)
                         .eq(WorkflowNodeEntity::getEnabled, true)
@@ -1490,13 +1702,58 @@ public class WorkflowExecutionService {
     /**
      * 查询连线。
      */
-    private List<WorkflowEdgeEntity> listEdges(String workflowId) {
+    private List<WorkflowEdgeEntity> listEdges(String workflowId, WorkflowVersionEntity version) {
+        List<Map<String, Object>> snapshot = graphItems(version == null ? null : version.getGraphJson(), "edges");
+        if (!snapshot.isEmpty()) {
+            return snapshot.stream().map(item -> snapshotEdge(workflowId, item)).toList();
+        }
         return workflowEdgeMapper.selectList(new LambdaQueryWrapper<WorkflowEdgeEntity>()
                         .eq(WorkflowEdgeEntity::getWorkflowId, workflowId)
                         .orderByAsc(WorkflowEdgeEntity::getCreatedAt))
                 .stream()
                 .sorted(Comparator.comparing(item -> item.getCreatedAt() == null ? LocalDateTime.MIN : item.getCreatedAt()))
                 .toList();
+    }
+
+    /** 从版本画布中读取节点或连线数组。 */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> graphItems(String graphJson, String key) {
+        Object value = parseMap(graphJson).get(key);
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream().filter(Map.class::isInstance)
+                .<Map<String, Object>>map(item -> new LinkedHashMap<>((Map<String, Object>) item)).toList();
+    }
+
+    /** 将版本快照节点转换为执行实体。 */
+    private WorkflowNodeEntity snapshotNode(String workflowId, Map<String, Object> item) {
+        WorkflowNodeEntity node = new WorkflowNodeEntity();
+        node.setId(newId());
+        node.setWorkflowId(workflowId);
+        node.setNodeKey(stringValue(firstNonNull(item.get("nodeKey"), item.get("node_key"), item.get("id")), newId()));
+        node.setNodeName(stringValue(firstNonNull(item.get("nodeName"), item.get("node_name"), item.get("label")), node.getNodeKey()));
+        node.setNodeType(stringValue(firstNonNull(item.get("nodeType"), item.get("node_type"), item.get("type")), "LLM").toUpperCase(Locale.ROOT));
+        node.setConfigJson(toJson(firstNonNull(item.get("configJson"), item.get("config_json"), item.get("data"), Map.of())));
+        node.setInputSchema(toJson(firstNonNull(item.get("inputSchema"), item.get("input_schema"), Map.of())));
+        node.setOutputSchema(toJson(firstNonNull(item.get("outputSchema"), item.get("output_schema"), Map.of())));
+        node.setRetryPolicy(toJson(firstNonNull(item.get("retryPolicy"), item.get("retry_policy"), Map.of())));
+        node.setEnabled(booleanValue(item.get("enabled"), true));
+        return node;
+    }
+
+    /** 将版本快照连线转换为执行实体。 */
+    private WorkflowEdgeEntity snapshotEdge(String workflowId, Map<String, Object> item) {
+        WorkflowEdgeEntity edge = new WorkflowEdgeEntity();
+        edge.setId(newId());
+        edge.setWorkflowId(workflowId);
+        edge.setEdgeKey(stringValue(firstNonNull(item.get("edgeKey"), item.get("edge_key"), item.get("id")), newId()));
+        edge.setSourceNodeKey(stringValue(firstNonNull(item.get("sourceNodeKey"), item.get("source_node_key"), item.get("source")), ""));
+        edge.setTargetNodeKey(stringValue(firstNonNull(item.get("targetNodeKey"), item.get("target_node_key"), item.get("target")), ""));
+        edge.setConditionExpr(stringValue(firstNonNull(item.get("conditionExpr"), item.get("condition_expr")), null));
+        edge.setLabel(stringValue(item.get("label"), null));
+        edge.setMetadata(toJson(firstNonNull(item.get("metadata"), Map.of())));
+        return edge;
     }
 
     /**
@@ -1832,8 +2089,16 @@ public class WorkflowExecutionService {
     /**
      * 返回第一个非空值。
      */
-    private Object firstNonNull(Object first, Object second) {
-        return first != null ? first : second;
+    private Object firstNonNull(Object... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /**
@@ -1966,6 +2231,25 @@ public class WorkflowExecutionService {
     /**
      * 节点执行的内部结果。
      */
+    /** 并行节点整体执行结果。 */
+    private record ParallelExecutionResult(Map<String, Object> context,
+                                           Object output,
+                                           WorkflowNodeEntity joinNode,
+                                           List<WorkflowDtos.StepResult> steps,
+                                           int promptTokens,
+                                           int completionTokens,
+                                           int totalTokens) {
+    }
+
+    /** 单条并行分支执行结果。 */
+    private record BranchExecutionResult(Map<String, Object> context,
+                                         Object output,
+                                         List<WorkflowDtos.StepResult> steps,
+                                         int promptTokens,
+                                         int completionTokens,
+                                         int totalTokens) {
+    }
+
     private record NodeConditionDecision(boolean shouldRun,
                                          String expression,
                                          String mode,

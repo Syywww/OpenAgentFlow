@@ -1,4 +1,5 @@
 import { request } from './http';
+import type { AsyncTaskDetail } from './tasks';
 
 export interface WorkflowSummary {
   id: string;
@@ -209,6 +210,13 @@ export async function publishWorkflow(id: string, publishNote?: string) {
 
 export async function runWorkflow(id: string, agentId: string | undefined, input: string, options: Record<string, unknown> = {}) {
   return request<WorkflowRunResult>(`/workflows/${id}/run`, {
+    method: 'POST',
+    body: JSON.stringify({ agentId, input, variables: {}, ...options }),
+  });
+}
+
+export async function runWorkflowAsync(id: string, agentId: string | undefined, input: string, options: Record<string, unknown> = {}) {
+  return request<AsyncTaskDetail>(`/workflows/${id}/run/async`, {
     method: 'POST',
     body: JSON.stringify({ agentId, input, variables: {}, ...options }),
   });

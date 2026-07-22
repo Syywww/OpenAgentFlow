@@ -8,6 +8,7 @@ import StatCard from '../../components/StatCard.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import { fetchAgents, type AgentSummary } from '../../api/agents';
 import { fetchChatModels, type ModelConfigSummary } from '../../api/models';
+import { fetchWorkflows, type WorkflowSummary } from '../../api/workflows';
 import {
   createEvaluationDataset,
   deleteEvaluationDataset,
@@ -33,6 +34,7 @@ const datasets = ref<EvaluationDatasetSummary[]>([]);
 const selectedDataset = ref<EvaluationDatasetDetail | null>(null);
 const tasks = ref<EvaluationTaskSummary[]>([]);
 const agents = ref<AgentSummary[]>([]);
+const workflows = ref<WorkflowSummary[]>([]);
 const models = ref<ModelConfigSummary[]>([]);
 const compareModelIds = ref<string[]>([]);
 const replaceExisting = ref(true);
@@ -59,7 +61,9 @@ const datasetForm = reactive<EvaluationDatasetRequest>({
 
 const runForm = reactive({
   taskName: '',
+  targetType: 'agent' as 'agent' | 'workflow',
   agentId: '',
+  workflowId: '',
   baselineModelId: '',
   promptStrategy: '默认策略',
   promptVariantText: '',
@@ -131,15 +135,17 @@ async function loadAll() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [datasetList, taskList, agentList, modelList] = await Promise.all([
+    const [datasetList, taskList, agentList, workflowList, modelList] = await Promise.all([
       fetchEvaluationDatasets(),
       fetchEvaluationTasks(),
       fetchAgents(),
+      fetchWorkflows(),
       fetchChatModels(),
     ]);
     datasets.value = datasetList;
     tasks.value = taskList;
     agents.value = agentList;
+    workflows.value = workflowList;
     models.value = modelList;
     if (!selectedDataset.value && datasetList.length > 0) {
       await selectDataset(datasetList[0].id);
@@ -232,8 +238,9 @@ async function importSamples() {
 }
 
 async function runTask() {
-  if (!selectedDataset.value || !runForm.agentId) {
-    errorMessage.value = '请选择评测集和 Agent';
+  const targetMissing = runForm.targetType === 'agent' ? !runForm.agentId : !runForm.workflowId;
+  if (!selectedDataset.value || targetMissing) {
+    errorMessage.value = '请选择评测集和评测目标';
     return;
   }
   running.value = true;
@@ -243,9 +250,10 @@ async function runTask() {
     const detail = await runEvaluationTask({
       taskName: runForm.taskName || `${selectedDataset.value.datasetName} 评测`,
       datasetId: selectedDataset.value.id,
-      agentId: runForm.agentId,
-      baselineModelId: runForm.baselineModelId || undefined,
-      compareModelIds: compareModelIds.value,
+      agentId: runForm.agentId || undefined,
+      workflowId: runForm.targetType === 'workflow' ? runForm.workflowId : undefined,
+      baselineModelId: runForm.targetType === 'agent' ? runForm.baselineModelId || undefined : undefined,
+      compareModelIds: runForm.targetType === 'agent' ? compareModelIds.value : [],
       promptStrategy: runForm.promptStrategy,
       promptVariantText: runForm.promptVariantText,
       knowledgeStrategy: runForm.knowledgeStrategy,
@@ -363,9 +371,12 @@ onMounted(() => {
       <div class="section-title"><h2>运行评测</h2><span>同步批量执行</span></div>
       <div class="form-stack">
         <label>任务名称<input v-model="runForm.taskName" placeholder="例如：知识库问答回归评测" /></label>
-        <label>Agent<select v-model="runForm.agentId"><option value="">请选择 Agent</option><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.agentName }}</option></select></label>
-        <label>基线模型<select v-model="runForm.baselineModelId"><option value="">使用 Agent 默认模型</option><option v-for="model in models" :key="model.id" :value="model.id">{{ model.modelName }}</option></select></label>
-        <div>
+        <label>评测目标<select v-model="runForm.targetType"><option value="agent">Agent</option><option value="workflow">工作流</option></select></label>
+        <label v-if="runForm.targetType === 'agent'">Agent<select v-model="runForm.agentId"><option value="">请选择 Agent</option><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.agentName }}</option></select></label>
+        <label v-else>工作流<select v-model="runForm.workflowId"><option value="">请选择已发布工作流</option><option v-for="workflow in workflows" :key="workflow.id" :value="workflow.id">{{ workflow.workflowName }}</option></select></label>
+        <label v-if="runForm.targetType === 'workflow'">运行 Agent<select v-model="runForm.agentId"><option value="">不绑定 Agent（纯流程）</option><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.agentName }}</option></select></label>
+        <label v-if="runForm.targetType === 'agent'">基线模型<select v-model="runForm.baselineModelId"><option value="">使用 Agent 默认模型</option><option v-for="model in models" :key="model.id" :value="model.id">{{ model.modelName }}</option></select></label>
+        <div v-if="runForm.targetType === 'agent'">
           <b>对比模型</b>
           <div class="badge-row">
             <label v-for="model in models" :key="model.id" class="checkbox-row">
@@ -401,7 +412,7 @@ onMounted(() => {
           <tr v-for="task in pagedLatestTasks" :key="task.id">
             <td><b>{{ task.taskName }}</b><span class="block muted">{{ task.taskCode }}</span></td>
             <td>{{ task.datasetName }}</td>
-            <td>{{ task.agentName }}</td>
+            <td>{{ task.workflowName || task.agentName || '-' }}</td>
             <td>{{ task.finishedSamples }}/{{ task.totalSamples }}</td>
             <td>{{ task.overallScore ?? 0 }}</td>
             <td>{{ task.totalTokens ?? 0 }}</td>

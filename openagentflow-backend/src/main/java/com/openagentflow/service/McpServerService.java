@@ -420,11 +420,21 @@ public class McpServerService implements DistributedTaskHandler {
      * @param create 是否创建场景
      */
     private void fillServer(McpServerEntity entity, McpDtos.ServerRequest request, boolean create) {
+        String transportType = safeText(request.getTransportType()).trim().toLowerCase(Locale.ROOT);
+        if (!List.of("http", "streamable_http", "streamable-http", "sse", "stdio").contains(transportType)) {
+            throw new BusinessException("MCP_TRANSPORT_UNSUPPORTED", "不支持的 MCP 传输类型：" + transportType);
+        }
+        if ("stdio".equals(transportType) && !StringUtils.hasText(request.getCommand())) {
+            throw new BusinessException("MCP_STDIO_COMMAND_EMPTY", "stdio MCP Server 需要配置启动命令");
+        }
+        if (!"stdio".equals(transportType) && !StringUtils.hasText(request.getEndpointUrl())) {
+            throw new BusinessException("MCP_ENDPOINT_EMPTY", "HTTP/SSE MCP Server 需要配置端点 URL");
+        }
         String code = StringUtils.hasText(request.getServerCode()) ? request.getServerCode().trim() : slugify(request.getServerName());
         entity.setServerCode(create ? uniqueServerCode(code) : code);
         entity.setServerName(request.getServerName().trim());
         entity.setDescription(request.getDescription());
-        entity.setTransportType(safeText(request.getTransportType()).toLowerCase(Locale.ROOT));
+        entity.setTransportType(transportType);
         entity.setCommand(request.getCommand());
         entity.setArgs(validJsonOrDefault(request.getArgs(), "[]"));
         entity.setEndpointUrl(request.getEndpointUrl());
