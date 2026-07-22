@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { Bell, Building2, FileClock, KeyRound, Pencil, Plus, Save, TestTube2, Trash2, UserCog, UserPlus, X } from 'lucide-vue-next';
+import { Bell, Building2, FileClock, KeyRound, LogOut, Pencil, Plus, Save, ShieldCheck, TestTube2, Trash2, UserCog, UserPlus, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 import StatusBadge from '../components/StatusBadge.vue';
@@ -8,6 +8,8 @@ import {
   createIamDepartment,
   createIamRole,
   createIamUser,
+  createWorkspaceRole,
+  assignWorkspaceMemberRoles,
   deleteIamDepartment,
   deleteIamRole,
   deleteIamUser,
@@ -16,9 +18,20 @@ import {
   fetchIamPermissions,
   fetchIamRoles,
   fetchIamUsers,
+  fetchAuthorizationAudits,
+  fetchPermissionGovernanceOverview,
+  fetchResourceAcls,
+  fetchWorkspaceMemberRoleIds,
+  fetchWorkspaceRoles,
+  grantResourceAcl,
+  revokeResourceAcl,
+  revokeUserSessions,
   updateIamDepartment,
   updateIamRole,
   updateIamUser,
+  updateWorkspaceRole,
+  deleteWorkspaceRole,
+  type AuthorizationAuditSummary,
   type DepartmentNode,
   type DepartmentRequest,
   type IamOverview,
@@ -27,7 +40,13 @@ import {
   type RoleSummary,
   type UserRequest,
   type UserSummary,
+  type PermissionGovernanceOverview,
+  type ResourceAclRequest,
+  type ResourceAclSummary,
+  type WorkspaceRoleRequest,
+  type WorkspaceRoleSummary,
 } from '../api/iam';
+import { getActiveWorkspaceId } from '../api/http';
 import {
   createModelProvider,
   deleteModelProvider,
@@ -57,6 +76,10 @@ const departments = ref<DepartmentNode[]>([]);
 const roles = ref<RoleSummary[]>([]);
 const permissions = ref<PermissionNode[]>([]);
 const providers = ref<ModelProviderSummary[]>([]);
+const governanceOverview = ref<PermissionGovernanceOverview>({ workspaceRoleCount: 0, memberRoleBindingCount: 0, activeAclCount: 0, authorizationAuditCount: 0 });
+const workspaceRoles = ref<WorkspaceRoleSummary[]>([]);
+const resourceAcls = ref<ResourceAclSummary[]>([]);
+const authorizationAudits = ref<AuthorizationAuditSummary[]>([]);
 const modelRows = computed(() => providers.value.flatMap((provider) => provider.models.map((model) => ({ provider, model }))));
 const flatDepartments = computed(() => flattenDepartments(departments.value));
 const flatPermissions = computed(() => flattenPermissions(permissions.value));
@@ -65,6 +88,9 @@ const { currentPage: deptPage, pagedItems: pagedDepartments } = usePagination(fl
 const { currentPage: rolePage, pagedItems: pagedRoles } = usePagination(roles);
 const { currentPage: providerPage, pagedItems: pagedProviders } = usePagination(providers);
 const { currentPage: modelPage, pagedItems: pagedModelRows } = usePagination(modelRows);
+const { currentPage: workspaceRolePage, pagedItems: pagedWorkspaceRoles } = usePagination(workspaceRoles);
+const { currentPage: aclPage, pagedItems: pagedAcls } = usePagination(resourceAcls);
+const { currentPage: authorizationAuditPage, pagedItems: pagedAuthorizationAudits } = usePagination(authorizationAudits);
 const editingProviderId = ref('');
 const editingUserId = ref('');
 const editingDepartmentId = ref('');
@@ -72,11 +98,27 @@ const editingRoleId = ref('');
 const loading = ref(false);
 const errorMessage = ref('');
 const testMessage = ref('');
-const activePanel = ref<'users' | 'departments' | 'roles' | 'providers' | 'models'>('users');
+const activePanel = ref<'users' | 'departments' | 'roles' | 'governance' | 'providers' | 'models'>('users');
 const providerModalOpen = ref(false);
 const userModalOpen = ref(false);
 const departmentModalOpen = ref(false);
 const roleModalOpen = ref(false);
+const workspaceRoleModalOpen = ref(false);
+const resourceAclModalOpen = ref(false);
+const memberRoleModalOpen = ref(false);
+const editingWorkspaceRoleId = ref('');
+const selectedMember = ref<UserSummary | null>(null);
+const selectedMemberRoleIds = ref<string[]>([]);
+const memberRoleReason = ref('');
+const governanceSection = ref<'workspaceRoles' | 'acl' | 'audit'>('workspaceRoles');
+
+const workspaceRoleForm = reactive<WorkspaceRoleRequest>({
+  workspaceId: '', roleCode: '', roleName: '', description: '', dataScope: 'self', status: 'enabled', permissionIds: [], departmentIds: [],
+});
+
+const resourceAclForm = reactive<ResourceAclRequest>({
+  workspaceId: '', resourceType: 'agent', resourceId: '', subjectType: 'user', subjectId: '', permissionLevel: 'read', expiresAt: '', reason: '',
+});
 
 const userForm = reactive<UserRequest>({
   departmentId: '',
@@ -149,11 +191,106 @@ async function loadData() {
     roles.value = roleList;
     permissions.value = permissionTree;
     providers.value = providerList;
+    await loadGovernanceData();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '系统设置数据加载失败';
   } finally {
     loading.value = false;
   }
+}
+
+async function loadGovernanceData() {
+  const workspaceId = getActiveWorkspaceId();
+  if (!workspaceId) return;
+  const [summary, roleRows, aclRows, auditRows] = await Promise.all([
+    fetchPermissionGovernanceOverview(workspaceId), fetchWorkspaceRoles(workspaceId),
+    fetchResourceAcls(workspaceId), fetchAuthorizationAudits(workspaceId),
+  ]);
+  governanceOverview.value = summary;
+  workspaceRoles.value = roleRows;
+  resourceAcls.value = aclRows;
+  authorizationAudits.value = auditRows;
+}
+
+function openWorkspaceRoleModal(role?: WorkspaceRoleSummary) {
+  const workspaceId = getActiveWorkspaceId() || '';
+  editingWorkspaceRoleId.value = role?.id || '';
+  Object.assign(workspaceRoleForm, {
+    workspaceId, roleCode: role?.roleCode || '', roleName: role?.roleName || '', description: role?.description || '',
+    dataScope: role?.dataScope || 'self', status: role?.status || 'enabled', permissionIds: [...(role?.permissionIds || [])],
+    departmentIds: [...(role?.departmentIds || [])],
+  });
+  workspaceRoleModalOpen.value = true;
+}
+
+async function saveWorkspaceGovernanceRole() {
+  loading.value = true;
+  try {
+    if (editingWorkspaceRoleId.value) await updateWorkspaceRole(editingWorkspaceRoleId.value, { ...workspaceRoleForm });
+    else await createWorkspaceRole({ ...workspaceRoleForm });
+    workspaceRoleModalOpen.value = false;
+    await loadGovernanceData();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '空间角色保存失败';
+  } finally { loading.value = false; }
+}
+
+async function removeWorkspaceGovernanceRole(role: WorkspaceRoleSummary) {
+  if (role.builtIn || !confirm(`确认删除空间角色“${role.roleName}”吗？`)) return;
+  try { await deleteWorkspaceRole(role.id, role.workspaceId); await loadGovernanceData(); }
+  catch (error) { errorMessage.value = error instanceof Error ? error.message : '空间角色删除失败'; }
+}
+
+function openResourceAclModal() {
+  Object.assign(resourceAclForm, { workspaceId: getActiveWorkspaceId() || '', resourceType: 'agent', resourceId: '', subjectType: 'user', subjectId: '', permissionLevel: 'read', expiresAt: '', reason: '' });
+  resourceAclModalOpen.value = true;
+}
+
+async function saveResourceAcl() {
+  loading.value = true;
+  try {
+    await grantResourceAcl({ ...resourceAclForm, expiresAt: resourceAclForm.expiresAt || undefined });
+    resourceAclModalOpen.value = false;
+    await loadGovernanceData();
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '资源授权保存失败'; }
+  finally { loading.value = false; }
+}
+
+async function removeResourceAcl(item: ResourceAclSummary) {
+  if (!confirm('确认撤销这条资源授权吗？')) return;
+  try { await revokeResourceAcl(item.id, item.workspaceId, '管理员从权限治理页面撤销'); await loadGovernanceData(); }
+  catch (error) { errorMessage.value = error instanceof Error ? error.message : '资源授权撤销失败'; }
+}
+
+async function openMemberRoleModal(user: UserSummary) {
+  const workspaceId = getActiveWorkspaceId();
+  if (!workspaceId) return;
+  try {
+    selectedMember.value = user;
+    selectedMemberRoleIds.value = await fetchWorkspaceMemberRoleIds(workspaceId, user.id);
+    memberRoleReason.value = '';
+    memberRoleModalOpen.value = true;
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '空间成员角色加载失败'; }
+}
+
+async function saveMemberRoles() {
+  const workspaceId = getActiveWorkspaceId();
+  if (!workspaceId || !selectedMember.value) return;
+  loading.value = true;
+  try {
+    await assignWorkspaceMemberRoles(workspaceId, selectedMember.value.id, selectedMemberRoleIds.value, memberRoleReason.value);
+    memberRoleModalOpen.value = false;
+    await loadGovernanceData();
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '空间成员角色保存失败'; }
+  finally { loading.value = false; }
+}
+
+async function forceLogoutUser(user: UserSummary) {
+  if (!confirm(`确认强制下线“${user.displayName}”的全部会话吗？`)) return;
+  try {
+    const count = await revokeUserSessions(user.id, '管理员从系统设置强制下线');
+    testMessage.value = `已撤销 ${count} 个登录会话`;
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '强制下线失败'; }
 }
 
 function flattenDepartments(items: DepartmentNode[], depth = 0): FlatDepartment[] {
@@ -519,6 +656,11 @@ async function runProviderTest(provider: ModelProviderSummary) {
       <b>{{ overview.roleCount || roles.length }}</b>
       <small>角色 CRUD 和权限勾选</small>
     </button>
+    <button class="governance-tab-card" :class="{ active: activePanel === 'governance' }" type="button" @click="activePanel = 'governance'">
+      <span>权限治理</span>
+      <b>{{ governanceOverview.activeAclCount }}</b>
+      <small>空间角色、资源授权、数据范围和会话安全</small>
+    </button>
     <button class="governance-tab-card" :class="{ active: activePanel === 'providers' }" type="button" @click="activePanel = 'providers'">
       <span>模型供应商配置</span>
       <b>{{ providers.length }}</b>
@@ -537,7 +679,7 @@ async function runProviderTest(provider: ModelProviderSummary) {
         <h2>用户管理</h2>
         <div class="title-actions">
           <span>用户所属部门和系统级角色在这里统一设置</span>
-          <button class="primary-button slim" type="button" @click="openCreateUserModal"><UserPlus :size="14" /> 新增用户</button>
+          <button v-permission="['iam:manage']" class="primary-button slim" type="button" @click="openCreateUserModal"><UserPlus :size="14" /> 新增用户</button>
         </div>
       </div>
       <table class="data-table rich">
@@ -551,8 +693,10 @@ async function runProviderTest(provider: ModelProviderSummary) {
             <td><StatusBadge :label="user.status === 'enabled' ? '启用' : '禁用'" :tone="user.status === 'enabled' ? 'success' : 'warning'" /></td>
             <td>
               <div class="table-actions">
-                <button class="icon-button" type="button" title="编辑用户" @click="editUser(user)"><Pencil :size="16" /></button>
-                <button class="icon-button danger-text" type="button" title="删除用户" :disabled="user.username === 'admin'" @click="removeUser(user)"><Trash2 :size="16" /></button>
+                <button v-permission="['iam:manage']" class="icon-button" type="button" title="编辑用户" @click="editUser(user)"><Pencil :size="16" /></button>
+                <button v-permission="['iam:governance:manage','iam:manage']" class="icon-button" type="button" title="分配空间角色" @click="openMemberRoleModal(user)"><ShieldCheck :size="16" /></button>
+                <button v-permission="['iam:session:revoke','iam:manage']" class="icon-button" type="button" title="强制下线" @click="forceLogoutUser(user)"><LogOut :size="16" /></button>
+                <button v-permission="['iam:manage']" class="icon-button danger-text" type="button" title="删除用户" :disabled="user.username === 'admin'" @click="removeUser(user)"><Trash2 :size="16" /></button>
               </div>
             </td>
           </tr>
@@ -625,6 +769,84 @@ async function runProviderTest(provider: ModelProviderSummary) {
       <PaginationBar v-model:page="rolePage" :total="roles.length" />
     </template>
 
+    <template v-else-if="activePanel === 'governance'">
+      <div class="section-title">
+        <h2>权限治理</h2>
+        <span>平台权限、空间权限和资源权限分层执行，服务端负责最终裁决</span>
+      </div>
+      <div class="governance-card-tabs compact-tabs">
+        <button class="governance-tab-card" :class="{ active: governanceSection === 'workspaceRoles' }" type="button" @click="governanceSection = 'workspaceRoles'">
+          <span>空间角色</span><b>{{ governanceOverview.workspaceRoleCount }}</b><small>{{ governanceOverview.memberRoleBindingCount }} 个成员角色关系</small>
+        </button>
+        <button class="governance-tab-card" :class="{ active: governanceSection === 'acl' }" type="button" @click="governanceSection = 'acl'">
+          <span>资源授权</span><b>{{ governanceOverview.activeAclCount }}</b><small>用户、角色和部门级 ACL</small>
+        </button>
+        <button class="governance-tab-card" :class="{ active: governanceSection === 'audit' }" type="button" @click="governanceSection = 'audit'">
+          <span>授权审计</span><b>{{ governanceOverview.authorizationAuditCount }}</b><small>授权、撤销和强制下线追溯</small>
+        </button>
+      </div>
+
+      <template v-if="governanceSection === 'workspaceRoles'">
+        <div class="section-title compact-heading">
+          <h3>工作空间角色</h3>
+          <button v-permission="['iam:governance:manage','iam:manage']" class="primary-button slim" type="button" @click="openWorkspaceRoleModal()"><Plus :size="14" /> 新增空间角色</button>
+        </div>
+        <table class="data-table rich">
+          <thead><tr><th>角色</th><th>数据范围</th><th>权限点</th><th>成员</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr v-for="role in pagedWorkspaceRoles" :key="role.id">
+              <td><b>{{ role.roleName }}</b><span class="muted block mono">{{ role.roleCode }}</span></td>
+              <td>{{ { all: '全部数据', dept: '本部门', dept_tree: '本部门及下级', self: '本人数据', custom: '自定义部门' }[role.dataScope] }}</td>
+              <td>{{ role.permissionIds.length }}</td><td>{{ role.memberCount }}</td>
+              <td><StatusBadge :label="role.status === 'enabled' ? '启用' : '禁用'" /></td>
+              <td><div class="table-actions">
+                <button v-permission="['iam:governance:manage','iam:manage']" class="icon-button" type="button" title="编辑空间角色" @click="openWorkspaceRoleModal(role)"><Pencil :size="16" /></button>
+                <button v-permission="['iam:governance:manage','iam:manage']" class="icon-button danger-text" type="button" title="删除空间角色" :disabled="role.builtIn" @click="removeWorkspaceGovernanceRole(role)"><Trash2 :size="16" /></button>
+              </div></td>
+            </tr>
+            <tr v-if="!workspaceRoles.length"><td colspan="6"><div class="empty-state">暂无空间角色</div></td></tr>
+          </tbody>
+        </table>
+        <PaginationBar v-model:page="workspaceRolePage" :total="workspaceRoles.length" />
+      </template>
+
+      <template v-else-if="governanceSection === 'acl'">
+        <div class="section-title compact-heading">
+          <h3>资源授权</h3>
+          <button v-permission="['iam:acl:manage','iam:manage']" class="primary-button slim" type="button" @click="openResourceAclModal"><Plus :size="14" /> 新增资源授权</button>
+        </div>
+        <table class="data-table rich">
+          <thead><tr><th>资源</th><th>授权主体</th><th>级别</th><th>有效期</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr v-for="item in pagedAcls" :key="item.id">
+              <td><b>{{ item.resourceType }}</b><span class="muted block mono">{{ item.resourceId }}</span></td>
+              <td>{{ item.subjectType }} / <span class="mono">{{ item.subjectId }}</span></td>
+              <td>{{ item.permissionLevel }}</td><td>{{ item.expiresAt || '长期有效' }}</td>
+              <td><StatusBadge :label="item.status" /></td>
+              <td><button v-permission="['iam:acl:manage','iam:manage']" class="icon-button danger-text" type="button" title="撤销授权" @click="removeResourceAcl(item)"><Trash2 :size="16" /></button></td>
+            </tr>
+            <tr v-if="!resourceAcls.length"><td colspan="6"><div class="empty-state">暂无资源授权</div></td></tr>
+          </tbody>
+        </table>
+        <PaginationBar v-model:page="aclPage" :total="resourceAcls.length" />
+      </template>
+
+      <template v-else>
+        <div class="section-title compact-heading"><h3>授权审计</h3><span>最近 200 条权限变更</span></div>
+        <table class="data-table rich">
+          <thead><tr><th>动作</th><th>目标</th><th>主体</th><th>原因</th><th>时间</th></tr></thead>
+          <tbody>
+            <tr v-for="item in pagedAuthorizationAudits" :key="item.id">
+              <td>{{ item.actionType }}</td><td>{{ item.targetType }} / <span class="mono">{{ item.targetId }}</span></td>
+              <td>{{ item.subjectType || '-' }} / {{ item.subjectId || '-' }}</td><td>{{ item.reason || '-' }}</td><td>{{ item.createdAt }}</td>
+            </tr>
+            <tr v-if="!authorizationAudits.length"><td colspan="5"><div class="empty-state">暂无授权审计</div></td></tr>
+          </tbody>
+        </table>
+        <PaginationBar v-model:page="authorizationAuditPage" :total="authorizationAudits.length" />
+      </template>
+    </template>
+
     <template v-else-if="activePanel === 'providers'">
       <div class="section-title">
         <h2>模型供应商配置</h2>
@@ -668,6 +890,46 @@ async function runProviderTest(provider: ModelProviderSummary) {
       <PaginationBar v-model:page="modelPage" :total="modelRows.length" />
     </template>
   </section>
+
+  <div v-if="workspaceRoleModalOpen" class="overlay-backdrop" @click.self="workspaceRoleModalOpen = false">
+    <section class="modal-panel iam-role-modal">
+      <header class="overlay-header"><div><h2>{{ editingWorkspaceRoleId ? '编辑空间角色' : '新增空间角色' }}</h2><p class="muted">角色权限只在当前工作空间内生效。</p></div><button class="icon-button" type="button" title="关闭" @click="workspaceRoleModalOpen = false"><X :size="18" /></button></header>
+      <div class="settings-form">
+        <label>角色编码<input v-model="workspaceRoleForm.roleCode" :disabled="!!editingWorkspaceRoleId" /></label>
+        <label>角色名称<input v-model="workspaceRoleForm.roleName" /></label>
+        <label>数据范围<select v-model="workspaceRoleForm.dataScope"><option value="all">全部数据</option><option value="dept">本部门</option><option value="dept_tree">本部门及下级</option><option value="self">本人数据</option><option value="custom">自定义部门</option></select></label>
+        <label>状态<select v-model="workspaceRoleForm.status"><option value="enabled">启用</option><option value="disabled">禁用</option></select></label>
+        <label class="wide">描述<textarea v-model="workspaceRoleForm.description" rows="2" /></label>
+        <div class="wide"><b>权限配置</b><div class="permission-check-grid tall"><label v-for="row in flatPermissions" :key="row.node.id" class="check-line" :style="{ paddingLeft: `${row.depth * 18}px` }"><input v-model="workspaceRoleForm.permissionIds" type="checkbox" :value="row.node.id" />{{ row.node.permissionName }}<span class="muted mono">{{ row.node.permissionCode }}</span></label></div></div>
+        <div v-if="workspaceRoleForm.dataScope === 'custom'" class="wide"><b>自定义部门</b><div class="permission-check-grid"><label v-for="row in flatDepartments" :key="row.node.id" class="check-line"><input v-model="workspaceRoleForm.departmentIds" type="checkbox" :value="row.node.id" />{{ row.node.deptName }}</label></div></div>
+      </div>
+      <div class="toolbar compact"><button class="secondary-button" type="button" @click="workspaceRoleModalOpen = false">取消</button><button class="primary-button" type="button" :disabled="loading || !workspaceRoleForm.roleCode || !workspaceRoleForm.roleName" @click="saveWorkspaceGovernanceRole"><Save :size="16" /> 保存空间角色</button></div>
+    </section>
+  </div>
+
+  <div v-if="resourceAclModalOpen" class="overlay-backdrop" @click.self="resourceAclModalOpen = false">
+    <section class="modal-panel compact">
+      <header class="overlay-header"><div><h2>新增资源授权</h2><p class="muted">支持用户、空间角色和部门主体，可设置自动失效时间。</p></div><button class="icon-button" type="button" title="关闭" @click="resourceAclModalOpen = false"><X :size="18" /></button></header>
+      <div class="settings-form">
+        <label>资源类型<select v-model="resourceAclForm.resourceType"><option value="agent">Agent</option><option value="knowledge_base">知识库</option><option value="tool">工具</option><option value="workflow">工作流</option><option value="prompt">Prompt</option><option value="evaluation">评测集</option><option value="mcp_server">MCP Server</option></select></label>
+        <label>资源ID<input v-model="resourceAclForm.resourceId" /></label>
+        <label>主体类型<select v-model="resourceAclForm.subjectType"><option value="user">用户</option><option value="role">空间角色</option><option value="department">部门</option></select></label>
+        <label>主体ID<input v-model="resourceAclForm.subjectId" /></label>
+        <label>授权级别<select v-model="resourceAclForm.permissionLevel"><option value="read">查看</option><option value="run">运行</option><option value="write">编辑</option><option value="owner">所有者</option></select></label>
+        <label>失效时间<input v-model="resourceAclForm.expiresAt" type="datetime-local" /></label>
+        <label class="wide">授权原因<textarea v-model="resourceAclForm.reason" rows="2" /></label>
+      </div>
+      <div class="toolbar compact"><button class="secondary-button" type="button" @click="resourceAclModalOpen = false">取消</button><button class="primary-button" type="button" :disabled="loading || !resourceAclForm.resourceId || !resourceAclForm.subjectId" @click="saveResourceAcl"><Save :size="16" /> 保存授权</button></div>
+    </section>
+  </div>
+
+  <div v-if="memberRoleModalOpen && selectedMember" class="overlay-backdrop" @click.self="memberRoleModalOpen = false">
+    <section class="modal-panel compact">
+      <header class="overlay-header"><div><h2>分配空间角色</h2><p class="muted">{{ selectedMember.displayName }} · {{ selectedMember.username }}</p></div><button class="icon-button" type="button" title="关闭" @click="memberRoleModalOpen = false"><X :size="18" /></button></header>
+      <div class="settings-form"><div class="wide permission-check-grid"><label v-for="role in workspaceRoles" :key="role.id" class="check-line"><input v-model="selectedMemberRoleIds" type="checkbox" :value="role.id" />{{ role.roleName }}<span class="muted">{{ role.dataScope }}</span></label></div><label class="wide">分配原因<textarea v-model="memberRoleReason" rows="2" /></label></div>
+      <div class="toolbar compact"><button class="secondary-button" type="button" @click="memberRoleModalOpen = false">取消</button><button class="primary-button" type="button" :disabled="loading" @click="saveMemberRoles"><Save :size="16" /> 保存成员角色</button></div>
+    </section>
+  </div>
 
   <div v-if="userModalOpen" class="overlay-backdrop" @click.self="closeUserModal">
     <section class="modal-panel iam-user-modal">

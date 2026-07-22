@@ -337,7 +337,7 @@ public class WorkflowService {
         if (entity == null || entity.getDeletedAt() != null) {
             return false;
         }
-        return workspaceGovernanceService.canManageResource(entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
+        return workspaceGovernanceService.canManageResource("workflow", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
     }
 
     /**

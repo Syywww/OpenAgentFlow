@@ -15,6 +15,7 @@ import com.openagentflow.mapper.IamRoleMapper;
 import com.openagentflow.mapper.IamRolePermissionMapper;
 import com.openagentflow.mapper.IamUserMapper;
 import com.openagentflow.mapper.IamUserRoleMapper;
+import com.openagentflow.security.RedisTokenService;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -63,6 +64,9 @@ public class IamAdminService {
     /** 密码编码器。 */
     private final PasswordEncoder passwordEncoder;
 
+    /** Redis令牌状态服务。 */
+    private final RedisTokenService redisTokenService;
+
     public IamAdminService(IamUserMapper userMapper,
                            IamDepartmentMapper departmentMapper,
                            IamRoleMapper roleMapper,
@@ -70,7 +74,8 @@ public class IamAdminService {
                            IamUserRoleMapper userRoleMapper,
                            IamRolePermissionMapper rolePermissionMapper,
                            JdbcTemplate jdbcTemplate,
-                           PasswordEncoder passwordEncoder) {
+                           PasswordEncoder passwordEncoder,
+                           RedisTokenService redisTokenService) {
         this.userMapper = userMapper;
         this.departmentMapper = departmentMapper;
         this.roleMapper = roleMapper;
@@ -79,6 +84,7 @@ public class IamAdminService {
         this.rolePermissionMapper = rolePermissionMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.passwordEncoder = passwordEncoder;
+        this.redisTokenService = redisTokenService;
     }
 
     /**
@@ -167,6 +173,8 @@ public class IamAdminService {
         }
         userMapper.updateById(user);
         replaceUserRoles(user.getId(), request.getRoleIds());
+        // 用户状态、密码、部门或系统角色变化后立即撤销旧会话，下一次请求会重新认证权限。
+        redisTokenService.revokeAllUserTokens(user.getId());
         return listUsers().stream()
                 .filter(item -> user.getId().equals(item.getId()))
                 .findFirst()
@@ -191,6 +199,7 @@ public class IamAdminService {
         userMapper.updateById(user);
         userRoleMapper.delete(new LambdaQueryWrapper<IamUserRoleEntity>()
                 .eq(IamUserRoleEntity::getUserId, id));
+        redisTokenService.revokeAllUserTokens(id);
     }
 
     /**
@@ -329,6 +338,7 @@ public class IamAdminService {
         fillRole(entity, request);
         roleMapper.updateById(entity);
         replaceRolePermissions(id, request.getPermissionIds());
+        revokeRoleUserTokens(id);
         return toRoleSummary(requireRole(id));
     }
 
@@ -344,11 +354,13 @@ public class IamAdminService {
         if (Boolean.TRUE.equals(entity.getBuiltIn())) {
             throw new BusinessException("IAM_ROLE_BUILT_IN", "内置角色不允许删除");
         }
+        List<String> affectedUsers = jdbcTemplate.queryForList("SELECT user_id FROM iam_user_role WHERE role_id=?", String.class, id);
         userRoleMapper.delete(new LambdaQueryWrapper<IamUserRoleEntity>()
                 .eq(IamUserRoleEntity::getRoleId, id));
         rolePermissionMapper.delete(new LambdaQueryWrapper<IamRolePermissionEntity>()
                 .eq(IamRolePermissionEntity::getRoleId, id));
         roleMapper.deleteById(id);
+        affectedUsers.forEach(redisTokenService::revokeAllUserTokens);
     }
 
     /**
@@ -363,7 +375,26 @@ public class IamAdminService {
         requireIamManager();
         requireRole(id);
         replaceRolePermissions(id, permissionIds);
+        revokeRoleUserTokens(id);
         return toRoleSummary(requireRole(id));
+    }
+
+    /**
+     * 管理员强制撤销用户全部会话。
+     *
+     * @param userId 用户ID
+     * @return 撤销令牌数量
+     */
+    public long revokeUserSessions(String userId) {
+        requireIamManager();
+        requireUser(userId);
+        return redisTokenService.revokeAllUserTokens(userId);
+    }
+
+    /** 撤销所有绑定指定系统角色用户的旧令牌。 */
+    private void revokeRoleUserTokens(String roleId) {
+        jdbcTemplate.queryForList("SELECT user_id FROM iam_user_role WHERE role_id=?", String.class, roleId)
+                .forEach(redisTokenService::revokeAllUserTokens);
     }
 
     /**

@@ -5,6 +5,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.Set;
 
 /**
  * Redis 令牌状态服务。
@@ -36,6 +37,10 @@ public class RedisTokenService {
         Duration ttl = Duration.ofMinutes(properties.getSecurity().getJwtExpireMinutes());
         // Redis 中只保存 tokenId 与 userId 的映射，不保存完整 JWT，降低泄露风险。
         stringRedisTemplate.opsForValue().set(key, userId, ttl);
+        // 建立用户到Token的反向索引，支持角色变化、禁用账号和管理员强制下线时批量撤销。
+        String userTokensKey = userTokensKey(userId);
+        stringRedisTemplate.opsForSet().add(userTokensKey, tokenId);
+        stringRedisTemplate.expire(userTokensKey, ttl);
     }
 
     /**
@@ -56,7 +61,41 @@ public class RedisTokenService {
      * @param tokenId 令牌ID
      */
     public void revokeToken(String tokenId) {
-        stringRedisTemplate.delete(tokenKey(tokenId));
+        String key = tokenKey(tokenId);
+        String userId = stringRedisTemplate.opsForValue().get(key);
+        stringRedisTemplate.delete(key);
+        if (userId != null) {
+            stringRedisTemplate.opsForSet().remove(userTokensKey(userId), tokenId);
+        }
+    }
+
+    /**
+     * 撤销指定用户的全部登录令牌。
+     *
+     * @param userId 用户ID
+     * @return 实际清理的令牌数量
+     */
+    public long revokeAllUserTokens(String userId) {
+        String indexKey = userTokensKey(userId);
+        Set<String> tokenIds = stringRedisTemplate.opsForSet().members(indexKey);
+        if (tokenIds == null || tokenIds.isEmpty()) {
+            stringRedisTemplate.delete(indexKey);
+            return 0;
+        }
+        stringRedisTemplate.delete(tokenIds.stream().map(this::tokenKey).toList());
+        stringRedisTemplate.delete(indexKey);
+        return tokenIds.size();
+    }
+
+    /**
+     * 查询用户当前令牌索引数量。
+     *
+     * @param userId 用户ID
+     * @return 令牌数量
+     */
+    public long countUserTokens(String userId) {
+        Long count = stringRedisTemplate.opsForSet().size(userTokensKey(userId));
+        return count == null ? 0 : count;
     }
 
     /**
@@ -67,5 +106,10 @@ public class RedisTokenService {
      */
     private String tokenKey(String tokenId) {
         return "oaf:auth:token:" + tokenId;
+    }
+
+    /** 生成用户Token反向索引Redis key。 */
+    private String userTokensKey(String userId) {
+        return "oaf:auth:user-tokens:" + userId;
     }
 }

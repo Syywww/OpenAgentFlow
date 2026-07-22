@@ -6,6 +6,7 @@ import com.openagentflow.config.OpenAgentFlowProperties;
 import com.openagentflow.security.JwtAuthenticationFilter;
 import com.openagentflow.security.WorkspaceIsolationFilter;
 import com.openagentflow.security.AuditOperationFilter;
+import com.openagentflow.security.ApiPermissionAuthorizationManager;
 import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -59,6 +60,7 @@ public class SecurityConfig {
                                                    JwtAuthenticationFilter jwtAuthenticationFilter,
                                                    WorkspaceIsolationFilter workspaceIsolationFilter,
                                                    AuditOperationFilter auditOperationFilter,
+                                                   ApiPermissionAuthorizationManager apiPermissionAuthorizationManager,
                                                    ObjectMapper objectMapper) throws Exception {
         http.csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -69,13 +71,15 @@ public class SecurityConfig {
                         // SSE 异步请求完成后如果进入容器错误分发，允许 ERROR dispatcher 直接通过。
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         // 登录、Swagger 和健康检查允许匿名访问。
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/auth/captcha").permitAll()
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // SSE 异步完成后容器可能内部转发到 /error，放行可避免响应已提交后再次触发 403。
                         .requestMatchers("/error").permitAll()
-                        .anyRequest().authenticated()
+                        // 业务接口统一进入路由权限管理器，避免只登录即可访问未标注接口。
+                        .anyRequest().access(apiPermissionAuthorizationManager)
                 )
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint((request, response, authException) -> {

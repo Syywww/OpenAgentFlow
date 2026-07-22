@@ -22,9 +22,9 @@ class FlywayMigrationTests {
             .withDatabaseName("openagentflow")
             .withPassword("123456");
 
-    /** 空数据库必须能够一次执行到P66对应的V042结构。 */
+    /** 空数据库必须能够一次执行到权限治理增强对应的V055结构。 */
     @Test
-    void freshDatabaseShouldMigrateToVersion42() throws Exception {
+    void freshDatabaseShouldMigrateToVersion55() throws Exception {
         Flyway flyway = Flyway.configure()
                 // 完整迁移包含建库语句，使用容器root账号执行DDL。
                 .dataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword())
@@ -34,11 +34,15 @@ class FlywayMigrationTests {
 
         flyway.migrate();
 
-        assertEquals("42", flyway.info().current().getVersion().getVersion());
+        assertEquals("55", flyway.info().current().getVersion().getVersion());
         try (Connection connection = MYSQL.createConnection("")) {
             assertTrue(columnExists(connection, "knowledge_document", "current_pipeline_root_id"));
             assertTrue(columnExists(connection, "document_pipeline_node", "generation_no"));
             assertTrue(tableExists(connection, "document_pipeline_reconcile_issue"));
+            assertTrue(tableExists(connection, "iam_workspace_role"));
+            assertTrue(tableExists(connection, "iam_workspace_member_role"));
+            assertTrue(tableExists(connection, "iam_authorization_audit"));
+            assertTrue(columnExists(connection, "iam_resource_acl", "expires_at"));
         }
     }
 

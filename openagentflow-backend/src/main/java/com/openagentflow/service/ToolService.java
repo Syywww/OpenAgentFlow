@@ -1051,7 +1051,7 @@ public class ToolService {
      * @return 是否可管理
      */
     private boolean canManage(ToolDefinitionEntity entity) {
-        return entity != null && workspaceGovernanceService.canManageResource(entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
+        return entity != null && workspaceGovernanceService.canManageResource("tool", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
     }
 
     /**

@@ -89,6 +89,78 @@ export interface PermissionNode {
   children: PermissionNode[];
 }
 
+export interface PermissionGovernanceOverview {
+  workspaceRoleCount: number;
+  memberRoleBindingCount: number;
+  activeAclCount: number;
+  authorizationAuditCount: number;
+}
+
+export interface WorkspaceRoleSummary {
+  id: string;
+  workspaceId: string;
+  roleCode: string;
+  roleName: string;
+  description?: string;
+  dataScope: 'all' | 'dept' | 'dept_tree' | 'self' | 'custom';
+  builtIn: boolean;
+  status: string;
+  permissionIds: string[];
+  permissionCodes: string[];
+  departmentIds: string[];
+  memberCount: number;
+}
+
+export interface WorkspaceRoleRequest {
+  workspaceId: string;
+  roleCode: string;
+  roleName: string;
+  description?: string;
+  dataScope: WorkspaceRoleSummary['dataScope'];
+  status: string;
+  permissionIds: string[];
+  departmentIds: string[];
+}
+
+export interface ResourceAclSummary {
+  id: string;
+  workspaceId: string;
+  resourceType: string;
+  resourceId: string;
+  subjectType: string;
+  subjectId: string;
+  permissionLevel: string;
+  status: string;
+  expiresAt?: string;
+  grantReason?: string;
+  grantedBy?: string;
+  createdAt?: string;
+}
+
+export interface ResourceAclRequest {
+  workspaceId: string;
+  resourceType: string;
+  resourceId: string;
+  subjectType: 'user' | 'role' | 'department';
+  subjectId: string;
+  permissionLevel: 'read' | 'run' | 'write' | 'owner';
+  expiresAt?: string;
+  reason?: string;
+}
+
+export interface AuthorizationAuditSummary {
+  id: string;
+  workspaceId?: string;
+  operatorUserId?: string;
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  subjectType?: string;
+  subjectId?: string;
+  reason?: string;
+  createdAt?: string;
+}
+
 export async function fetchIamOverview() {
   return request<IamOverview>('/iam-admin/overview');
 }
@@ -168,4 +240,55 @@ export async function updateIamRolePermissions(id: string, permissionIds: string
 
 export async function fetchIamPermissions() {
   return request<PermissionNode[]>('/iam-admin/permissions');
+}
+
+export function fetchPermissionGovernanceOverview(workspaceId: string) {
+  return request<PermissionGovernanceOverview>(`/iam-admin/governance/overview?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function fetchWorkspaceRoles(workspaceId: string) {
+  return request<WorkspaceRoleSummary[]>(`/iam-admin/governance/workspace-roles?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function createWorkspaceRole(payload: WorkspaceRoleRequest) {
+  return request<WorkspaceRoleSummary>('/iam-admin/governance/workspace-roles', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function updateWorkspaceRole(id: string, payload: WorkspaceRoleRequest) {
+  return request<WorkspaceRoleSummary>(`/iam-admin/governance/workspace-roles/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export function deleteWorkspaceRole(id: string, workspaceId: string) {
+  return request<void>(`/iam-admin/governance/workspace-roles/${id}?workspaceId=${encodeURIComponent(workspaceId)}`, { method: 'DELETE' });
+}
+
+export function assignWorkspaceMemberRoles(workspaceId: string, userId: string, roleIds: string[], reason?: string) {
+  return request<void>(`/iam-admin/governance/workspaces/${workspaceId}/members/${userId}/roles`, {
+    method: 'PUT', body: JSON.stringify({ roleIds, reason }),
+  });
+}
+
+export function fetchWorkspaceMemberRoleIds(workspaceId: string, userId: string) {
+  return request<string[]>(`/iam-admin/governance/workspaces/${workspaceId}/members/${userId}/roles`);
+}
+
+export function fetchResourceAcls(workspaceId: string) {
+  return request<ResourceAclSummary[]>(`/iam-admin/resource-acls?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function grantResourceAcl(payload: ResourceAclRequest) {
+  return request<ResourceAclSummary>('/iam-admin/resource-acls', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function revokeResourceAcl(id: string, workspaceId: string, reason?: string) {
+  const suffix = reason ? `&reason=${encodeURIComponent(reason)}` : '';
+  return request<void>(`/iam-admin/resource-acls/${id}?workspaceId=${encodeURIComponent(workspaceId)}${suffix}`, { method: 'DELETE' });
+}
+
+export function fetchAuthorizationAudits(workspaceId: string) {
+  return request<AuthorizationAuditSummary[]>(`/iam-admin/governance/audits?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function revokeUserSessions(userId: string, reason?: string) {
+  return request<number>(`/iam-admin/users/${userId}/revoke-sessions`, { method: 'POST', body: JSON.stringify({ reason }) });
 }

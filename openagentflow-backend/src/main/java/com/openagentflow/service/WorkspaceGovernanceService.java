@@ -14,6 +14,8 @@ import com.openagentflow.mapper.OafOrganizationMemberMapper;
 import com.openagentflow.mapper.OafWorkspaceMapper;
 import com.openagentflow.mapper.OafWorkspaceMemberMapper;
 import com.openagentflow.security.AuthUserDetails;
+import com.openagentflow.security.PlatformAuthorityPolicy;
+import com.openagentflow.security.ResourceModulePermissionPolicy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -23,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -170,6 +173,7 @@ public class WorkspaceGovernanceService {
         entity.setCreatedBy(userId);
         workspaceMapper.insert(entity);
         addWorkspaceMember(entity.getId(), userId, "owner");
+        initializeWorkspaceRoles(entity.getId(), userId);
         return getWorkspace(entity.getId());
     }
 
@@ -273,7 +277,9 @@ public class WorkspaceGovernanceService {
         if (userId.equals(ownerUserId) || userId.equals(createdBy)) {
             return true;
         }
-        return StringUtils.hasText(workspaceId) && isWorkspaceMember(workspaceId, userId);
+        return StringUtils.hasText(workspaceId)
+                && hasWorkspaceResourcePermission(workspaceId, userId, resourceType, false)
+                && dataScopeAllows(workspaceId, userId, ownerUserId, createdBy);
     }
 
     /**
@@ -284,7 +290,10 @@ public class WorkspaceGovernanceService {
      * @param createdBy 创建人 ID
      * @return 是否可管理
      */
-    public boolean canManageResource(String workspaceId, String ownerUserId, String createdBy) {
+    public boolean canManageResource(String resourceType,
+                                     String workspaceId,
+                                     String ownerUserId,
+                                     String createdBy) {
         if (isSystemManager()) {
             return true;
         }
@@ -295,7 +304,96 @@ public class WorkspaceGovernanceService {
         if (userId.equals(ownerUserId) || userId.equals(createdBy)) {
             return true;
         }
-        return StringUtils.hasText(workspaceId) && canManageWorkspace(workspaceId);
+        return StringUtils.hasText(workspaceId)
+                && hasWorkspaceResourcePermission(workspaceId, userId, resourceType, true)
+                && dataScopeAllows(workspaceId, userId, ownerUserId, createdBy);
+    }
+
+    /**
+     * 判断空间角色是否拥有资源模块权限。
+     *
+     * @param workspaceId 工作空间ID
+     * @param userId 用户ID
+     * @param resourceType 资源类型
+     * @param manage 是否要求管理权限
+     * @return 是否拥有权限
+     */
+    private boolean hasWorkspaceResourcePermission(String workspaceId, String userId,
+                                                   String resourceType, boolean manage) {
+        List<String> permissionCodes = ResourceModulePermissionPolicy.requiredPermissions(resourceType, manage);
+        String placeholders = String.join(",", permissionCodes.stream().map(item -> "?").toList());
+        List<Object> args = new ArrayList<>();
+        args.add(workspaceId);
+        args.add(userId);
+        args.addAll(permissionCodes);
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1) FROM iam_workspace_member_role mr
+                JOIN iam_workspace_role role ON role.id=mr.role_id AND role.status='enabled'
+                JOIN iam_workspace_role_permission rp ON rp.role_id=role.id
+                JOIN iam_permission p ON p.id=rp.permission_id AND p.status='enabled'
+                WHERE mr.workspace_id=? AND mr.user_id=? AND p.permission_code IN (%s)
+                """.formatted(placeholders), Long.class, args.toArray());
+        if (count != null && count > 0) {
+            return true;
+        }
+        // 兼容迁移前已存在的空间所有者和管理员。
+        return count("SELECT COUNT(1) FROM oaf_workspace_member WHERE workspace_id=? AND user_id=? AND member_role IN ('owner','admin') AND status IN ('active','enabled')",
+                workspaceId, userId) > 0;
+    }
+
+    /**
+     * 根据空间角色数据范围判断资源所有者是否可见。
+     */
+    private boolean dataScopeAllows(String workspaceId, String userId, String ownerUserId, String createdBy) {
+        String targetUserId = StringUtils.hasText(ownerUserId) ? ownerUserId : createdBy;
+        if (userId.equals(targetUserId)) {
+            return true;
+        }
+        List<String> scopes = jdbcTemplate.queryForList("""
+                SELECT DISTINCT role.data_scope FROM iam_workspace_member_role mr
+                JOIN iam_workspace_role role ON role.id=mr.role_id
+                WHERE mr.workspace_id=? AND mr.user_id=? AND role.status='enabled'
+                """, String.class, workspaceId, userId);
+        if (scopes.contains("all")) {
+            return true;
+        }
+        if (!StringUtils.hasText(targetUserId)) {
+            return false;
+        }
+        String currentDepartment = firstText("SELECT department_id FROM iam_user WHERE id=?", userId);
+        String targetDepartment = firstText("SELECT department_id FROM iam_user WHERE id=?", targetUserId);
+        if (!StringUtils.hasText(targetDepartment)) {
+            return false;
+        }
+        if (scopes.contains("dept") && targetDepartment.equals(currentDepartment)) {
+            return true;
+        }
+        if (scopes.contains("dept_tree") && StringUtils.hasText(currentDepartment)) {
+            Long descendant = jdbcTemplate.queryForObject("""
+                    WITH RECURSIVE department_tree AS (
+                      SELECT id FROM iam_department WHERE id=?
+                      UNION ALL
+                      SELECT child.id FROM iam_department child JOIN department_tree parent ON child.parent_id=parent.id
+                    ) SELECT COUNT(1) FROM department_tree WHERE id=?
+                    """, Long.class, currentDepartment, targetDepartment);
+            if (descendant != null && descendant > 0) {
+                return true;
+            }
+        }
+        if (scopes.contains("custom")) {
+            return count("""
+                    SELECT COUNT(1) FROM iam_workspace_member_role mr
+                    JOIN iam_workspace_role_department rd ON rd.role_id=mr.role_id
+                    WHERE mr.workspace_id=? AND mr.user_id=? AND rd.department_id=?
+                    """, workspaceId, userId, targetDepartment) > 0;
+        }
+        return false;
+    }
+
+    /** 查询单个文本字段，未命中时返回空字符串。 */
+    private String firstText(String sql, Object... args) {
+        List<String> values = jdbcTemplate.queryForList(sql, String.class, args);
+        return values.isEmpty() || values.getFirst() == null ? "" : values.getFirst();
     }
 
     /**
@@ -328,10 +426,8 @@ public class WorkspaceGovernanceService {
         if (authentication == null) {
             return false;
         }
-        Collection<? extends GrantedAuthority> authorities = authentication.getAuthorities();
-        return authorities.stream()
-                .map(GrantedAuthority::getAuthority)
-                .anyMatch(authority -> List.of("ROLE_super_admin", "ROLE_admin", "workspace:manage").contains(authority));
+        return PlatformAuthorityPolicy.isPlatformManager(authentication.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority).toList());
     }
 
     /**
@@ -501,6 +597,44 @@ public class WorkspaceGovernanceService {
                 VALUES (?, ?, ?, ?, 'enabled', ?)
                 ON DUPLICATE KEY UPDATE member_role = VALUES(member_role), status = 'enabled'
                 """, newId(), workspaceId, userId, normalizeRole(role), currentUserId());
+        String workspaceRoleCode = List.of("owner", "admin").contains(normalizeRole(role)) ? normalizeRole(role) : "viewer";
+        jdbcTemplate.update("""
+                INSERT IGNORE INTO iam_workspace_member_role(workspace_id,user_id,role_id,created_by)
+                SELECT ?,?,id,? FROM iam_workspace_role WHERE workspace_id=? AND role_code=? AND status='enabled'
+                """, workspaceId, userId, currentUserId(), workspaceId, workspaceRoleCode);
+    }
+
+    /**
+     * 为新工作空间初始化内置角色、权限和所有者角色关系。
+     *
+     * @param workspaceId 工作空间ID
+     * @param ownerUserId 所有者用户ID
+     */
+    private void initializeWorkspaceRoles(String workspaceId, String ownerUserId) {
+        List<List<String>> roles = List.of(
+                List.of("owner", "空间所有者", "拥有当前工作空间全部业务权限", "all"),
+                List.of("admin", "空间管理员", "管理当前工作空间成员和业务资源", "all"),
+                List.of("developer", "开发者", "创建、调试和运行Agent、RAG、工具与工作流", "dept_tree"),
+                List.of("auditor", "审计员", "查看运行、用量、风险和治理数据", "all"),
+                List.of("viewer", "只读成员", "只查看被授权的当前工作空间资源", "self")
+        );
+        for (List<String> role : roles) {
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO iam_workspace_role
+                      (id,workspace_id,role_code,role_name,description,data_scope,built_in,status,created_by)
+                    VALUES (?,?,?,?,?,?,1,'enabled',?)
+                    """, newId(), workspaceId, role.get(0), role.get(1), role.get(2), role.get(3), ownerUserId);
+        }
+        jdbcTemplate.update("""
+                INSERT IGNORE INTO iam_workspace_role_permission(role_id,permission_id,created_by)
+                SELECT role.id,p.id,? FROM iam_workspace_role role JOIN iam_permission p ON p.status='enabled'
+                WHERE role.workspace_id=? AND role.role_code IN ('owner','admin')
+                  AND p.permission_code REGEXP '^(agent|agent-team|debug|knowledge|tool|mcp|workflow|trace|runtime|usage|ops:monitor|notification|delivery:acceptance|model-gateway|workspace|async-task|governance|prompt|memory|evaluation|eval|template):'
+                """, ownerUserId, workspaceId);
+        jdbcTemplate.update("""
+                INSERT IGNORE INTO iam_workspace_member_role(workspace_id,user_id,role_id,created_by)
+                SELECT ?,?,id,? FROM iam_workspace_role WHERE workspace_id=? AND role_code='owner'
+                """, workspaceId, ownerUserId, ownerUserId, workspaceId);
     }
 
     /**

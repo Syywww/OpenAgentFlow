@@ -3,6 +3,7 @@ package com.openagentflow.service;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.exception.BusinessException;
 import com.openagentflow.security.AuthUserDetails;
+import com.openagentflow.security.PlatformAuthorityPolicy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -31,10 +32,15 @@ public class AgentAccessService {
     /** 工作空间治理服务，用于判断空间成员是否可以访问资源。 */
     private final WorkspaceGovernanceService workspaceGovernanceService;
 
+    /** 通用资源ACL服务。 */
+    private final ResourceAclService resourceAclService;
+
     public AgentAccessService(JdbcTemplate jdbcTemplate,
-                              WorkspaceGovernanceService workspaceGovernanceService) {
+                              WorkspaceGovernanceService workspaceGovernanceService,
+                              ResourceAclService resourceAclService) {
         this.jdbcTemplate = jdbcTemplate;
         this.workspaceGovernanceService = workspaceGovernanceService;
+        this.resourceAclService = resourceAclService;
     }
 
     /**
@@ -82,7 +88,8 @@ public class AgentAccessService {
         if (userId.equals(agent.getOwnerUserId()) || userId.equals(agent.getCreatedBy())) {
             return true;
         }
-        return hasAcl(agent.getId(), userId, List.of("owner", "write", "run", "read"))
+        return resourceAclService.currentUserHasAcl(agent.getWorkspaceId(), RESOURCE_TYPE_AGENT, agent.getId(),
+                List.of("owner", "write", "run", "read"))
                 || workspaceGovernanceService.canViewResource(
                 RESOURCE_TYPE_AGENT,
                 agent.getId(),
@@ -112,8 +119,9 @@ public class AgentAccessService {
         if (userId.equals(agent.getOwnerUserId()) || userId.equals(agent.getCreatedBy())) {
             return true;
         }
-        return hasAcl(agent.getId(), userId, List.of("owner", "write"))
-                || workspaceGovernanceService.canManageResource(agent.getWorkspaceId(), agent.getOwnerUserId(), agent.getCreatedBy());
+        return resourceAclService.currentUserHasAcl(agent.getWorkspaceId(), RESOURCE_TYPE_AGENT, agent.getId(),
+                List.of("owner", "write"))
+                || workspaceGovernanceService.canManageResource("agent", agent.getWorkspaceId(), agent.getOwnerUserId(), agent.getCreatedBy());
     }
 
     /**
@@ -153,9 +161,9 @@ public class AgentAccessService {
      * @return 是否拥有全局 Agent 管理权限
      */
     private boolean isSystemManager() {
-        return hasAuthority("ROLE_super_admin")
-                || hasAuthority("ROLE_admin")
-                || hasAuthority("agent:manage");
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && PlatformAuthorityPolicy.isPlatformManager(authentication.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority).toList());
     }
 
     /**

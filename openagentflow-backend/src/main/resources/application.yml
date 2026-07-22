@@ -106,7 +106,8 @@ openagentflow:
     slow-sql-ms: ${OAF_SLOW_SQL_MS:1000}
     slow-request-ms: ${OAF_SLOW_REQUEST_MS:3000}
   tenancy:
-    require-workspace-context: ${OAF_REQUIRE_WORKSPACE_CONTEXT:false}
+    # 默认强制租户业务请求携带工作空间，避免本地环境因缺少请求头而绕过空间条件。
+    require-workspace-context: ${OAF_REQUIRE_WORKSPACE_CONTEXT:true}
   vector-store:
     strict-write: ${OAF_VECTOR_STRICT_WRITE:true}
   observability:
@@ -183,6 +184,8 @@ openagentflow:
     default-memory-collection: ${OAF_MILVUS_MEMORY_COLLECTION:oaf_agent_memory}
   security:
     secret-encryption-key: ${OAF_SECRET_ENCRYPTION_KEY:}
+    # 严格模式下，未声明权限元数据且不属于内置模块策略的业务路由默认拒绝。
+    permission-strict-mode: ${OAF_PERMISSION_STRICT_MODE:true}
     # 登录与基础权限已接入 JWT，默认启用接口鉴权。
     auth-enabled: ${OAF_AUTH_ENABLED:true}
     # JWT 签名密钥，生产环境请通过环境变量覆盖。

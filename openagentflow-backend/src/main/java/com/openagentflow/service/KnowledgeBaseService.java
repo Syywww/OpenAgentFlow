@@ -1852,7 +1852,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
      * @param entity 知识库实体
      */
     private void assertCanManage(KnowledgeBaseEntity entity) {
-        if (!workspaceGovernanceService.canManageResource(entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy())) {
+        if (!workspaceGovernanceService.canManageResource("knowledge_base", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy())) {
             throw new BusinessException("KNOWLEDGE_FORBIDDEN", "没有管理该知识库的权限");
         }
     }

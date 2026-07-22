@@ -16,7 +16,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.Set;
 
 /**
  * 工作空间硬隔离过滤器。
@@ -37,7 +37,7 @@ public class WorkspaceIsolationFilter extends OncePerRequestFilter {
 
     public WorkspaceIsolationFilter(JdbcTemplate jdbcTemplate,
                                     ObjectMapper objectMapper,
-                                    @Value("${openagentflow.tenancy.require-workspace-context:false}") boolean requireWorkspaceContext) {
+                                    @Value("${openagentflow.tenancy.require-workspace-context:true}") boolean requireWorkspaceContext) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.requireWorkspaceContext = requireWorkspaceContext;
@@ -53,7 +53,7 @@ public class WorkspaceIsolationFilter extends OncePerRequestFilter {
         }
         String workspaceId = request.getHeader("X-Workspace-Id");
         if (!StringUtils.hasText(workspaceId)) {
-            if (requireWorkspaceContext && requiresWorkspace(request)) {
+            if (requireWorkspaceContext && WorkspacePathPolicy.requiresWorkspace(request.getMethod(), requestPath(request))) {
                 writeForbidden(response, "WORKSPACE_REQUIRED", "请选择工作空间后再访问租户资源");
                 return;
             }
@@ -77,12 +77,9 @@ public class WorkspaceIsolationFilter extends OncePerRequestFilter {
         }
     }
 
-    /** 判断当前接口是否属于必须隔离的租户资源面。 */
-    private boolean requiresWorkspace(HttpServletRequest request) {
-        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) return false;
-        String path = request.getRequestURI().substring(request.getContextPath().length());
-        return List.of("/agents", "/knowledge-bases", "/tools", "/workflows", "/chat", "/tasks",
-                "/memories", "/evaluations", "/prompts").stream().anyMatch(path::startsWith);
+    /** 获取去掉 context-path 的业务路径。 */
+    private String requestPath(HttpServletRequest request) {
+        return request.getRequestURI().substring(request.getContextPath().length());
     }
 
     /** 输出统一的工作空间拒绝响应。 */
@@ -101,7 +98,8 @@ public class WorkspaceIsolationFilter extends OncePerRequestFilter {
     }
 
     private boolean isSystemManager(Authentication authentication) {
-        return authentication.getAuthorities().stream().map(GrantedAuthority::getAuthority)
-                .anyMatch(List.of("ROLE_super_admin", "ROLE_admin", "workspace:manage")::contains);
+        Set<String> authorities = authentication.getAuthorities().stream().map(GrantedAuthority::getAuthority)
+                .collect(java.util.stream.Collectors.toSet());
+        return PlatformAuthorityPolicy.isPlatformManager(authorities);
     }
 }

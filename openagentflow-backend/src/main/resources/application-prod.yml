@@ -67,3 +67,4 @@ openagentflow:
     allow-mysql-vector-fallback: ${OAF_ALLOW_MYSQL_VECTOR_FALLBACK:false}
   security:
     allowed-origins: ${OAF_CORS_ALLOWED_ORIGINS}
+    permission-strict-mode: ${OAF_PERMISSION_STRICT_MODE:true}

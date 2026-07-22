@@ -22,6 +22,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **运行观测 Trace**：统一串联 LLM、RAG、Tool、Workflow、Evaluation 步骤，展示 Token、耗时、错误、引用来源、详情页卡片切换、步骤时间线按需展示、内部滚动和 Agent Runtime 可视化解释器。
 - **成本与用量中心**：按服务商、模型、Agent、用户、工作流、评测统计 Token、成本、耗时，支持明细导出、价格配置和配额拦截。
 - **组织空间治理**：组织、工作空间、空间成员、资源归属和空间级访问控制，支持 Agent、知识库、工具、工作流按空间隔离。
+- **权限治理增强**：Spring Security 统一路由裁决、数据库 API 权限元数据、租户资源默认空间上下文、平台与空间管理员边界、空间多角色与治理权委派、部门数据范围、读写动作分离、用户/角色/部门资源 ACL、授权到期、Redis 全会话撤销、按钮级权限和授权审计明细。
 - **运营监控告警**：统一展示平台健康、关键指标、告警规则、告警事件、通知渠道和一键巡检，支撑日常运营与交付验收。
 - **通知中心与消息触达**：提供个人通知分页、未读汇总、批量已读、归档、接收偏好、角色或全员发布和业务去重；顶部铃铛、通知抽屉与完整页面均接入真实接口，Webhook、钉钉和企业微信渠道支持 CRUD、连通性测试、HMAC-SHA256 签名、指数退避、死信收敛、投递明细与人工重投。
 - **交付验收中心**：面向开源发布、客户交付和部署上线，提供环境检查、核心链路检查、风险提示、交付清单和报告生成。
@@ -232,9 +233,12 @@ V049__solution_template_seed_contract_fix.sql
 V050__template_report_pending_guard_p74.sql
 V051__p0_complete_builtin_solution_packages.sql
 V052__p1_notification_center.sql
+V053__permission_governance_enhancement.sql
+V054__workspace_governance_permissions.sql
+V055__least_privilege_workspace_role_fix.sql
 ```
 
-后端使用 Flyway 管理迁移。空数据库按 V001-V052 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V052 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+后端使用 Flyway 管理迁移。空数据库按 V001-V055 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V055 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
 
 ```powershell
 .\scripts\sync-flyway-migrations.ps1
@@ -371,6 +375,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P72 全局租户隔离 | 已完成 | Eval/Prompt/高风险确认空间字段与旧数据回填、MyBatis核心表租户拦截、可信Kafka上下文和MySQL/Redis/Milvus/MinIO/OpenSearch命名空间巡检 |
 | P73 PromptOps生产化 | 已完成 | 统一Prompt编译Runtime、版本级强类型变量契约、敏感值遮蔽、Agent/工作流/评测版本绑定、版本差异与影响面、环境晋级、生产门禁、稳定灰度、A/B实验、自动选优、在线质量与成本指标、Trace Prompt快照和前端治理控制台 |
 | P74 企业解决方案模板广场 | 已完成 | 系统公开与空间私有模板、7个官方可安装版本、四套内置完整资源快照包、工作流画布物化、解决方案依赖收集、语义化不可变版本、敏感配置清洗、安全门禁、Kafka异步独立复制、MinIO模板包和向量载荷、Milvus向量恢复、失败补偿、三方升级冲突、安全卸载和推荐运营 |
+| P75 权限治理增强 | 已完成 | 统一路由鉴权、权限路径元数据生效、工作空间强制隔离、平台与空间权限分层、空间多角色、最小权限修正、部门数据范围、资源读写动作分离、通用资源ACL、授权有效期、会话强制撤销、按钮权限、授权审计和治理查询回归测试 |
 
 ## 演示建议
 
