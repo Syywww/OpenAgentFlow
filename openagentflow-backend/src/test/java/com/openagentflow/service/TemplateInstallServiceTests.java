@@ -5,6 +5,7 @@ import com.openagentflow.domain.template.TemplateDtos;
 import com.openagentflow.security.AuthUserDetails;
 import com.openagentflow.security.AuthUserDetailsService;
 import com.openagentflow.security.WorkspaceContextHolder;
+import com.openagentflow.support.MySqlContainerIntegrationTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,12 +22,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** 解决方案模板完整安装链路测试。 */
-@SpringBootTest(properties = {
-        "openagentflow.async-task.consumer-enabled=false",
-        "openagentflow.observability.otlp-enabled=false"
-})
+@SpringBootTest
 @Transactional
-class TemplateInstallServiceTests {
+class TemplateInstallServiceTests extends MySqlContainerIntegrationTestSupport {
 
     /** 安装服务。 */ @Autowired private TemplateInstallService installService;
     /** 用户加载服务。 */ @Autowired private AuthUserDetailsService userDetailsService;

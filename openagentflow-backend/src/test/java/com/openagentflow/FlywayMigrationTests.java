@@ -1,6 +1,7 @@
 package com.openagentflow;
 
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -34,7 +35,8 @@ class FlywayMigrationTests {
 
         flyway.migrate();
 
-        assertEquals("55", flyway.info().current().getVersion().getVersion());
+        // 使用 Flyway 语义版本比较，避免 V055 的展示文本前导零造成误判。
+        assertEquals(0, MigrationVersion.fromVersion("55").compareTo(flyway.info().current().getVersion()));
         try (Connection connection = MYSQL.createConnection("")) {
             assertTrue(columnExists(connection, "knowledge_document", "current_pipeline_root_id"));
             assertTrue(columnExists(connection, "document_pipeline_node", "generation_no"));

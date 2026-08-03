@@ -21,6 +21,8 @@
         <java.version>21</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <milvus.sdk.version>2.4.6</milvus.sdk.version>
+        <!-- 1.21.4 保持现有 1.x API，同时兼容 Docker Engine 29 的最低 API 版本。 -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencies>

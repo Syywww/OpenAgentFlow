@@ -1,10 +1,10 @@
 package com.openagentflow;
 
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.sql.DriverManager;
@@ -22,14 +22,14 @@ class InfrastructureContainerSmokeTests {
 
     /** MySQL测试容器。 */
     @Container
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0")
+    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0.36")
             .withDatabaseName("openagentflow")
             .withUsername("openagentflow")
             .withPassword("openagentflow");
 
     /** Kafka测试容器。 */
     @Container
-    static final KafkaContainer KAFKA = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"));
+    static final KafkaContainer KAFKA = new KafkaContainer(DockerImageName.parse("apache/kafka:4.3.1"));
 
     /** 检查数据库和消息Broker已真实启动。 */
     @Test

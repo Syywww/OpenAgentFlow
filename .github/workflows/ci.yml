@@ -29,8 +29,27 @@ jobs:
         working-directory: .
         run: ./scripts/sync-flyway-migrations.ps1 -Check
 
+      - name: Check Docker engine
+        working-directory: .
+        run: docker info
+
       - name: Test backend and enforce coverage
         run: mvn -B verify
+
+      - name: Ensure MySQL container suites executed
+        shell: bash
+        run: |
+          reports=(
+            "target/surefire-reports/TEST-com.openagentflow.FlywayMigrationTests.xml"
+            "target/surefire-reports/TEST-com.openagentflow.InfrastructureContainerSmokeTests.xml"
+            "target/surefire-reports/TEST-com.openagentflow.service.SolutionTemplateServiceTests.xml"
+            "target/surefire-reports/TEST-com.openagentflow.service.TemplateInstallServiceTests.xml"
+            "target/surefire-reports/TEST-com.openagentflow.service.PermissionGovernanceServiceTests.xml"
+          )
+          for report in "${reports[@]}"; do
+            test -f "$report" || { echo "Missing test report: $report"; exit 1; }
+            grep -q 'skipped="0"' "$report" || { echo "Container suite was skipped: $report"; exit 1; }
+          done
 
   frontend:
     name: Frontend Build

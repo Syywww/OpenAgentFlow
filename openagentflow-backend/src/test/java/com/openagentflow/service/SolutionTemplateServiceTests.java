@@ -2,6 +2,7 @@ package com.openagentflow.service;
 
 import com.openagentflow.api.PageResult;
 import com.openagentflow.domain.template.TemplateDtos;
+import com.openagentflow.support.MySqlContainerIntegrationTestSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -9,11 +10,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** 解决方案模板广场真实数据库查询测试。 */
-@SpringBootTest(properties = {
-        "openagentflow.async-task.consumer-enabled=false",
-        "openagentflow.observability.otlp-enabled=false"
-})
-class SolutionTemplateServiceTests {
+@SpringBootTest
+class SolutionTemplateServiceTests extends MySqlContainerIntegrationTestSupport {
 
     /** 模板服务。 */
     @Autowired

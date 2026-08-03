@@ -1,0 +1,30 @@
+spring:
+  flyway:
+    enabled: false
+  kafka:
+    listener:
+      auto-startup: false
+
+management:
+  tracing:
+    enabled: false
+
+openagentflow:
+  logging:
+    sql-enabled: false
+  lifecycle:
+    retention-enabled: false
+  document-pipeline:
+    reconcile-enabled: false
+  async-task:
+    enabled: false
+    consumer-enabled: false
+    publisher-enabled: false
+  object-storage:
+    enabled: false
+  milvus:
+    enabled: false
+  opensearch:
+    enabled: false
+  observability:
+    otlp-enabled: false

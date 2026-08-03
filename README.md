@@ -35,7 +35,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 - **Agent 历史会话**：每个 Agent 支持按用户保存历史会话、消息列表、继续对话、新建会话和删除会话，调试台进入或切换历史会话后自动定位最新消息，并支持流式生成暂停、保留部分回答及引入补充说明继续；长对话内容、引用来源和工具调用在独立区域内滚动展示。
 - **Memory 记忆中心**：支持 Redis 短期记忆、MySQL 事实主数据、Milvus HNSW 长期记忆、LLM 结构化提取、Kafka + Outbox 异步流水线、内容哈希去重、事实版本与冲突替代、PII 策略、租户硬隔离、混合召回与时间衰减、Prompt Token 预算、反馈学习、配额、向量补偿、用户遗忘、治理问题和运营指标。
 - **分布式异步任务**：基于 Kafka + Transactional Outbox 拆分任务提交与 Worker 执行，文档处理、向量重建、批量评测、工作流运行、MCP 能力发现、知识治理扫描、Memory 清理、历史成本重算均支持分类 Topic、多实例消费、MySQL 幂等抢占、Fencing Token、Worker 心跳、自动补偿、两级延迟重试和死信回放；上传文件通过 MinIO 在多个 Worker 间共享。
-- **开源工程化**：Flyway 数据库迁移、JUnit/Testcontainers、Vitest、Playwright、JaCoCo、Maven Enforcer、Docker Compose、CI、脚本、License、Issue/PR 模板和开源文档。
+- **开源工程化**：Flyway 数据库迁移、无外部依赖的测试 Profile、MySQL Testcontainers、Vitest、Playwright、JaCoCo、Maven Enforcer、Docker Compose、CI、脚本、License、Issue/PR 模板和开源文档；CI 强制运行数据库容器套件及真实登录权限浏览器用例。
 
 ## 技术栈
 
@@ -94,6 +94,8 @@ cd E:\xm\OpenAgentFlow-Java\dm
 ```powershell
 .\scripts\build-all.ps1
 ```
+
+后端单元测试默认启用 `test` Profile，并关闭 Milvus、Kafka Consumer、对象存储、OpenSearch 和 OTLP 等外部适配器；涉及 Flyway、模板安装和权限治理的集成套件使用临时 MySQL 8 容器。Testcontainers 固定为兼容 Docker Engine 29 的 `1.21.4`，GitHub Actions 运行时必须具备 Docker Engine，关键容器套件若被跳过会直接阻断 CI。
 
 停止本地服务：
 
@@ -376,6 +378,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P73 PromptOps生产化 | 已完成 | 统一Prompt编译Runtime、版本级强类型变量契约、敏感值遮蔽、Agent/工作流/评测版本绑定、版本差异与影响面、环境晋级、生产门禁、稳定灰度、A/B实验、自动选优、在线质量与成本指标、Trace Prompt快照和前端治理控制台 |
 | P74 企业解决方案模板广场 | 已完成 | 系统公开与空间私有模板、7个官方可安装版本、四套内置完整资源快照包、工作流画布物化、解决方案依赖收集、语义化不可变版本、敏感配置清洗、安全门禁、Kafka异步独立复制、MinIO模板包和向量载荷、Milvus向量恢复、失败补偿、三方升级冲突、安全卸载和推荐运营 |
 | P75 权限治理增强 | 已完成 | 统一路由鉴权、权限路径元数据生效、工作空间强制隔离、平台与空间权限分层、空间多角色、最小权限修正、部门数据范围、资源读写动作分离、通用资源ACL、授权有效期、会话强制撤销、按钮权限、授权审计和治理查询回归测试 |
+| P76 可重复构建与质量门禁闭环 | 已完成 | 测试Profile隔离外部适配器、Docker 29兼容的Testcontainers 1.21.4、MySQL共享基座、Apache Kafka基础设施冒烟、模板与权限关键用例容器化、CI Docker检查及容器套件防跳过门禁、真实登录默认空间和菜单裁剪Playwright用例 |
 
 ## 演示建议
 

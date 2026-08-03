@@ -3,6 +3,7 @@ package com.openagentflow.service;
 import com.openagentflow.security.AuthUserDetails;
 import com.openagentflow.security.AuthUserDetailsService;
 import com.openagentflow.security.WorkspaceContextHolder;
+import com.openagentflow.support.MySqlContainerIntegrationTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,12 +16,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** 权限治理查询链路测试。 */
-@SpringBootTest(properties = {
-        "openagentflow.async-task.consumer-enabled=false",
-        "openagentflow.observability.otlp-enabled=false",
-        "openagentflow.milvus.enabled=false"
-})
-class PermissionGovernanceServiceTests {
+@SpringBootTest
+class PermissionGovernanceServiceTests extends MySqlContainerIntegrationTestSupport {
 
     /** 工作空间授权服务。 */
     @Autowired
