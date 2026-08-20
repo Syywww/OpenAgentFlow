@@ -67,7 +67,7 @@ Copy-Item .env.example .env
 docker compose up -d --build
 ```
 
-执行前需要先启动 Kafka，并保证宿主机 `localhost:9092` 可用；Compose 中的后端通过 `host.docker.internal:9092` 访问该 Broker。
+Kafka、MySQL、Redis 等依赖均以服务形式内置在 Compose 中，无需单独启动；后端通过 `.env` 中的 `OAF_KAFKA_BOOTSTRAP_SERVERS=kafka:9092` 访问 Compose 内的 Broker。如果网络受限无法直接拉取镜像（如 Docker Hub 上的 `bitnamilegacy/kafka`），建议先为 Docker 配置镜像加速器。
 
 访问地址：
 
@@ -240,14 +240,14 @@ V054__workspace_governance_permissions.sql
 V055__least_privilege_workspace_role_fix.sql
 ```
 
-后端使用 Flyway 管理迁移。空数据库按 V001-V055 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V055 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+后端使用 Flyway 管理迁移。空数据库按 V001-V055 顺序初始化；已有非空数据库（`openagentflow-sql/mysql` 经 initdb 全量建库至 V055）默认以 V055 建立基线，之后只执行 V056 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
 
 ```powershell
 .\scripts\sync-flyway-migrations.ps1
 .\scripts\sync-flyway-migrations.ps1 -Check
 ```
 
-生产环境禁止执行 Flyway clean，并保持 `OAF_FLYWAY_ENABLED=true`、`OAF_FLYWAY_BASELINE_VERSION=41`。新部署不得修改已发布迁移文件，只能追加更高版本。
+生产环境禁止执行 Flyway clean，并保持 `OAF_FLYWAY_ENABLED=true`、`OAF_FLYWAY_BASELINE_VERSION=55`。新部署不得修改已发布迁移文件，只能追加更高版本。
 
 ## 质量门禁
 

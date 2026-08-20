@@ -16,11 +16,11 @@ spring:
     password: ${OAF_MYSQL_PASSWORD:123456}
     driver-class-name: com.mysql.cj.jdbc.Driver
   flyway:
-    # 空库执行全部迁移；既有非空库从V041建立基线后继续执行后续版本。
+    # 空库执行全部迁移；既有非空库（initdb 已按 V001-V055 全量建库）从 V055 建立基线，之后只执行 V056 及后续版本。
     enabled: ${OAF_FLYWAY_ENABLED:true}
     locations: classpath:db/migration
     baseline-on-migrate: true
-    baseline-version: ${OAF_FLYWAY_BASELINE_VERSION:41}
+    baseline-version: ${OAF_FLYWAY_BASELINE_VERSION:55}
     validate-on-migrate: true
     out-of-order: false
     clean-disabled: true
