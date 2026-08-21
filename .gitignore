@@ -32,3 +32,4 @@ Thumbs.db
 
 # Docker local volumes
 docker-data/
+PLAN.md
