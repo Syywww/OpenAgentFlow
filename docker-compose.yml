@@ -7,6 +7,16 @@ services:
       MYSQL_ROOT_PASSWORD: ${OAF_MYSQL_ROOT_PASSWORD:-123456}
       MYSQL_DATABASE: ${OAF_MYSQL_DATABASE:-openagentflow}
       TZ: Asia/Shanghai
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Docker Desktop 挂载 Windows 文件默认 777 权限，MySQL 会忽略 world-writable 的配置文件。
+        # 因此不用 bind mount 的 client.cnf，改为直接在镜像内的 /etc/my.cnf 追加 [client] 配置。
+        # 镜像内文件权限固定 644，永远生效，避免 initdb 客户端以 latin1 解码 UTF-8 中文导致乱码。
+        grep -q 'default-character-set=utf8mb4' /etc/my.cnf || printf '\n[client]\ndefault-character-set=utf8mb4\n' >> /etc/my.cnf
+        exec docker-entrypoint.sh "$@"
+      - docker-entrypoint.sh
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
