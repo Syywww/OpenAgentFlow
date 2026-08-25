@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.openagentflow.domain.chat.ChatMessage;
 import com.openagentflow.domain.chat.ChatRunContext;
 import com.openagentflow.domain.chat.LlmCallResult;
+import com.openagentflow.domain.chat.ModelChatClient;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.chat.ToolDefinitionForModel;
 import com.openagentflow.entity.ModelConfigEntity;
@@ -36,9 +37,12 @@ import java.util.function.Consumer;
 
 /**
  * OpenAI-compatible 模型调用客户端。
+ *
+ * <p>通过 {@link ModelChatClient} 接口接入适配器路由，覆盖 OpenAI 及其兼容厂商
+ * （DeepSeek、通义千问、豆包方舟、Ollama 等）的 chat/SSE/embedding 调用。</p>
  */
 @Service
-public class OpenAiCompatibleClient {
+public class OpenAiCompatibleClient implements ModelChatClient {
 
     /** 运行ID到活动HTTP请求的映射，用于用户停止时主动中断阻塞模型调用。 */
     private final Map<String, CompletableFuture<?>> activeRequests = new ConcurrentHashMap<>();
@@ -69,6 +73,7 @@ public class OpenAiCompatibleClient {
      * @param maxTokens 最大输出 Token 数
      * @return LLM 调用结果
      */
+    @Override
     public LlmCallResult complete(ChatRunContext context, Double temperature, Integer maxTokens) {
         Instant startedAt = Instant.now();
         ObjectNode payload = buildPayload(context, false, temperature, maxTokens);
@@ -98,6 +103,7 @@ public class OpenAiCompatibleClient {
      * @param maxTokens 最大输出 Token 数
      * @return LLM 调用结果，可能包含 tool_calls
      */
+    @Override
     public LlmCallResult completeWithTools(ChatRunContext context, Double temperature, Integer maxTokens) {
         Instant startedAt = Instant.now();
         ObjectNode payload = buildPayload(context, false, temperature, maxTokens, context.getTools());
@@ -128,6 +134,7 @@ public class OpenAiCompatibleClient {
      * @param onDelta 流式片段回调
      * @return LLM 调用结果
      */
+    @Override
     public LlmCallResult completeStream(ChatRunContext context,
                                         Double temperature,
                                         Integer maxTokens,

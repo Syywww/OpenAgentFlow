@@ -104,8 +104,8 @@ public class EvaluationService implements DistributedTaskHandler {
     /** 模型服务，用于加载 Judge 模型、服务商和 API Key。 */
     private final ModelProviderService modelProviderService;
 
-    /** OpenAI-compatible 客户端，用于真实执行 LLM-as-Judge 评分。 */
-    private final OpenAiCompatibleClient openAiCompatibleClient;
+    /** 模型聊天客户端路由，用于真实执行 LLM-as-Judge 评分。 */
+    private final ModelChatClientRouter chatClientRouter;
 
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
@@ -134,7 +134,7 @@ public class EvaluationService implements DistributedTaskHandler {
                              AgentAccessService agentAccessService,
                              AgentService agentService,
                              ModelProviderService modelProviderService,
-                             OpenAiCompatibleClient openAiCompatibleClient,
+                             ModelChatClientRouter chatClientRouter,
                              ObjectMapper objectMapper,
                              AsyncTaskService asyncTaskService,
                              PromptRuntimeService promptRuntimeService,
@@ -152,7 +152,7 @@ public class EvaluationService implements DistributedTaskHandler {
         this.agentAccessService = agentAccessService;
         this.agentService = agentService;
         this.modelProviderService = modelProviderService;
-        this.openAiCompatibleClient = openAiCompatibleClient;
+        this.chatClientRouter = chatClientRouter;
         this.objectMapper = objectMapper;
         this.asyncTaskService = asyncTaskService;
         this.promptRuntimeService = promptRuntimeService;
@@ -646,7 +646,7 @@ public class EvaluationService implements DistributedTaskHandler {
                     new ChatMessage("system", compiledPrompt.renderedPrompt),
                     new ChatMessage("user", judgeUserPrompt(sample, response))
             ));
-            LlmCallResult result = openAiCompatibleClient.complete(context, 0D, 900);
+            LlmCallResult result = chatClientRouter.route(context).complete(context, 0D, 900);
             promptRuntimeService.recordMetric(null, run.getRunId(), request.getAgentId(), compiledPrompt,
                     true, result.getLatencyMs() == null ? 0 : result.getLatencyMs(),
                     result.getTotalTokens() == null ? 0 : result.getTotalTokens(), BigDecimal.ZERO);

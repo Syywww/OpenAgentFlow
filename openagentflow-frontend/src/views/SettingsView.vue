@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { Bell, Building2, FileClock, KeyRound, LogOut, Pencil, Plus, Save, ShieldCheck, TestTube2, Trash2, UserCog, UserPlus, X } from 'lucide-vue-next';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
@@ -167,6 +167,10 @@ const providerForm = reactive({
   supportFunctionCalling: false,
   supportVision: false,
   isDefault: true,
+  sparkAppId: '',
+  sparkApiKey: '',
+  sparkApiSecret: '',
+  sparkDomain: '4.0Ultra',
 });
 
 onMounted(() => {
@@ -510,7 +514,35 @@ function resetProviderForm() {
   providerForm.supportFunctionCalling = false;
   providerForm.supportVision = false;
   providerForm.isDefault = true;
+  providerForm.sparkAppId = '';
+  providerForm.sparkApiKey = '';
+  providerForm.sparkApiSecret = '';
+  providerForm.sparkDomain = '4.0Ultra';
 }
+
+function applySparkPreset() {
+  providerForm.providerCode = 'spark';
+  providerForm.providerName = '讯飞星火 Spark';
+  providerForm.baseUrl = 'wss://spark-api.xf-yun.com/v4.0/chat';
+  providerForm.modelCode = 'spark-4.0-ultra';
+  providerForm.modelName = 'Spark Ultra 4.0';
+  providerForm.contextWindow = 32768;
+  providerForm.maxOutputTokens = 8192;
+  providerForm.supportFunctionCalling = false;
+  providerForm.supportVision = false;
+  providerForm.sparkDomain = '4.0Ultra';
+}
+
+watch(() => providerForm.providerType, (type) => {
+  if (type === 'spark') {
+    // 仅新建模式自动填充星火接入信息；编辑已有服务商时保留已加载的值。
+    if (!editingProviderId.value) applySparkPreset();
+  } else {
+    providerForm.sparkAppId = '';
+    providerForm.sparkApiKey = '';
+    providerForm.sparkApiSecret = '';
+  }
+});
 
 function openCreateProviderModal() {
   resetProviderForm();
@@ -544,7 +576,23 @@ function editProvider(provider: ModelProviderSummary) {
   providerForm.supportFunctionCalling = firstChatModel?.supportFunctionCalling ?? false;
   providerForm.supportVision = firstChatModel?.supportVision ?? false;
   providerForm.isDefault = firstChatModel?.isDefault ?? false;
+  // 星火三凭证不随摘要回显，编辑时留空表示不替换；domain 摘要未暴露，回退官方默认版本。
+  providerForm.sparkAppId = '';
+  providerForm.sparkApiKey = '';
+  providerForm.sparkApiSecret = '';
+  providerForm.sparkDomain = provider.providerType === 'spark' ? '4.0Ultra' : '';
   providerModalOpen.value = true;
+}
+
+function resolveApiKey(): string | undefined {
+  if (providerForm.providerType !== 'spark') {
+    return providerForm.apiKey || undefined;
+  }
+  // 星火三凭证（APPID/APIKey/APISecret）以 {appId}:{apiKey}:{apiSecret} 复合串存储。
+  const appId = providerForm.sparkAppId.trim();
+  const key = providerForm.sparkApiKey.trim();
+  const secret = providerForm.sparkApiSecret.trim();
+  return appId && key && secret ? `${appId}:${key}:${secret}` : undefined;
 }
 
 function buildProviderPayload(): ModelProviderRequest {
@@ -554,7 +602,7 @@ function buildProviderPayload(): ModelProviderRequest {
     providerType: providerForm.providerType,
     baseUrl: providerForm.baseUrl,
     authType: providerForm.authType,
-    apiKey: providerForm.apiKey || undefined,
+    apiKey: resolveApiKey(),
     status: providerForm.status,
     sortOrder: 0,
     models: [
@@ -570,7 +618,9 @@ function buildProviderPayload(): ModelProviderRequest {
         supportStream: providerForm.supportStream,
         supportFunctionCalling: providerForm.supportFunctionCalling,
         supportVision: providerForm.supportVision,
-        defaultParams: '{}',
+        defaultParams: providerForm.providerType === 'spark'
+          ? JSON.stringify({ domain: providerForm.sparkDomain || '4.0Ultra' })
+          : '{}',
         status: 'enabled',
         isDefault: providerForm.isDefault,
       },
@@ -664,7 +714,7 @@ async function runProviderTest(provider: ModelProviderSummary) {
     <button class="governance-tab-card" :class="{ active: activePanel === 'providers' }" type="button" @click="activePanel = 'providers'">
       <span>模型供应商配置</span>
       <b>{{ providers.length }}</b>
-      <small>OpenAI-compatible / Ollama / Qwen 等</small>
+      <small>OpenAI-compatible / Ollama / Qwen / 讯飞星火 等</small>
     </button>
     <button class="governance-tab-card" :class="{ active: activePanel === 'models' }" type="button" @click="activePanel = 'models'">
       <span>模型列表</span>
@@ -851,7 +901,7 @@ async function runProviderTest(provider: ModelProviderSummary) {
       <div class="section-title">
         <h2>模型供应商配置</h2>
         <div class="title-actions">
-          <span>OpenAI-compatible / Ollama / Qwen / DeepSeek / Doubao</span>
+          <span>OpenAI-compatible / Ollama / Qwen / DeepSeek / Doubao / 讯飞星火</span>
           <button class="primary-button slim" type="button" @click="openCreateProviderModal"><Plus :size="14" /> 新增服务商</button>
         </div>
       </div>
@@ -1061,6 +1111,7 @@ async function runProviderTest(provider: ModelProviderSummary) {
           <select v-model="providerForm.providerType">
             <option value="openai_compatible">OpenAI-compatible</option>
             <option value="ollama">Ollama</option>
+            <option value="spark">讯飞星火</option>
           </select>
         </label>
         <label>Base URL<input v-model="providerForm.baseUrl" /></label>
@@ -1070,7 +1121,13 @@ async function runProviderTest(provider: ModelProviderSummary) {
             <option value="none">None</option>
           </select>
         </label>
-        <label>API Key<input v-model="providerForm.apiKey" type="password" placeholder="编辑时留空表示不替换" /></label>
+        <label v-if="providerForm.providerType !== 'spark'">API Key<input v-model="providerForm.apiKey" type="password" placeholder="编辑时留空表示不替换" /></label>
+        <template v-if="providerForm.providerType === 'spark'">
+          <label>星火 APPID<input v-model="providerForm.sparkAppId" placeholder="编辑时留空表示不替换" /></label>
+          <label>星火 APIKey<input v-model="providerForm.sparkApiKey" type="password" placeholder="编辑时留空表示不替换" /></label>
+          <label>星火 APISecret<input v-model="providerForm.sparkApiSecret" type="password" placeholder="编辑时留空表示不替换" /></label>
+          <label>星火 Domain<input v-model="providerForm.sparkDomain" placeholder="模型版本 domain，如 4.0Ultra" /></label>
+        </template>
         <label>模型编码<input v-model="providerForm.modelCode" /></label>
         <label>模型名称<input v-model="providerForm.modelName" /></label>
         <label>上下文窗口<input v-model.number="providerForm.contextWindow" type="number" /></label>

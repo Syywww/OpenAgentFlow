@@ -31,16 +31,16 @@ public class MemoryExtractionService {
                             double importance, double confidence, double sourceReliability) { }
 
     private final ModelGatewayService modelGatewayService;
-    private final OpenAiCompatibleClient client;
+    private final ModelChatClientRouter chatClientRouter;
     private final ObjectMapper objectMapper;
     private final AiGuardrailService guardrailService;
 
     public MemoryExtractionService(ModelGatewayService modelGatewayService,
-                                   OpenAiCompatibleClient client,
+                                   ModelChatClientRouter chatClientRouter,
                                    ObjectMapper objectMapper,
                                    AiGuardrailService guardrailService) {
         this.modelGatewayService = modelGatewayService;
-        this.client = client;
+        this.chatClientRouter = chatClientRouter;
         this.objectMapper = objectMapper;
         this.guardrailService = guardrailService;
     }
@@ -61,7 +61,7 @@ public class MemoryExtractionService {
             context.setMessages(List.of(
                     new ChatMessage("system", extractionPrompt()),
                     new ChatMessage("user", userInput)));
-            LlmCallResult result = client.complete(context, 0D, 600);
+            LlmCallResult result = chatClientRouter.route(context).complete(context, 0D, 600);
             return parse(workspaceId, runId, agent.getId(), result.getContent(), piiMode);
         } catch (Exception ignored) {
             // 模型不可用时只接受带有明确自述信号的内容，避免把普通问句误写成长期事实。

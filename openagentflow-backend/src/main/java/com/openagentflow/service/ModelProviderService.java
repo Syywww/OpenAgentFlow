@@ -49,8 +49,8 @@ public class ModelProviderService {
     /** 模型连通性测试 Mapper。 */
     private final ModelConnectivityTestMapper modelConnectivityTestMapper;
 
-    /** OpenAI-compatible 调用客户端。 */
-    private final OpenAiCompatibleClient openAiCompatibleClient;
+    /** 模型聊天客户端路由，按服务商类型分发到对应协议实现。 */
+    private final ModelChatClientRouter chatClientRouter;
 
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
@@ -62,14 +62,14 @@ public class ModelProviderService {
                                 ModelConfigMapper modelConfigMapper,
                                 ModelApiKeyMapper modelApiKeyMapper,
                                 ModelConnectivityTestMapper modelConnectivityTestMapper,
-                                OpenAiCompatibleClient openAiCompatibleClient,
+                                ModelChatClientRouter chatClientRouter,
                                 ObjectMapper objectMapper,
                                 SecretCryptoService secretCryptoService) {
         this.modelProviderMapper = modelProviderMapper;
         this.modelConfigMapper = modelConfigMapper;
         this.modelApiKeyMapper = modelApiKeyMapper;
         this.modelConnectivityTestMapper = modelConnectivityTestMapper;
-        this.openAiCompatibleClient = openAiCompatibleClient;
+        this.chatClientRouter = chatClientRouter;
         this.objectMapper = objectMapper;
         this.secretCryptoService = secretCryptoService;
     }
@@ -230,7 +230,7 @@ public class ModelProviderService {
         testEntity.setTestType("chat");
         testEntity.setCreatedAt(startedAt);
         try {
-            LlmCallResult callResult = openAiCompatibleClient.complete(context, 0.1, 64);
+            LlmCallResult callResult = chatClientRouter.route(provider).complete(context, 0.1, 64);
             result.setSuccess(true);
             result.setHealthStatus("healthy");
             result.setLatencyMs(callResult.getLatencyMs());

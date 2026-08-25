@@ -115,8 +115,8 @@ public class WorkflowExecutionService {
     /** 模型服务商服务。 */
     private final ModelProviderService modelProviderService;
 
-    /** OpenAI-compatible 客户端。 */
-    private final OpenAiCompatibleClient openAiCompatibleClient;
+    /** 模型聊天客户端路由，按服务商类型分发到对应协议实现。 */
+    private final ModelChatClientRouter chatClientRouter;
 
     /** RAG 知识库服务。 */
     private final KnowledgeBaseService knowledgeBaseService;
@@ -158,7 +158,7 @@ public class WorkflowExecutionService {
                                     ModelConfigMapper modelConfigMapper,
                                     AgentAccessService agentAccessService,
                                     ModelProviderService modelProviderService,
-                                    OpenAiCompatibleClient openAiCompatibleClient,
+                                    ModelChatClientRouter chatClientRouter,
                                     KnowledgeBaseService knowledgeBaseService,
                                     ToolService toolService,
                                     UsageCostService usageCostService,
@@ -181,7 +181,7 @@ public class WorkflowExecutionService {
         this.modelConfigMapper = modelConfigMapper;
         this.agentAccessService = agentAccessService;
         this.modelProviderService = modelProviderService;
-        this.openAiCompatibleClient = openAiCompatibleClient;
+        this.chatClientRouter = chatClientRouter;
         this.knowledgeBaseService = knowledgeBaseService;
         this.toolService = toolService;
         this.usageCostService = usageCostService;
@@ -519,7 +519,7 @@ public class WorkflowExecutionService {
         Double temperature = numberValue(config.get("temperature"), 0.3D);
         Integer maxTokens = numberValue(config.get("maxTokens"), model.getMaxOutputTokens() == null ? 2048D : model.getMaxOutputTokens().doubleValue()).intValue();
         LlmCallResult result = invokeWithGatewayFallback(chatContext,
-                current -> openAiCompatibleClient.complete(current, temperature, maxTokens),
+                current -> chatClientRouter.route(current).complete(current, temperature, maxTokens),
                 current -> usageCostService.assertWithinQuota(runtimeRun.getUserId(), runtimeRun.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), maxTokens));
         traceStep.setModelId(chatContext.getModel().getId());
         BigDecimal cost = usageCostService.calculateCost(chatContext.getModel(), nullToZero(result.getPromptTokens()), nullToZero(result.getCompletionTokens()));
