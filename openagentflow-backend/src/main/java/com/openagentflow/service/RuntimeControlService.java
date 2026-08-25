@@ -28,15 +28,15 @@ public class RuntimeControlService {
     /** JDBC工具。 */
     private final JdbcTemplate jdbcTemplate;
 
-    /** 模型调用客户端，用于主动关闭当前JVM中的HTTP请求。 */
-    private final OpenAiCompatibleClient modelClient;
+    /** 模型聊天客户端路由，用于主动关闭当前 JVM 中所有协议的活动调用。 */
+    private final ModelChatClientRouter chatClientRouter;
 
     public RuntimeControlService(StringRedisTemplate redisTemplate,
                                  JdbcTemplate jdbcTemplate,
-                                 OpenAiCompatibleClient modelClient) {
+                                 ModelChatClientRouter chatClientRouter) {
         this.redisTemplate = redisTemplate;
         this.jdbcTemplate = jdbcTemplate;
-        this.modelClient = modelClient;
+        this.chatClientRouter = chatClientRouter;
     }
 
     /**
@@ -52,7 +52,7 @@ public class RuntimeControlService {
         }
         String commandId = UUID.randomUUID().toString();
         redisTemplate.opsForValue().set(CANCEL_KEY_PREFIX + runId, "1", Duration.ofHours(6));
-        boolean localCallInterrupted = modelClient.cancel(runId);
+        boolean localCallInterrupted = chatClientRouter.cancel(runId);
         jdbcTemplate.update("UPDATE runtime_run SET cancel_requested = 1 WHERE id = ? AND status IN ('RUNNING','running')", runId);
         jdbcTemplate.update("""
                 INSERT INTO runtime_control_command

@@ -6,6 +6,9 @@ import com.openagentflow.entity.ModelProviderEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * 模型聊天客户端路由器。
  *
@@ -63,5 +66,30 @@ public class ModelChatClientRouter {
     public static boolean isSpark(ModelProviderEntity provider) {
         return provider != null && "spark".equalsIgnoreCase(StringUtils.trimWhitespace(
                 String.valueOf(provider.getProviderType())));
+    }
+
+    /**
+     * 取消所有协议客户端中指定 Runtime 运行的活动调用。
+     *
+     * @param runId 运行 ID
+     * @return 任一客户端找到活动调用即返回 true
+     */
+    public boolean cancel(String runId) {
+        boolean cancelled = openAiCompatibleClient.cancel(runId);
+        if (sparkChatClient.cancel(runId)) {
+            cancelled = true;
+        }
+        return cancelled;
+    }
+
+    /**
+     * 返回当前 JVM 所有协议客户端的活动运行 ID 快照。
+     *
+     * @return 活动运行 ID 集合
+     */
+    public Set<String> activeRunIds() {
+        Set<String> ids = new HashSet<>(openAiCompatibleClient.activeRunIds());
+        ids.addAll(sparkChatClient.activeRunIds());
+        return Set.copyOf(ids);
     }
 }

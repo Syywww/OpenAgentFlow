@@ -13,20 +13,20 @@ public class RuntimeCancellationWatcher {
     /** Redis客户端。 */
     private final StringRedisTemplate redisTemplate;
 
-    /** 模型HTTP客户端。 */
-    private final OpenAiCompatibleClient modelClient;
+    /** 模型聊天客户端路由，覆盖所有协议（HTTP / 星火 WebSocket）。 */
+    private final ModelChatClientRouter chatClientRouter;
 
-    public RuntimeCancellationWatcher(StringRedisTemplate redisTemplate, OpenAiCompatibleClient modelClient) {
+    public RuntimeCancellationWatcher(StringRedisTemplate redisTemplate, ModelChatClientRouter chatClientRouter) {
         this.redisTemplate = redisTemplate;
-        this.modelClient = modelClient;
+        this.chatClientRouter = chatClientRouter;
     }
 
-    /** 高频检查当前实例活动调用的停止令牌，并主动关闭HTTP请求。 */
+    /** 高频检查当前实例活动调用的停止令牌，并主动关闭各协议连接。 */
     @Scheduled(fixedDelayString = "${openagentflow.runtime.cancel-watch-ms:500}")
     public void cancelRequestedCalls() {
-        for (String runId : modelClient.activeRunIds()) {
+        for (String runId : chatClientRouter.activeRunIds()) {
             if (Boolean.TRUE.equals(redisTemplate.hasKey("oaf:runtime:cancel:" + runId))) {
-                modelClient.cancel(runId);
+                chatClientRouter.cancel(runId);
             }
         }
     }

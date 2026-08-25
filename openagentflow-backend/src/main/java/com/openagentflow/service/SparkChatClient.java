@@ -26,9 +26,12 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -49,9 +52,10 @@ import java.util.function.Consumer;
  * （如 {@code 4.0Ultra}/generalv3.5），provider 的 base_url 直接指向对应版本端点
  * （如 {@code wss://spark-api.xf-yun.com/v4.0/chat}）。</p>
  *
- * <p>TODO：星火 WebSocket 的主动取消（cancel/activeRunIds）尚未接入运行时取消链路，
- * 用户点击"停止"时流式输出不会被立即中断，后续按 OpenAiCompatibleClient 的
- * activeRequests/activeStreams 机制补齐。</p>
+ * <p><b>主动取消</b>：星火协议没有专门的 cancel 帧，官方做法是直接发送 WebSocket Close，
+ * 服务端随之停止生成。客户端以 runId 登记进行中的调用（{@link #activeCalls}），
+ * 取消时先标记响应 future 中断等待，再关闭连接；由 {@link ModelChatClientRouter} 扇出到
+ * Runtime 控制链路（{@code RuntimeControlService}/{@code RuntimeCancellationWatcher}）。</p>
  */
 @Service
 public class SparkChatClient implements ModelChatClient {
@@ -77,6 +81,9 @@ public class SparkChatClient implements ModelChatClient {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 活动星火调用，runId -> 进行中的 WebSocket 调用句柄（建连前即登记）。 */
+    private final Map<String, SparkCallHandle> activeCalls = new ConcurrentHashMap<>();
+
     public SparkChatClient(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
@@ -99,6 +106,47 @@ public class SparkChatClient implements ModelChatClient {
     }
 
     /**
+     * 主动取消指定 Runtime 运行关联的星火 WebSocket 调用。
+     *
+     * <p>星火协议没有专门的 cancel 帧：主动停止即向服务端发送 WebSocket Close，
+     * 服务端随之停止生成；同时把响应 future 标记为已取消，避免调用方等待完整响应帧。</p>
+     *
+     * @param runId 运行 ID
+     * @return 是否找到活动调用
+     */
+    public boolean cancel(String runId) {
+        SparkCallHandle handle = activeCalls.remove(runId);
+        if (handle == null) {
+            return false;
+        }
+        handle.listener.cancel();
+        WebSocket webSocket = handle.webSocket;
+        if (webSocket != null) {
+            try {
+                webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "cancelled").join();
+            } catch (Exception ignored) {
+                // 服务端可能已自行关闭。
+            }
+        }
+        return true;
+    }
+
+    /** 返回当前 JVM 正在调用星火的运行 ID 快照。 */
+    public Set<String> activeRunIds() {
+        return Set.copyOf(activeCalls.keySet());
+    }
+
+    /** 星火调用句柄：listener 建连前即登记以便取消，webSocket 建连后回填。 */
+    private static final class SparkCallHandle {
+        private final SparkWebSocketListener listener;
+        private volatile WebSocket webSocket;
+
+        SparkCallHandle(SparkWebSocketListener listener) {
+            this.listener = listener;
+        }
+    }
+
+    /**
      * 发起一次星火 WebSocket 对话：拼鉴权 URL → 建连 → 发请求帧 → 逐帧收集直到 status=2。
      *
      * @param context 聊天运行上下文
@@ -116,11 +164,17 @@ public class SparkChatClient implements ModelChatClient {
         String requestJson = buildRequestJson(context, credentials[0], temperature, maxTokens);
 
         SparkWebSocketListener listener = new SparkWebSocketListener(requestJson, onDelta, objectMapper);
+        String runId = context == null ? null : context.getRunId();
+        SparkCallHandle handle = new SparkCallHandle(listener);
+        if (StringUtils.hasText(runId)) {
+            activeCalls.put(runId, handle);
+        }
         try {
             CompletableFuture<WebSocket> wsFuture = httpClient.newWebSocketBuilder()
                     .connectTimeout(Duration.ofSeconds(15))
                     .buildAsync(URI.create(authUrl), listener);
             WebSocket webSocket = wsFuture.join();
+            handle.webSocket = webSocket;
             try {
                 String content = listener.done().get(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 LlmCallResult result = new LlmCallResult();
@@ -140,6 +194,9 @@ public class SparkChatClient implements ModelChatClient {
                 }
                 throw new BusinessException("SPARK_CALL_FAILED", cause.getMessage());
             } finally {
+                if (StringUtils.hasText(runId)) {
+                    activeCalls.remove(runId);
+                }
                 try {
                     webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "done").join();
                 } catch (Exception ignored) {
@@ -147,11 +204,20 @@ public class SparkChatClient implements ModelChatClient {
                 }
             }
         } catch (BusinessException exception) {
+            if (StringUtils.hasText(runId)) {
+                activeCalls.remove(runId);
+            }
             throw exception;
         } catch (CompletionException exception) {
+            if (StringUtils.hasText(runId)) {
+                activeCalls.remove(runId);
+            }
             Throwable cause = exception.getCause() == null ? exception : exception.getCause();
             throw new BusinessException("SPARK_CONNECT_FAILED", "星火连接失败：" + cause.getMessage());
         } catch (Exception exception) {
+            if (StringUtils.hasText(runId)) {
+                activeCalls.remove(runId);
+            }
             throw new BusinessException("SPARK_CALL_FAILED", exception.getMessage());
         }
     }
@@ -334,6 +400,11 @@ public class SparkChatClient implements ModelChatClient {
 
         CompletableFuture<String> done() {
             return done;
+        }
+
+        /** 标记本次调用被用户取消：异常完成响应 future，中断对完整响应帧的等待。 */
+        void cancel() {
+            done.completeExceptionally(new BusinessException("SPARK_CANCELLED", "调用已被用户取消"));
         }
 
         String rawResponse() {

@@ -154,6 +154,12 @@ class SparkChatClientTests {
     }
 
     @Test
+    void shouldExposeIdleCancellationState() {
+        assertThat(client.activeRunIds()).isEmpty();
+        assertThat(client.cancel("run-not-active")).isFalse();
+    }
+
+    @Test
     void shouldResolveDomainFromDefaultParamsWithFallback() {
         ModelConfigEntity model = new ModelConfigEntity();
 
