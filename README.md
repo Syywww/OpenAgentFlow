@@ -10,7 +10,7 @@ OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完�
 
 ## 核心能力
 
-- **模型接入**：OpenAI-compatible、豆包方舟、Ollama、DeepSeek、Qwen 等供应商配置，支持连通性测试、普通对话和 SSE 流式输出。
+- **模型接入**：OpenAI-compatible、豆包方舟、Ollama、DeepSeek、Qwen、讯飞星火 等供应商配置，支持连通性测试、普通对话和 SSE 流式输出。
 - **Agent 管理**：Agent CRUD、发布、复制、删除、模型参数、System Prompt、资源级权限、调试运行和 Runtime 策略解释器。
 - **多 Agent 协作**：协作团队 CRUD、成员分工、顺序/并行/路由/主控/复核模式、真实 Agent 调用、协作执行和 Trace 追踪。
 - **PromptOps 生产治理**：System、User、RAG、Tool、Evaluation、Workflow Prompt 统一编译，支持强类型变量 Schema、敏感变量遮蔽、分层装配、版本锁定/跟随稳定版、差异与影响分析、开发/测试/生产晋级、灰度发布、A/B 实验、自动选优、在线指标和 Trace 快照。
@@ -238,9 +238,10 @@ V052__p1_notification_center.sql
 V053__permission_governance_enhancement.sql
 V054__workspace_governance_permissions.sql
 V055__least_privilege_workspace_role_fix.sql
+V056__seed_spark_model_provider.sql
 ```
 
-后端使用 Flyway 管理迁移。空数据库按 V001-V055 顺序初始化；已有非空数据库（`openagentflow-sql/mysql` 经 initdb 全量建库至 V055）默认以 V055 建立基线，之后只执行 V056 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+后端使用 Flyway 管理迁移。空数据库按 V001-V056 顺序初始化；已有非空数据库（`openagentflow-sql/mysql` 经 initdb 全量建库至 V055）默认以 V055 建立基线，之后只执行 V056 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
 
 ```powershell
 .\scripts\sync-flyway-migrations.ps1

@@ -33,3 +33,6 @@ Thumbs.db
 # Docker local volumes
 docker-data/
 PLAN.md
+
+# 个人简历素材，不提交
+MY-RESUME-LOG.md
