@@ -101,6 +101,9 @@ public class AsyncTaskOutboxService {
      * 原子领取一批可发送 Outbox 消息。
      */
     public List<AsyncTaskOutboxEntity> claimBatch(String publisherId, int batchSize) {
+        // 每个时间列保持单一时钟来源，避免应用与数据库时区不一致时领取失效：
+        // available_at 由 JVM 写入（enqueue/markFailed），用 JVM 时间比较；
+        // locked_at 由 MySQL NOW(3) 写入，也用 MySQL 时间比较。
         List<AsyncTaskOutboxEntity> candidates = outboxMapper.selectList(new LambdaQueryWrapper<AsyncTaskOutboxEntity>()
                 .in(AsyncTaskOutboxEntity::getStatus, List.of("pending", "failed", "sending"))
                 .le(AsyncTaskOutboxEntity::getAvailableAt, LocalDateTime.now())
@@ -108,7 +111,7 @@ public class AsyncTaskOutboxService {
                         .or()
                         .isNull(AsyncTaskOutboxEntity::getLockedAt)
                         .or()
-                        .lt(AsyncTaskOutboxEntity::getLockedAt, LocalDateTime.now().minusMinutes(2)))
+                        .apply("locked_at < DATE_SUB(NOW(3), INTERVAL 2 MINUTE)"))
                 .orderByAsc(AsyncTaskOutboxEntity::getAvailableAt)
                 .orderByAsc(AsyncTaskOutboxEntity::getCreatedAt)
                 .last("limit " + Math.max(1, Math.min(batchSize, 500))));
@@ -119,11 +122,11 @@ public class AsyncTaskOutboxService {
                     SET status = 'sending', locked_by = ?, locked_at = NOW(3), updated_at = NOW(3)
                     WHERE id = ?
                       AND attempt_count < max_attempts
-                      AND available_at <= NOW(3)
+                      AND available_at <= ?
                       AND (status IN ('pending', 'failed')
                            OR (status = 'sending' AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(3), INTERVAL 2 MINUTE)))
                       )
-                    """, publisherId, candidate.getId());
+                    """, publisherId, candidate.getId(), LocalDateTime.now());
             if (changed > 0) {
                 claimed.add(outboxMapper.selectById(candidate.getId()));
             }
@@ -201,6 +204,7 @@ public class AsyncTaskOutboxService {
             outbox.setStatus("pending");
             outbox.setAttemptCount(0);
             outbox.setMaxAttempts(Math.max(3, properties.getOutboxMaxAttempts()));
+            // 可投递时间跟随 JVM 时钟（与 Kafka 消息 notBeforeAt 同源），领取比较必须用 JVM 时间（见 claimBatch）。
             outbox.setAvailableAt(LocalDateTime.ofInstant(message.getNotBeforeAt(), ZoneId.systemDefault()));
             outboxMapper.insert(outbox);
         } catch (Exception exception) {
