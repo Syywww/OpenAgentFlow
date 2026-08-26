@@ -378,8 +378,11 @@ public class SparkChatClient implements ModelChatClient {
 
     /**
      * 星火 WebSocket 监听器：发请求帧、收集响应帧、按 status=2 收口。
+     *
+     * <p>包可见以便 {@code SparkWebSocketListenerTests} 直接喂帧验证解析逻辑
+     * （status=2 收口、错误码、usage 统计、onClose 兜底）。</p>
      */
-    private static final class SparkWebSocketListener implements WebSocket.Listener {
+    static final class SparkWebSocketListener implements WebSocket.Listener {
 
         private final String requestJson;
         private final Consumer<String> onDelta;
