@@ -24,7 +24,10 @@ public abstract class MySqlContainerIntegrationTestSupport {
             .withDatabaseName("openagentflow")
             // 首个迁移脚本包含 CREATE DATABASE，测试容器使用 root 执行完整初始化。
             .withUsername("root")
-            .withPassword("openagentflow");
+            .withPassword("openagentflow")
+            // 容器时区与 JVM 保持一致：业务代码用 LocalDateTime.now() 写入、用 SQL NOW(3) 比较，
+            // 隐含「应用与数据库同主机同时区」的生产契约。容器默认 UTC 会导致 8 小时偏移使 Outbox 领取失效。
+            .withEnv("TZ", java.util.TimeZone.getDefault().getID());
 
     /**
      * 将容器连接和 Flyway 开关注入 Spring 测试上下文。
