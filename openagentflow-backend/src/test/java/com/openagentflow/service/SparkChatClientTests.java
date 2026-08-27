@@ -2,8 +2,10 @@ package com.openagentflow.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.openagentflow.domain.chat.ChatMessage;
 import com.openagentflow.domain.chat.ChatRunContext;
+import com.openagentflow.domain.chat.ToolDefinitionForModel;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.exception.BusinessException;
 import org.junit.jupiter.api.Test;
@@ -84,7 +86,7 @@ class SparkChatClientTests {
                 new ChatMessage("assistant", "在的"),
                 new ChatMessage("tool", "工具结果")));
 
-        String frame = client.buildRequestJson(context, "app-id-1", 0.2, 512);
+        String frame = client.buildRequestJson(context, "app-id-1", 0.2, 512, null);
         JsonNode root = new ObjectMapper().readTree(frame);
 
         // header.app_id / header.uid
@@ -111,7 +113,7 @@ class SparkChatClientTests {
         ChatRunContext context = new ChatRunContext();
         context.setMessages(List.of(new ChatMessage("user", "hi")));
 
-        String frame = client.buildRequestJson(context, "app-id-1", null, null);
+        String frame = client.buildRequestJson(context, "app-id-1", null, null, null);
         JsonNode chat = new ObjectMapper().readTree(frame).path("parameter").path("chat");
         assertThat(chat.path("temperature").asDouble()).isEqualTo(0.5);
         assertThat(chat.path("max_tokens").asInt()).isEqualTo(2048);
@@ -173,6 +175,48 @@ class SparkChatClientTests {
         assertThat(client.resolveDomain(model)).isEqualTo("4.0Ultra");
 
         assertThat(client.resolveDomain(null)).isEqualTo("4.0Ultra");
+    }
+
+    @Test
+    void shouldBuildRequestFrameWithFunctions() throws Exception {
+        ToolDefinitionForModel tool = new ToolDefinitionForModel();
+        tool.setName("get_weather");
+        tool.setDescription("查询天气");
+        ObjectNode params = new ObjectMapper().createObjectNode();
+        params.put("type", "object");
+        params.putObject("properties").putObject("city").put("type", "string");
+        params.putArray("required").add("city");
+        tool.setParameters(params);
+
+        ModelConfigEntity model = new ModelConfigEntity();
+        model.setDefaultParams("{\"domain\":\"4.0Ultra\"}");
+        ChatRunContext context = new ChatRunContext();
+        context.setModel(model);
+        context.setMessages(List.of(new ChatMessage("user", "合肥天气")));
+
+        String frame = client.buildRequestJson(context, "app-id-1", 0.5, 512, List.of(tool));
+        JsonNode root = new ObjectMapper().readTree(frame);
+
+        // payload.functions.text 序列化 name/description/parameters（含 required）。
+        JsonNode fn = root.path("payload").path("functions").path("text").path(0);
+        assertThat(fn.path("name").asText()).isEqualTo("get_weather");
+        assertThat(fn.path("description").asText()).isEqualTo("查询天气");
+        assertThat(fn.path("parameters").path("type").asText()).isEqualTo("object");
+        assertThat(fn.path("parameters").path("required")).hasSize(1);
+
+        // message 与 functions 同在 payload 下（payload 节点复用，未互相覆盖）。
+        assertThat(root.path("payload").path("message").path("text")).hasSize(1);
+        assertThat(root.path("payload").path("functions").path("text")).hasSize(1);
+    }
+
+    @Test
+    void shouldOmitFunctionsWhenNoTools() throws Exception {
+        ChatRunContext context = new ChatRunContext();
+        context.setMessages(List.of(new ChatMessage("user", "hi")));
+
+        String frame = client.buildRequestJson(context, "app-id-1", null, null, null);
+        JsonNode root = new ObjectMapper().readTree(frame);
+        assertThat(root.path("payload").path("functions").isMissingNode()).isTrue();
     }
 
     /** 把查询串解析为有序键值（值保持 URL 编码原样）。 */

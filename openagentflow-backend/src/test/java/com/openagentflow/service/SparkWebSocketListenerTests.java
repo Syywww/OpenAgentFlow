@@ -87,6 +87,30 @@ class SparkWebSocketListenerTests {
         assertThat(listener.done()).isCompletedExceptionally();
     }
 
+    @Test
+    void shouldParseFunctionCallFrame() throws Exception {
+        SparkChatClient.SparkWebSocketListener listener = listener(null);
+
+        listener.onText(ws, functionCallFrame("get_weather", "{\"city\":\"合肥\"}", 2), true);
+
+        assertThat(listener.done()).isCompleted();
+        assertThat(listener.toolCalls()).hasSize(1);
+        assertThat(listener.toolCalls().get(0).getName()).isEqualTo("get_weather");
+        assertThat(listener.toolCalls().get(0).getArgumentsJson()).isEqualTo("{\"city\":\"合肥\"}");
+        // 命中函数时 content 为空、status=2 收口。
+        assertThat(listener.done().getNow("")).isEmpty();
+    }
+
+    @Test
+    void shouldHandleTextAndFunctionCallInSameFrame() throws Exception {
+        SparkChatClient.SparkWebSocketListener listener = listener(null);
+
+        listener.onText(ws, frameWithFunctionCall(0, "部分回答", 2, "get_weather", "{}", false), true);
+
+        assertThat(listener.toolCalls()).hasSize(1);
+        assertThat(listener.done().getNow("")).isEqualTo("部分回答");
+    }
+
     /**
      * 构造一条星火响应帧。
      *
@@ -110,6 +134,34 @@ class SparkWebSocketListenerTests {
             usage.put("prompt_tokens", 10);
             usage.put("completion_tokens", 5);
             usage.put("total_tokens", 15);
+        }
+        return mapper.writeValueAsString(root);
+    }
+
+    /** 构造命中 function_call 的响应帧（content 为空、status=2 收口）。 */
+    private String functionCallFrame(String fnName, String fnArgs, int choiceStatus) throws Exception {
+        return frameWithFunctionCall(0, "", choiceStatus, fnName, fnArgs, false);
+    }
+
+    /** 构造 content 与 function_call 并存的响应帧。 */
+    private String frameWithFunctionCall(int headerCode, String content, int choiceStatus,
+                                         String fnName, String fnArgs, boolean withUsage) throws Exception {
+        ObjectNode root = mapper.createObjectNode();
+        root.putObject("header").put("code", headerCode).put("status", choiceStatus);
+        ObjectNode payload = root.putObject("payload");
+        ObjectNode choices = payload.putObject("choices");
+        choices.put("status", choiceStatus);
+        ObjectNode item = choices.putArray("text").addObject();
+        item.put("content", content);
+        item.put("role", "assistant");
+        ObjectNode fc = item.putObject("function_call");
+        fc.put("name", fnName);
+        fc.put("arguments", fnArgs);
+        if (withUsage) {
+            ObjectNode usage = payload.putObject("usage").putObject("text");
+            usage.put("prompt_tokens", 10);
+            usage.put("completion_tokens", 0);
+            usage.put("total_tokens", 10);
         }
         return mapper.writeValueAsString(root);
     }
