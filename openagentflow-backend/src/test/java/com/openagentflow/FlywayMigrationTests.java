@@ -23,9 +23,9 @@ class FlywayMigrationTests {
             .withDatabaseName("openagentflow")
             .withPassword("123456");
 
-    /** 空数据库必须能够一次执行到当前最新版本（V056：讯飞星火模型 provider seed）。 */
+    /** 空数据库必须能够一次执行到当前最新版本（V057：Anthropic Claude 模型 provider seed）。 */
     @Test
-    void freshDatabaseShouldMigrateToVersion55() throws Exception {
+    void freshDatabaseShouldMigrateToVersion57() throws Exception {
         Flyway flyway = Flyway.configure()
                 // 完整迁移包含建库语句，使用容器root账号执行DDL。
                 .dataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword())
@@ -35,8 +35,8 @@ class FlywayMigrationTests {
 
         flyway.migrate();
 
-        // 使用 Flyway 语义版本比较，避免 V055/V056 的展示文本前导零造成误判。
-        assertEquals(0, MigrationVersion.fromVersion("56").compareTo(flyway.info().current().getVersion()));
+        // 使用 Flyway 语义版本比较，避免 V056/V057 的展示文本前导零造成误判。
+        assertEquals(0, MigrationVersion.fromVersion("57").compareTo(flyway.info().current().getVersion()));
         try (Connection connection = MYSQL.createConnection("")) {
             assertTrue(columnExists(connection, "knowledge_document", "current_pipeline_root_id"));
             assertTrue(columnExists(connection, "document_pipeline_node", "generation_no"));
