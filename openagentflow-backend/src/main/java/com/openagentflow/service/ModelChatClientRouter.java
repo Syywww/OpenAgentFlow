@@ -13,8 +13,9 @@ import java.util.Set;
  * 模型聊天客户端路由器。
  *
  * <p>按服务商 {@code provider_type} 分发到对应协议实现：
- * {@code spark} 走讯飞星火 WebSocket 适配器，其余（openai_compatible / ollama 等）
- * 统一走 OpenAI-compatible 客户端。新增协议只需实现 {@link ModelChatClient} 并在此注册。</p>
+ * {@code spark} 走讯飞星火 WebSocket 适配器，{@code claude} 走 Anthropic 原生 Messages API
+ * （REST + SSE），其余（openai_compatible / ollama 等）统一走 OpenAI-compatible 客户端。
+ * 新增协议只需实现 {@link ModelChatClient} 并在此注册。</p>
  */
 @Component
 public class ModelChatClientRouter {
@@ -25,10 +26,15 @@ public class ModelChatClientRouter {
     /** 讯飞星火 WebSocket 客户端。 */
     private final SparkChatClient sparkChatClient;
 
+    /** Anthropic Claude 原生客户端。 */
+    private final ClaudeChatClient claudeChatClient;
+
     public ModelChatClientRouter(OpenAiCompatibleClient openAiCompatibleClient,
-                                 SparkChatClient sparkChatClient) {
+                                 SparkChatClient sparkChatClient,
+                                 ClaudeChatClient claudeChatClient) {
         this.openAiCompatibleClient = openAiCompatibleClient;
         this.sparkChatClient = sparkChatClient;
+        this.claudeChatClient = claudeChatClient;
     }
 
     /**
@@ -41,7 +47,21 @@ public class ModelChatClientRouter {
         if (provider != null && "spark".equalsIgnoreCase(String.valueOf(provider.getProviderType()))) {
             return sparkChatClient;
         }
+        if (isClaude(provider)) {
+            return claudeChatClient;
+        }
         return openAiCompatibleClient;
+    }
+
+    /**
+     * 判断服务商是否走 Anthropic Claude 原生适配器。
+     *
+     * @param provider 模型服务商
+     * @return true 表示 Claude
+     */
+    public static boolean isClaude(ModelProviderEntity provider) {
+        return provider != null && "claude".equalsIgnoreCase(StringUtils.trimWhitespace(
+                String.valueOf(provider.getProviderType())));
     }
 
     /**
@@ -79,6 +99,9 @@ public class ModelChatClientRouter {
         if (sparkChatClient.cancel(runId)) {
             cancelled = true;
         }
+        if (claudeChatClient.cancel(runId)) {
+            cancelled = true;
+        }
         return cancelled;
     }
 
@@ -90,6 +113,7 @@ public class ModelChatClientRouter {
     public Set<String> activeRunIds() {
         Set<String> ids = new HashSet<>(openAiCompatibleClient.activeRunIds());
         ids.addAll(sparkChatClient.activeRunIds());
+        ids.addAll(claudeChatClient.activeRunIds());
         return Set.copyOf(ids);
     }
 }
