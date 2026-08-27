@@ -17,6 +17,7 @@ import com.openagentflow.mapper.WorkflowDefinitionMapper;
 import com.openagentflow.mapper.WorkflowEdgeMapper;
 import com.openagentflow.mapper.WorkflowNodeMapper;
 import com.openagentflow.mapper.WorkflowVersionMapper;
+import com.openagentflow.security.WorkspaceContextHolder;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -67,6 +68,9 @@ public class WorkflowService {
     /** 工作空间治理服务。 */
     private final WorkspaceGovernanceService workspaceGovernanceService;
 
+    /** 资源访问控制服务，用于资源级 ACL 授权判定。 */
+    private final ResourceAclService resourceAclService;
+
     /** JDBC 工具，用于轻量统计。 */
     private final JdbcTemplate jdbcTemplate;
 
@@ -76,6 +80,9 @@ public class WorkflowService {
     /** 发布质量门禁服务。 */
     private final ReleaseGateService releaseGateService;
 
+    /** 列表 data_scope 过滤组件。 */
+    private final DataScopeListFilter dataScopeListFilter;
+
     public WorkflowService(WorkflowDefinitionMapper workflowDefinitionMapper,
                            WorkflowNodeMapper workflowNodeMapper,
                            WorkflowEdgeMapper workflowEdgeMapper,
@@ -84,9 +91,11 @@ public class WorkflowService {
                            AgentMapper agentMapper,
                            AgentAccessService agentAccessService,
                            WorkspaceGovernanceService workspaceGovernanceService,
+                           ResourceAclService resourceAclService,
                            JdbcTemplate jdbcTemplate,
                            ObjectMapper objectMapper,
-                           ReleaseGateService releaseGateService) {
+                           ReleaseGateService releaseGateService,
+                           DataScopeListFilter dataScopeListFilter) {
         this.workflowDefinitionMapper = workflowDefinitionMapper;
         this.workflowNodeMapper = workflowNodeMapper;
         this.workflowEdgeMapper = workflowEdgeMapper;
@@ -95,9 +104,11 @@ public class WorkflowService {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
         this.workspaceGovernanceService = workspaceGovernanceService;
+        this.resourceAclService = resourceAclService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.releaseGateService = releaseGateService;
+        this.dataScopeListFilter = dataScopeListFilter;
     }
 
     /**
@@ -106,10 +117,17 @@ public class WorkflowService {
      * @return 工作流摘要列表
      */
     public List<WorkflowDtos.Summary> listWorkflows() {
-        return workflowDefinitionMapper.selectList(new LambdaQueryWrapper<WorkflowDefinitionEntity>()
-                        .isNull(WorkflowDefinitionEntity::getDeletedAt)
-                        .orderByDesc(WorkflowDefinitionEntity::getUpdatedAt)
-                        .last("limit 200"))
+        LambdaQueryWrapper<WorkflowDefinitionEntity> wrapper = new LambdaQueryWrapper<WorkflowDefinitionEntity>()
+                .isNull(WorkflowDefinitionEntity::getDeletedAt)
+                .orderByDesc(WorkflowDefinitionEntity::getUpdatedAt)
+                .last("limit 200");
+        // data_scope 下沉为列表 SQL 过滤；内存 canView 兜底，防 SQL 与内存语义漂移。
+        DataScopeListFilter.ListFilter filter = dataScopeListFilter.buildListVisibilityFilter(
+                WorkspaceContextHolder.current(), agentAccessService.currentUserId(), "workflow");
+        if (filter != null && filter.requiresFilter()) {
+            wrapper.apply(filter.sql(), filter.args().toArray());
+        }
+        return workflowDefinitionMapper.selectList(wrapper)
                 .stream()
                 .filter(this::canView)
                 .map(this::toSummary)
@@ -318,7 +336,9 @@ public class WorkflowService {
         if (entity == null || entity.getDeletedAt() != null) {
             return false;
         }
-        return workspaceGovernanceService.canViewResource(
+        return resourceAclService.currentUserHasAcl(entity.getWorkspaceId(), "workflow", entity.getId(),
+                List.of("owner", "write", "run", "read"))
+                || workspaceGovernanceService.canViewResource(
                 "workflow",
                 entity.getId(),
                 entity.getWorkspaceId(),
@@ -337,7 +357,9 @@ public class WorkflowService {
         if (entity == null || entity.getDeletedAt() != null) {
             return false;
         }
-        return workspaceGovernanceService.canManageResource("workflow", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
+        return resourceAclService.currentUserHasAcl(entity.getWorkspaceId(), "workflow", entity.getId(),
+                List.of("owner", "write"))
+                || workspaceGovernanceService.canManageResource("workflow", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
     }
 
     /**

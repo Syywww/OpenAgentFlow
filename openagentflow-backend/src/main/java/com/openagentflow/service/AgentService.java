@@ -17,6 +17,7 @@ import com.openagentflow.exception.BusinessException;
 import com.openagentflow.mapper.AgentMapper;
 import com.openagentflow.mapper.IamUserMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
+import com.openagentflow.security.WorkspaceContextHolder;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
@@ -77,6 +78,9 @@ public class AgentService {
     /** Agent生产发布质量门禁。 */
     private final ReleaseGateService releaseGateService;
 
+    /** 列表 data_scope 过滤组件。 */
+    private final DataScopeListFilter dataScopeListFilter;
+
     public AgentService(AgentMapper agentMapper,
                         ModelConfigMapper modelConfigMapper,
                         IamUserMapper iamUserMapper,
@@ -88,7 +92,8 @@ public class AgentService {
                         WorkspaceGovernanceService workspaceGovernanceService,
                         JdbcTemplate jdbcTemplate,
                         ObjectMapper objectMapper,
-                        ReleaseGateService releaseGateService) {
+                        ReleaseGateService releaseGateService,
+                        DataScopeListFilter dataScopeListFilter) {
         this.agentMapper = agentMapper;
         this.modelConfigMapper = modelConfigMapper;
         this.iamUserMapper = iamUserMapper;
@@ -101,6 +106,7 @@ public class AgentService {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.releaseGateService = releaseGateService;
+        this.dataScopeListFilter = dataScopeListFilter;
     }
 
     /**
@@ -109,11 +115,18 @@ public class AgentService {
      * @return Agent 摘要列表
      */
     public List<AgentSummary> listAgents() {
-        // 先按更新时间读取最近记录，再在内存中做资源级过滤；后续可替换为带 ACL 的分页 SQL。
-        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
-                        .isNull(AgentEntity::getDeletedAt)
-                        .orderByDesc(AgentEntity::getUpdatedAt)
-                        .last("limit 100"))
+        LambdaQueryWrapper<AgentEntity> wrapper = new LambdaQueryWrapper<AgentEntity>()
+                .isNull(AgentEntity::getDeletedAt)
+                .orderByDesc(AgentEntity::getUpdatedAt)
+                .last("limit 100");
+        // data_scope 下沉为列表 SQL 过滤（public + owner/createdBy + ACL + 模块权限×data_scope）；
+        // 内存 canView 兜底，防 SQL 与内存语义漂移。
+        DataScopeListFilter.ListFilter filter = dataScopeListFilter.buildListVisibilityFilter(
+                WorkspaceContextHolder.current(), agentAccessService.currentUserId(), "agent");
+        if (filter != null && filter.requiresFilter()) {
+            wrapper.apply(filter.sql(), filter.args().toArray());
+        }
+        return agentMapper.selectList(wrapper)
                 .stream()
                 .filter(agentAccessService::canView)
                 .map(this::toSummary)

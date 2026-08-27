@@ -230,6 +230,11 @@ public class WorkspaceAuthorizationService {
     /** 解析用户在当前空间的数据范围。 */
     public PermissionGovernanceDtos.DataScopeResult resolveDataScope(String workspaceId, String userId) {
         assertCanViewGovernance(workspaceId);
+        return resolveDataScopeInternal(workspaceId, userId);
+    }
+
+    /** 解析用户在当前空间的数据范围（不校验治理查看权限，供列表过滤等内部消费复用）。 */
+    PermissionGovernanceDtos.DataScopeResult resolveDataScopeInternal(String workspaceId, String userId) {
         List<String> scopes = jdbcTemplate.queryForList("""
                 SELECT DISTINCT role.data_scope FROM iam_workspace_member_role mr
                 JOIN iam_workspace_role role ON role.id=mr.role_id

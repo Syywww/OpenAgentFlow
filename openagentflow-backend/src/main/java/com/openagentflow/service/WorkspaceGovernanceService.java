@@ -14,6 +14,7 @@ import com.openagentflow.mapper.OafOrganizationMemberMapper;
 import com.openagentflow.mapper.OafWorkspaceMapper;
 import com.openagentflow.mapper.OafWorkspaceMemberMapper;
 import com.openagentflow.security.AuthUserDetails;
+import com.openagentflow.security.DataScopePolicy;
 import com.openagentflow.security.PlatformAuthorityPolicy;
 import com.openagentflow.security.ResourceModulePermissionPolicy;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -343,32 +344,36 @@ public class WorkspaceGovernanceService {
 
     /**
      * 根据空间角色数据范围判断资源所有者是否可见。
+     *
+     * <p>多角色数据范围按 {@code DataScopePolicy.merge} 合并为最终范围（取最大），与治理展示
+     * 路径 {@code WorkspaceAuthorizationService.resolveDataScope} 语义一致，避免两套判定漂移。</p>
      */
     private boolean dataScopeAllows(String workspaceId, String userId, String ownerUserId, String createdBy) {
         String targetUserId = StringUtils.hasText(ownerUserId) ? ownerUserId : createdBy;
         if (userId.equals(targetUserId)) {
             return true;
         }
+        if (!StringUtils.hasText(targetUserId)) {
+            return false;
+        }
         List<String> scopes = jdbcTemplate.queryForList("""
                 SELECT DISTINCT role.data_scope FROM iam_workspace_member_role mr
                 JOIN iam_workspace_role role ON role.id=mr.role_id
                 WHERE mr.workspace_id=? AND mr.user_id=? AND role.status='enabled'
                 """, String.class, workspaceId, userId);
-        if (scopes.contains("all")) {
+        String merged = DataScopePolicy.merge(scopes);
+        if ("all".equals(merged)) {
             return true;
-        }
-        if (!StringUtils.hasText(targetUserId)) {
-            return false;
         }
         String currentDepartment = firstText("SELECT department_id FROM iam_user WHERE id=?", userId);
         String targetDepartment = firstText("SELECT department_id FROM iam_user WHERE id=?", targetUserId);
         if (!StringUtils.hasText(targetDepartment)) {
             return false;
         }
-        if (scopes.contains("dept") && targetDepartment.equals(currentDepartment)) {
-            return true;
+        if ("dept".equals(merged)) {
+            return targetDepartment.equals(currentDepartment);
         }
-        if (scopes.contains("dept_tree") && StringUtils.hasText(currentDepartment)) {
+        if ("dept_tree".equals(merged) && StringUtils.hasText(currentDepartment)) {
             Long descendant = jdbcTemplate.queryForObject("""
                     WITH RECURSIVE department_tree AS (
                       SELECT id FROM iam_department WHERE id=?
@@ -376,17 +381,16 @@ public class WorkspaceGovernanceService {
                       SELECT child.id FROM iam_department child JOIN department_tree parent ON child.parent_id=parent.id
                     ) SELECT COUNT(1) FROM department_tree WHERE id=?
                     """, Long.class, currentDepartment, targetDepartment);
-            if (descendant != null && descendant > 0) {
-                return true;
-            }
+            return descendant != null && descendant > 0;
         }
-        if (scopes.contains("custom")) {
+        if ("custom".equals(merged)) {
             return count("""
                     SELECT COUNT(1) FROM iam_workspace_member_role mr
                     JOIN iam_workspace_role_department rd ON rd.role_id=mr.role_id
                     WHERE mr.workspace_id=? AND mr.user_id=? AND rd.department_id=?
                     """, workspaceId, userId, targetDepartment) > 0;
         }
+        // self 或未绑定角色：仅本人资源可见。
         return false;
     }
 

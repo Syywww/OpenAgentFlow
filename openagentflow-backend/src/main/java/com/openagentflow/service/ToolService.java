@@ -106,12 +106,18 @@ public class ToolService {
     /** 工作空间治理服务。 */
     private final WorkspaceGovernanceService workspaceGovernanceService;
 
+    /** 资源访问控制服务，用于资源级 ACL 授权判定。 */
+    private final ResourceAclService resourceAclService;
+
     /** AI工具参数安全护栏。 */
     private final AiGuardrailService aiGuardrailService;
     /** 高风险工具一次性令牌服务。 */
     private final ToolApprovalTokenService toolApprovalTokenService;
     /** 工具日志敏感数据脱敏器。 */
     private final SensitiveDataSanitizer sensitiveDataSanitizer;
+
+    /** 列表 data_scope 过滤组件。 */
+    private final DataScopeListFilter dataScopeListFilter;
 
     public ToolService(ToolDefinitionMapper toolDefinitionMapper,
                        AgentToolBindingMapper agentToolBindingMapper,
@@ -124,9 +130,11 @@ public class ToolService {
                        AgentAccessService agentAccessService,
                        McpClientService mcpClientService,
                        WorkspaceGovernanceService workspaceGovernanceService,
+                       ResourceAclService resourceAclService,
                        AiGuardrailService aiGuardrailService,
                        ToolApprovalTokenService toolApprovalTokenService,
-                       SensitiveDataSanitizer sensitiveDataSanitizer) {
+                       SensitiveDataSanitizer sensitiveDataSanitizer,
+                       DataScopeListFilter dataScopeListFilter) {
         this.toolDefinitionMapper = toolDefinitionMapper;
         this.agentToolBindingMapper = agentToolBindingMapper;
         this.agentMapper = agentMapper;
@@ -138,9 +146,11 @@ public class ToolService {
         this.agentAccessService = agentAccessService;
         this.mcpClientService = mcpClientService;
         this.workspaceGovernanceService = workspaceGovernanceService;
+        this.resourceAclService = resourceAclService;
         this.aiGuardrailService = aiGuardrailService;
         this.toolApprovalTokenService = toolApprovalTokenService;
         this.sensitiveDataSanitizer = sensitiveDataSanitizer;
+        this.dataScopeListFilter = dataScopeListFilter;
     }
 
     /**
@@ -149,10 +159,17 @@ public class ToolService {
      * @return 工具摘要列表
      */
     public List<ToolDefinitionSummary> listTools() {
-        return toolDefinitionMapper.selectList(new LambdaQueryWrapper<ToolDefinitionEntity>()
-                        .isNull(ToolDefinitionEntity::getDeletedAt)
-                        .orderByDesc(ToolDefinitionEntity::getUpdatedAt)
-                        .last("limit 200"))
+        LambdaQueryWrapper<ToolDefinitionEntity> wrapper = new LambdaQueryWrapper<ToolDefinitionEntity>()
+                .isNull(ToolDefinitionEntity::getDeletedAt)
+                .orderByDesc(ToolDefinitionEntity::getUpdatedAt)
+                .last("limit 200");
+        // data_scope 下沉为列表 SQL 过滤；内存 canView 兜底，防 SQL 与内存语义漂移。
+        DataScopeListFilter.ListFilter filter = dataScopeListFilter.buildListVisibilityFilter(
+                WorkspaceContextHolder.current(), agentAccessService.currentUserId(), "tool");
+        if (filter != null && filter.requiresFilter()) {
+            wrapper.apply(filter.sql(), filter.args().toArray());
+        }
+        return toolDefinitionMapper.selectList(wrapper)
                 .stream()
                 .filter(this::canView)
                 .map(this::toSummary)
@@ -1035,7 +1052,12 @@ public class ToolService {
      * @return 是否可查看
      */
     private boolean canView(ToolDefinitionEntity entity) {
-        return entity != null && workspaceGovernanceService.canViewResource(
+        if (entity == null) {
+            return false;
+        }
+        return resourceAclService.currentUserHasAcl(entity.getWorkspaceId(), "tool", entity.getId(),
+                List.of("owner", "write", "run", "read"))
+                || workspaceGovernanceService.canViewResource(
                 "tool",
                 entity.getId(),
                 entity.getWorkspaceId(),
@@ -1051,7 +1073,10 @@ public class ToolService {
      * @return 是否可管理
      */
     private boolean canManage(ToolDefinitionEntity entity) {
-        return entity != null && workspaceGovernanceService.canManageResource("tool", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy());
+        return entity != null
+                && (resourceAclService.currentUserHasAcl(entity.getWorkspaceId(), "tool", entity.getId(),
+                        List.of("owner", "write"))
+                || workspaceGovernanceService.canManageResource("tool", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy()));
     }
 
     /**

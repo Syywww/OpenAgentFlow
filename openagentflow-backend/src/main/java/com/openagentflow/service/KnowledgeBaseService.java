@@ -37,6 +37,7 @@ import com.openagentflow.mapper.KnowledgeEmbeddingMapper;
 import com.openagentflow.mapper.KnowledgeRetrievalLogMapper;
 import com.openagentflow.mapper.ModelConfigMapper;
 import com.openagentflow.security.AuthUserDetails;
+import com.openagentflow.security.WorkspaceContextHolder;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -108,6 +109,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
     /** 工作空间治理服务。 */
     private final WorkspaceGovernanceService workspaceGovernanceService;
 
+    /** 资源访问控制服务，用于资源级 ACL 授权判定。 */
+    private final ResourceAclService resourceAclService;
+
     /** 异步任务中心服务。 */
     private final AsyncTaskService asyncTaskService;
 
@@ -138,6 +142,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
     /** OpenAgentFlow 配置。 */
     private final OpenAgentFlowProperties properties;
 
+    /** 列表 data_scope 过滤组件。 */
+    private final DataScopeListFilter dataScopeListFilter;
+
     public KnowledgeBaseService(KnowledgeBaseMapper knowledgeBaseMapper,
                                 KnowledgeDocumentMapper knowledgeDocumentMapper,
                                 KnowledgeChunkMapper knowledgeChunkMapper,
@@ -147,6 +154,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                                 AgentMapper agentMapper,
                                 AgentAccessService agentAccessService,
                                 WorkspaceGovernanceService workspaceGovernanceService,
+                                ResourceAclService resourceAclService,
                                 AsyncTaskService asyncTaskService,
                                 ModelConfigMapper modelConfigMapper,
                                 DocumentParseService documentParseService,
@@ -156,7 +164,8 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                                 KeywordSearchService keywordSearchService,
                                 JdbcTemplate jdbcTemplate,
                                 ObjectMapper objectMapper,
-                                OpenAgentFlowProperties properties) {
+                                OpenAgentFlowProperties properties,
+                                DataScopeListFilter dataScopeListFilter) {
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
@@ -166,6 +175,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
         this.workspaceGovernanceService = workspaceGovernanceService;
+        this.resourceAclService = resourceAclService;
         this.asyncTaskService = asyncTaskService;
         this.modelConfigMapper = modelConfigMapper;
         this.documentParseService = documentParseService;
@@ -176,6 +186,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.dataScopeListFilter = dataScopeListFilter;
     }
 
     /**
@@ -184,10 +195,17 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
      * @return 知识库摘要列表
      */
     public List<KnowledgeBaseSummary> listKnowledgeBases() {
-        return knowledgeBaseMapper.selectList(new LambdaQueryWrapper<KnowledgeBaseEntity>()
-                        .isNull(KnowledgeBaseEntity::getDeletedAt)
-                        .orderByDesc(KnowledgeBaseEntity::getUpdatedAt)
-                        .last("limit 100"))
+        LambdaQueryWrapper<KnowledgeBaseEntity> wrapper = new LambdaQueryWrapper<KnowledgeBaseEntity>()
+                .isNull(KnowledgeBaseEntity::getDeletedAt)
+                .orderByDesc(KnowledgeBaseEntity::getUpdatedAt)
+                .last("limit 100");
+        // data_scope 下沉为列表 SQL 过滤；内存 canView 兜底，防 SQL 与内存语义漂移。
+        DataScopeListFilter.ListFilter filter = dataScopeListFilter.buildListVisibilityFilter(
+                WorkspaceContextHolder.current(), agentAccessService.currentUserId(), "knowledge_base");
+        if (filter != null && filter.requiresFilter()) {
+            wrapper.apply(filter.sql(), filter.args().toArray());
+        }
+        return knowledgeBaseMapper.selectList(wrapper)
                 .stream()
                 .filter(this::canView)
                 .map(this::toSummary)
@@ -1826,7 +1844,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         if (entity == null || entity.getDeletedAt() != null) {
             return false;
         }
-        return workspaceGovernanceService.canViewResource(
+        return resourceAclService.currentUserHasAcl(entity.getWorkspaceId(), "knowledge_base", entity.getId(),
+                List.of("owner", "write", "run", "read"))
+                || workspaceGovernanceService.canViewResource(
                 "knowledge_base",
                 entity.getId(),
                 entity.getWorkspaceId(),
@@ -1852,7 +1872,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
      * @param entity 知识库实体
      */
     private void assertCanManage(KnowledgeBaseEntity entity) {
-        if (!workspaceGovernanceService.canManageResource("knowledge_base", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy())) {
+        if (!resourceAclService.currentUserHasAcl(entity.getWorkspaceId(), "knowledge_base", entity.getId(),
+                List.of("owner", "write"))
+                && !workspaceGovernanceService.canManageResource("knowledge_base", entity.getWorkspaceId(), entity.getOwnerUserId(), entity.getCreatedBy())) {
             throw new BusinessException("KNOWLEDGE_FORBIDDEN", "没有管理该知识库的权限");
         }
     }
