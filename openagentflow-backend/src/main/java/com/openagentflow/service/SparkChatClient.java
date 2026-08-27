@@ -8,6 +8,8 @@ import com.openagentflow.domain.chat.ChatMessage;
 import com.openagentflow.domain.chat.ChatRunContext;
 import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ModelChatClient;
+import com.openagentflow.domain.chat.ToolCallRequest;
+import com.openagentflow.domain.chat.ToolDefinitionForModel;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.entity.ModelProviderEntity;
 import com.openagentflow.exception.BusinessException;
@@ -26,6 +28,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -90,19 +93,21 @@ public class SparkChatClient implements ModelChatClient {
 
     @Override
     public LlmCallResult complete(ChatRunContext context, Double temperature, Integer maxTokens) {
-        return call(context, temperature, maxTokens, null);
+        return call(context, temperature, maxTokens, null, null);
     }
 
     @Override
     public LlmCallResult completeWithTools(ChatRunContext context, Double temperature, Integer maxTokens) {
-        // 星火 function calling 走 payload.functions，暂未映射；先退回普通对话，避免工具型 Agent 路由到星火时报错。
-        return call(context, temperature, maxTokens, null);
+        // 星火 function calling：请求 payload.functions 注册函数，响应帧 function_call 返回 name + arguments。
+        return call(context, temperature, maxTokens, null,
+                context == null ? null : context.getTools());
     }
 
     @Override
     public LlmCallResult completeStream(ChatRunContext context, Double temperature, Integer maxTokens,
                                         Consumer<String> onDelta) {
-        return call(context, temperature, maxTokens, onDelta);
+        // 与 OpenAI 客户端对齐：流式调用暂不携带工具定义。
+        return call(context, temperature, maxTokens, onDelta, null);
     }
 
     /**
@@ -156,12 +161,12 @@ public class SparkChatClient implements ModelChatClient {
      * @return LLM 调用结果
      */
     private LlmCallResult call(ChatRunContext context, Double temperature, Integer maxTokens,
-                               Consumer<String> onDelta) {
+                               Consumer<String> onDelta, List<ToolDefinitionForModel> tools) {
         Instant startedAt = Instant.now();
         ModelProviderEntity provider = requireProvider(context);
         String[] credentials = parseCredentials(context.getApiKey());
         String authUrl = buildAuthUrl(provider.getBaseUrl(), credentials[1], credentials[2]);
-        String requestJson = buildRequestJson(context, credentials[0], temperature, maxTokens);
+        String requestJson = buildRequestJson(context, credentials[0], temperature, maxTokens, tools);
 
         SparkWebSocketListener listener = new SparkWebSocketListener(requestJson, onDelta, objectMapper);
         String runId = context == null ? null : context.getRunId();
@@ -180,6 +185,7 @@ public class SparkChatClient implements ModelChatClient {
                 LlmCallResult result = new LlmCallResult();
                 result.setContent(content);
                 result.setRawResponse(listener.rawResponse());
+                result.setToolCalls(listener.toolCalls());
                 result.setPromptTokens(listener.promptTokens());
                 result.setCompletionTokens(listener.completionTokens());
                 result.setTotalTokens(listener.totalTokens());
@@ -273,10 +279,12 @@ public class SparkChatClient implements ModelChatClient {
      * @param appId 星火 APPID
      * @param temperature 温度参数
      * @param maxTokens 最大输出 Token 数
+     * @param tools 可用工具定义，非空时注册到 payload.functions
      * @return 请求帧 JSON 字符串
      */
     String buildRequestJson(ChatRunContext context, String appId,
-                                    Double temperature, Integer maxTokens) {
+                            Double temperature, Integer maxTokens,
+                            List<ToolDefinitionForModel> tools) {
         try {
             ObjectNode root = objectMapper.createObjectNode();
             ObjectNode header = root.putObject("header");
@@ -286,15 +294,41 @@ public class SparkChatClient implements ModelChatClient {
             chat.put("domain", resolveDomain(context.getModel()));
             chat.put("temperature", temperature == null ? 0.5D : temperature);
             chat.put("max_tokens", maxTokens == null || maxTokens <= 0 ? 2048 : maxTokens);
-            ArrayNode text = root.putObject("payload").putObject("message").putArray("text");
+            // payload 只创建一次：message 与 functions 是兄弟节点，复用避免 putObject 覆盖。
+            ObjectNode payload = root.putObject("payload");
+            ArrayNode text = payload.putObject("message").putArray("text");
             for (ChatMessage message : context.getMessages()) {
                 ObjectNode item = text.addObject();
                 item.put("role", mapRole(message.getRole()));
                 item.put("content", message.getContent() == null ? "" : message.getContent());
             }
+            appendFunctions(payload, tools);
             return objectMapper.writeValueAsString(root);
         } catch (Exception exception) {
             throw new BusinessException("SPARK_PAYLOAD_FAILED", "星火请求报文构造失败：" + exception.getMessage());
+        }
+    }
+
+    /**
+     * 向请求帧追加星火 function calling 函数定义。
+     *
+     * <p>请求结构 {@code payload.functions.text}（数组，元素含 name/description/parameters JSON Schema）。
+     * 星火参数需标 required 才能稳定触发传递。</p>
+     *
+     * @param payload 已创建的 payload 节点（复用，避免覆盖 message）
+     * @param tools 工具定义
+     */
+    private void appendFunctions(ObjectNode payload, List<ToolDefinitionForModel> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return;
+        }
+        ArrayNode functionsText = payload.putObject("functions").putArray("text");
+        for (ToolDefinitionForModel tool : tools) {
+            ObjectNode fn = functionsText.addObject();
+            fn.put("name", tool.getName());
+            fn.put("description", tool.getDescription() == null ? "" : tool.getDescription());
+            fn.set("parameters", tool.getParameters() == null
+                    ? objectMapper.createObjectNode().put("type", "object") : tool.getParameters());
         }
     }
 
@@ -394,6 +428,8 @@ public class SparkChatClient implements ModelChatClient {
         private int promptTokens;
         private int completionTokens;
         private int totalTokens;
+        private ToolCallRequest functionCall;
+        private int frameSeq;
 
         SparkWebSocketListener(String requestJson, Consumer<String> onDelta, ObjectMapper objectMapper) {
             this.requestJson = requestJson;
@@ -403,6 +439,11 @@ public class SparkChatClient implements ModelChatClient {
 
         CompletableFuture<String> done() {
             return done;
+        }
+
+        /** 本次调用解析到的函数调用（星火单次对话至多一个 function_call，未命中返回空列表）。 */
+        List<ToolCallRequest> toolCalls() {
+            return functionCall == null ? List.of() : List.of(functionCall);
         }
 
         /** 标记本次调用被用户取消：异常完成响应 future，中断对完整响应帧的等待。 */
@@ -471,12 +512,22 @@ public class SparkChatClient implements ModelChatClient {
                     return;
                 }
                 JsonNode choices = root.path("payload").path("choices");
-                String delta = choices.path("text").path(0).path("content").asText("");
+                JsonNode textItem = choices.path("text").path(0);
+                String delta = textItem.path("content").asText("");
                 if (StringUtils.hasText(delta)) {
                     contentBuilder.append(delta);
                     if (onDelta != null) {
                         onDelta.accept(delta);
                     }
+                }
+                // function_call 与 content 并列在 text 项内：命中时 content 为空、arguments 为 JSON 字符串。
+                JsonNode functionCallNode = textItem.path("function_call");
+                if (!functionCallNode.isMissingNode() && StringUtils.hasText(functionCallNode.path("name").asText(""))) {
+                    ToolCallRequest toolCall = new ToolCallRequest();
+                    toolCall.setId("spark-fc-" + frameSeq++);
+                    toolCall.setName(functionCallNode.path("name").asText(""));
+                    toolCall.setArgumentsJson(functionCallNode.path("arguments").asText(""));
+                    functionCall = toolCall;
                 }
                 JsonNode usage = root.path("payload").path("usage").path("text");
                 promptTokens = usage.path("prompt_tokens").asInt(promptTokens);
