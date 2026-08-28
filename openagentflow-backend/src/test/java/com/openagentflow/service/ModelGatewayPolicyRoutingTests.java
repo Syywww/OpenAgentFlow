@@ -201,7 +201,7 @@ class ModelGatewayPolicyRoutingTests {
         AgentEntity agent = new AgentEntity();
         agent.setWorkspaceId("ws-9");
 
-        ModelRouteDecision decision = service.resolveAgentChatRoute(null, agent);
+        ModelRouteDecision decision = service.resolveAgentChatRoute(null, agent, null);
 
         assertThat(decision.getModel().getModelCode()).isEqualTo("gpt-4o-mini");
         assertThat(decision.getRoutePolicyName()).isEqualTo("策略-ws-policy");
@@ -225,7 +225,7 @@ class ModelGatewayPolicyRoutingTests {
         when(providerService.requireProviderByModel(model)).thenReturn(enabledProvider("prov-1"));
         when(providerService.findApiKeyValue("prov-1")).thenReturn("sk-test");
 
-        ModelRouteDecision decision = service.resolveAgentChatRoute(null, null);
+        ModelRouteDecision decision = service.resolveAgentChatRoute(null, null, null);
 
         assertThat(decision.getRoutePolicyName()).isEqualTo("策略-gl-policy");
     }
