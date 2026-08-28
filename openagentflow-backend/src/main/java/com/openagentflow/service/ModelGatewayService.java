@@ -28,13 +28,18 @@ import org.springframework.util.StringUtils;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -71,6 +76,15 @@ public class ModelGatewayService {
 
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
+
+    /** 会话粘性 TTL：同一 run 内模型选定后保持 24 小时。 */
+    private static final long STICKY_TTL_MILLIS = Duration.ofHours(24).toMillis();
+
+    /** 按 run 记录已选定的模型，key 形如 sceneType:runId。 */
+    private final Map<String, StickyEntry> stickyModelByRun = new ConcurrentHashMap<>();
+
+    /** 写入计数，用于写时抽检清理过期条目。 */
+    private final AtomicLong stickyPutCounter = new AtomicLong();
 
     public ModelGatewayService(ModelRoutePolicyMapper modelRoutePolicyMapper,
                                ModelRouteCandidateMapper modelRouteCandidateMapper,
@@ -272,18 +286,22 @@ public class ModelGatewayService {
     /**
      * 解析 Agent 对话模型路由。
      *
+     * <p>传入 runId 时策略命中会启用会话粘性：同一 run 内多次路由复用首次选定的模型，
+     * 避免工作流同一次运行在不同 LLM 节点间跳动模型。路由发生在 createRun 之前的调用方传 null。</p>
+     *
      * @param explicitModelId 显式指定模型ID
      * @param agent 当前 Agent
+     * @param runId 运行ID，可为 null（此时不启用会话粘性）
      * @return 路由决策
      */
-    public ModelRouteDecision resolveAgentChatRoute(String explicitModelId, AgentEntity agent) {
+    public ModelRouteDecision resolveAgentChatRoute(String explicitModelId, AgentEntity agent, String runId) {
         if (StringUtils.hasText(explicitModelId)) {
             return directDecision(modelProviderService.requireModel(explicitModelId), SCENE_AGENT_CHAT, "请求显式指定模型");
         }
         if (agent != null && StringUtils.hasText(agent.getModelId())) {
             return directDecision(modelProviderService.requireModel(agent.getModelId()), SCENE_AGENT_CHAT, "Agent 已绑定模型");
         }
-        return resolvePolicyRoute(SCENE_AGENT_CHAT, agent == null ? null : agent.getWorkspaceId());
+        return resolvePolicyRoute(SCENE_AGENT_CHAT, agent == null ? null : agent.getWorkspaceId(), runId);
     }
 
     /**
@@ -353,11 +371,16 @@ public class ModelGatewayService {
      * <p>策略按更新时间倒序遍历，取第一个命中的策略（空间策略更新晚于全局时自然优先）；
      * 空间未命中时 GLOBAL 兜底；候选模型解析失败时回退默认聊天模型。</p>
      *
+     * <p>候选选择：priority 是最低优先级组的硬分组门，weight 只在组内按比例分发（灰度放量）；
+     * 传入 runId 时按会话粘性复用该 run 首次选定的模型。weight 为 0 的候选不参与分发，
+     * 但仍保留在候选列表供失败回退链使用。</p>
+     *
      * @param sceneType 场景类型
      * @param workspaceId 当前工作空间ID，可为 null（平台级调用仅走 GLOBAL）
+     * @param runId 运行ID，可为 null（不启用会话粘性）
      * @return 路由决策
      */
-    private ModelRouteDecision resolvePolicyRoute(String sceneType, String workspaceId) {
+    private ModelRouteDecision resolvePolicyRoute(String sceneType, String workspaceId, String runId) {
         List<ModelRoutePolicyEntity> policies = modelRoutePolicyMapper.selectList(new LambdaQueryWrapper<ModelRoutePolicyEntity>()
                 .eq(ModelRoutePolicyEntity::getSceneType, sceneType)
                 .eq(ModelRoutePolicyEntity::getStatus, "enabled")
@@ -382,20 +405,111 @@ public class ModelGatewayService {
         }
 
         List<String> modelIds = candidates.stream().map(ModelRouteCandidateEntity::getModelId).toList();
+        // 最低优先级组（priority 相等）为放量池，保证既有"主/备"契约恒选主、灰度在同优先级组内按权重分发
+        Integer poolPriority = candidates.get(0).getPriority();
+        List<ModelRouteCandidateEntity> pool = candidates.stream()
+                .filter(candidate -> Objects.equals(candidate.getPriority(), poolPriority))
+                .toList();
+        String stickyKey = StringUtils.hasText(runId) ? sceneType + ":" + runId : null;
+        WeightedSelection selection = selectWeightedIndex(pool, modelIds, stickyKey, ThreadLocalRandom.current().nextDouble());
+
         ModelRouteDecision decision;
         try {
-            decision = buildDecision(modelProviderService.requireModel(modelIds.get(0)),
+            decision = buildDecision(modelProviderService.requireModel(modelIds.get(selection.index())),
                     sceneType,
                     policy.getId(),
                     policy.getPolicyName(),
                     modelIds,
-                    0);
+                    selection.index());
         } catch (BusinessException exception) {
             return directDecision(defaultChatModel(), sceneType, "路由候选模型不可用，使用默认聊天模型");
         }
         decision.setFallbackEnabled(Boolean.TRUE.equals(policy.getFallbackEnabled()));
-        decision.setReason("命中模型路由策略：" + policy.getPolicyName());
+        decision.setReason("命中模型路由策略：" + policy.getPolicyName()
+                + (selection.stickyHit() ? "，会话粘性复用首次选定的模型" : "，按权重分发命中"));
         return decision;
+    }
+
+    /**
+     * 按权重在候选池内选择下标。
+     *
+     * <p>纯方法（P8 先例）：外部注入随机值 {@code r}（[0,1)），测试无需控制随机源。
+     * weight 为 null 按 1 计、<=0 按 0 计（不参与分发）；总权重 <=0 或池为空时兜底返回 0 不抛异常。</p>
+     *
+     * @param candidates 候选池（已按 priority 分组）
+     * @param r 随机值 [0,1)
+     * @return 命中的候选下标
+     */
+    int pickWeightedIndex(List<ModelRouteCandidateEntity> candidates, double r) {
+        if (candidates.isEmpty()) {
+            return 0;
+        }
+        double total = 0;
+        for (ModelRouteCandidateEntity candidate : candidates) {
+            BigDecimal weight = candidate.getWeight();
+            total += weight == null ? 1 : Math.max(weight.doubleValue(), 0);
+        }
+        if (total <= 0) {
+            return 0;
+        }
+        double target = r * total;
+        double cumulative = 0;
+        for (int i = 0; i < candidates.size(); i++) {
+            BigDecimal weight = candidates.get(i).getWeight();
+            cumulative += weight == null ? 1 : Math.max(weight.doubleValue(), 0);
+            // 严格大于：r=0 落在第一个正权重候选，零权重前缀不会被 r=0 误选
+            if (cumulative > target) {
+                return i;
+            }
+        }
+        return candidates.size() - 1;
+    }
+
+    /**
+     * 在放量池内选择模型下标，并处理会话粘性。
+     *
+     * <p>stickyKey 有文本且池内存在未过期的粘性模型时直接复用（stickyHit=true，不消耗随机值）；
+     * 否则按权重新选并写入粘性记录。下标均相对全候选列表 {@code allModelIds}（供回退链使用）。</p>
+     *
+     * @param pool 放量池（最低优先级组）
+     * @param allModelIds 全健康候选模型ID列表
+     * @param stickyKey 会话粘性 key（sceneType:runId），可为 null
+     * @param r 随机值 [0,1)
+     * @return 选择结果
+     */
+    WeightedSelection selectWeightedIndex(List<ModelRouteCandidateEntity> pool,
+                                          List<String> allModelIds,
+                                          String stickyKey,
+                                          double r) {
+        if (StringUtils.hasText(stickyKey)) {
+            StickyEntry entry = stickyModelByRun.get(stickyKey);
+            if (entry != null && entry.expiresAtMillis() > System.currentTimeMillis()
+                    && pool.stream().anyMatch(candidate -> candidate.getModelId().equals(entry.modelId()))) {
+                return new WeightedSelection(allModelIds.indexOf(entry.modelId()), true);
+            }
+        }
+        String picked = pool.get(pickWeightedIndex(pool, r)).getModelId();
+        if (StringUtils.hasText(stickyKey)) {
+            stickyModelByRun.put(stickyKey, new StickyEntry(picked, System.currentTimeMillis() + STICKY_TTL_MILLIS));
+            if (stickyPutCounter.incrementAndGet() % 256 == 0) {
+                evictExpiredSticky();
+            }
+        }
+        return new WeightedSelection(allModelIds.indexOf(picked), false);
+    }
+
+    /** 会话粘性条目：已选定模型与过期时间。 */
+    record StickyEntry(String modelId, long expiresAtMillis) {
+    }
+
+    /** 加权选择结果：全候选列表下标 + 是否命中会话粘性。 */
+    record WeightedSelection(int index, boolean stickyHit) {
+    }
+
+    /** 抽检清理已过期的会话粘性条目。 */
+    private void evictExpiredSticky() {
+        long now = System.currentTimeMillis();
+        stickyModelByRun.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
     }
 
     /** 匹配规则解析结果三态：GLOBAL / WORKSPACE / SKIP（非法规则，不可参与匹配）。 */

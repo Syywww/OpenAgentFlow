@@ -51,7 +51,7 @@ public class MemoryExtractionService {
     public List<Candidate> extract(AgentEntity agent, String workspaceId, String runId, String userInput, String piiMode) {
         if (!valuableInput(userInput)) return List.of();
         try {
-            ModelRouteDecision route = modelGatewayService.resolveAgentChatRoute(null, agent);
+            ModelRouteDecision route = modelGatewayService.resolveAgentChatRoute(null, agent, runId);
             ChatRunContext context = new ChatRunContext();
             context.setRunId(runId);
             context.setAgent(agent);

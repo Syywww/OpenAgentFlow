@@ -500,7 +500,7 @@ public class WorkflowExecutionService {
                                            RuntimeTraceStepEntity traceStep,
                                            Map<String, Object> context,
                                            Map<String, Object> config) {
-        ModelRouteDecision routeDecision = modelGatewayService.resolveAgentChatRoute(stringValue(config.get("modelId"), ""), agent);
+        ModelRouteDecision routeDecision = modelGatewayService.resolveAgentChatRoute(stringValue(config.get("modelId"), ""), agent, runtimeRun.getId());
         ModelConfigEntity model = routeDecision.getModel();
         ModelProviderEntity provider = routeDecision.getProvider();
         ChatRunContext chatContext = new ChatRunContext();

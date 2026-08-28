@@ -226,6 +226,12 @@ function formatPercent(value?: number | null) {
   return `${Number(value || 0).toFixed(2)}%`;
 }
 
+function weightPercent(candidate: ModelRouteCandidateRequest) {
+  const total = policyForm.candidates.reduce((sum, item) => sum + Number(item.weight || 0), 0);
+  if (total <= 0) return '0%';
+  return `${((Number(candidate.weight || 0) / total) * 100).toFixed(1)}%`;
+}
+
 function formatMoney(value?: number | null) {
   return `¥${Number(value || 0).toFixed(6)}`;
 }
@@ -401,7 +407,7 @@ onMounted(() => {
               </select>
             </label>
             <label>优先级<input v-model.number="candidate.priority" type="number" min="1" /></label>
-            <label>权重<input v-model.number="candidate.weight" type="number" min="0" step="0.1" /></label>
+            <label>权重<input v-model.number="candidate.weight" type="number" min="0" step="0.1" /><span class="muted">{{ weightPercent(candidate) }}</span></label>
             <label>最大耗时<input v-model.number="candidate.maxLatencyMs" type="number" min="0" placeholder="可空" /></label>
             <label class="checkbox-line"><input v-model="candidate.enabled" type="checkbox" /> 启用</label>
             <button class="icon-button danger" type="button" :title="candidateModelName(candidate)" @click="removeCandidate(index)"><Trash2 :size="16" /></button>

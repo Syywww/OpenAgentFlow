@@ -289,7 +289,7 @@ public class ChatService {
      */
     private ChatRunContext buildRunContext(ChatCompletionRequest request) {
         AgentEntity agent = resolveAgent(request.getAgentId());
-        ModelRouteDecision routeDecision = modelGatewayService.resolveAgentChatRoute(request.getModelId(), agent);
+        ModelRouteDecision routeDecision = modelGatewayService.resolveAgentChatRoute(request.getModelId(), agent, null);
         ModelConfigEntity model = routeDecision.getModel();
         ModelProviderEntity provider = routeDecision.getProvider();
         String apiKey = routeDecision.getApiKey();
