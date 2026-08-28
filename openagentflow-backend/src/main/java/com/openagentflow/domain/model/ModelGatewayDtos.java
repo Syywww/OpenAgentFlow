@@ -110,6 +110,12 @@ public class ModelGatewayDtos {
         /** 匹配规则JSON。 */
         private String matchRule;
 
+        /** 匹配范围：GLOBAL / WORKSPACE。 */
+        private String matchScope;
+
+        /** WORKSPACE 范围命中的工作空间ID列表。 */
+        private List<String> workspaceIds;
+
         /** 是否启用失败回退。 */
         private Boolean fallbackEnabled;
 
@@ -163,6 +169,22 @@ public class ModelGatewayDtos {
 
         public void setMatchRule(String matchRule) {
             this.matchRule = matchRule;
+        }
+
+        public String getMatchScope() {
+            return matchScope;
+        }
+
+        public void setMatchScope(String matchScope) {
+            this.matchScope = matchScope;
+        }
+
+        public List<String> getWorkspaceIds() {
+            return workspaceIds;
+        }
+
+        public void setWorkspaceIds(List<String> workspaceIds) {
+            this.workspaceIds = workspaceIds;
         }
 
         public Boolean getFallbackEnabled() {
@@ -370,6 +392,12 @@ public class ModelGatewayDtos {
         /** 匹配规则JSON。 */
         private String matchRule;
 
+        /** 匹配范围：GLOBAL / WORKSPACE。 */
+        private String matchScope;
+
+        /** WORKSPACE 范围命中的工作空间ID列表。 */
+        private List<String> workspaceIds;
+
         /** 是否启用失败回退。 */
         private Boolean fallbackEnabled;
 
@@ -409,6 +437,22 @@ public class ModelGatewayDtos {
 
         public void setMatchRule(String matchRule) {
             this.matchRule = matchRule;
+        }
+
+        public String getMatchScope() {
+            return matchScope;
+        }
+
+        public void setMatchScope(String matchScope) {
+            this.matchScope = matchScope;
+        }
+
+        public List<String> getWorkspaceIds() {
+            return workspaceIds;
+        }
+
+        public void setWorkspaceIds(List<String> workspaceIds) {
+            this.workspaceIds = workspaceIds;
         }
 
         public Boolean getFallbackEnabled() {

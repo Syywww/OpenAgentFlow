@@ -101,6 +101,8 @@ export interface ModelRoutePolicySummary {
   policyName: string;
   sceneType: string;
   matchRule: string;
+  matchScope?: string;
+  workspaceIds?: string[];
   fallbackEnabled: boolean;
   status: string;
   candidates: ModelRouteCandidateSummary[];
@@ -123,6 +125,8 @@ export interface ModelRoutePolicyRequest {
   policyName: string;
   sceneType: string;
   matchRule: string;
+  matchScope?: string;
+  workspaceIds?: string[];
   fallbackEnabled: boolean;
   status: string;
   candidates: ModelRouteCandidateRequest[];

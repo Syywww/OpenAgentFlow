@@ -25,6 +25,7 @@ import {
 } from '../api/models';
 import type { StatusTone } from '../types';
 import { usePagination } from '../composables/usePagination';
+import { fetchWorkspaces, type WorkspaceSummary } from '../api/workspaces';
 
 const loading = ref(false);
 const errorMessage = ref('');
@@ -33,6 +34,7 @@ const policies = ref<ModelRoutePolicySummary[]>([]);
 const providers = ref<ModelProviderSummary[]>([]);
 const healthRows = ref<ModelHealthSummary[]>([]);
 const calls = ref<ModelGatewayCallSummary[]>([]);
+const workspaces = ref<WorkspaceSummary[]>([]);
 const editingPolicyId = ref('');
 const activePanel = ref<'policies' | 'health' | 'calls'>('policies');
 const policyModalOpen = ref(false);
@@ -47,6 +49,8 @@ const policyForm = reactive<ModelRoutePolicyRequest>({
   policyName: '默认 Agent 对话模型路由',
   sceneType: 'AGENT_CHAT',
   matchRule: '{\n  "scope": "GLOBAL"\n}',
+  matchScope: 'GLOBAL',
+  workspaceIds: [],
   fallbackEnabled: true,
   status: 'enabled',
   candidates: [],
@@ -56,18 +60,20 @@ async function loadData() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [overviewResult, policyResult, providerResult, healthResult, callResult] = await Promise.all([
+    const [overviewResult, policyResult, providerResult, healthResult, callResult, workspaceResult] = await Promise.all([
       fetchModelGatewayOverview(),
       fetchModelRoutePolicies(),
       fetchModelProviders(),
       fetchModelHealth(),
       fetchModelGatewayCalls(30),
+      fetchWorkspaces(),
     ]);
     overview.value = overviewResult;
     policies.value = policyResult;
     providers.value = providerResult;
     healthRows.value = healthResult;
     calls.value = callResult;
+    workspaces.value = workspaceResult;
     if (policyForm.candidates.length === 0 && providerResult.length > 0) {
       resetForm();
     }
@@ -84,6 +90,8 @@ function resetForm() {
   policyForm.policyName = '默认 Agent 对话模型路由';
   policyForm.sceneType = 'AGENT_CHAT';
   policyForm.matchRule = '{\n  "scope": "GLOBAL"\n}';
+  policyForm.matchScope = 'GLOBAL';
+  policyForm.workspaceIds = [];
   policyForm.fallbackEnabled = true;
   policyForm.status = 'enabled';
   policyForm.candidates = allModels.value
@@ -103,6 +111,8 @@ function editPolicy(policy: ModelRoutePolicySummary) {
   policyForm.policyName = policy.policyName;
   policyForm.sceneType = policy.sceneType;
   policyForm.matchRule = policy.matchRule || '{}';
+  policyForm.matchScope = policy.matchScope || 'GLOBAL';
+  policyForm.workspaceIds = policy.workspaceIds || [];
   policyForm.fallbackEnabled = policy.fallbackEnabled;
   policyForm.status = policy.status;
   policyForm.candidates = policy.candidates.map((candidate) => ({
@@ -177,8 +187,13 @@ async function removePolicy(policy: ModelRoutePolicySummary) {
 }
 
 function normalizePayload(): ModelRoutePolicyRequest {
+  const scope = policyForm.matchScope === 'WORKSPACE' ? 'WORKSPACE' : 'GLOBAL';
+  const workspaceIds = (policyForm.workspaceIds || []).filter((id) => Boolean(id && id.trim()));
   return {
     ...policyForm,
+    matchRule: JSON.stringify(
+      scope === 'WORKSPACE' ? { scope: 'WORKSPACE', workspaceIds } : { scope: 'GLOBAL' },
+    ),
     sceneType: policyForm.sceneType.trim().toUpperCase(),
     candidates: policyForm.candidates
       .filter((candidate) => candidate.modelId)
@@ -356,7 +371,20 @@ onMounted(() => {
             </select>
           </label>
           <label class="checkbox-line"><input v-model="policyForm.fallbackEnabled" type="checkbox" /> 启用失败回退</label>
-          <label class="wide">匹配规则 JSON<textarea v-model="policyForm.matchRule" class="code-editor compact" /></label>
+          <label>匹配范围
+            <select v-model="policyForm.matchScope">
+              <option value="GLOBAL">GLOBAL（全部空间）</option>
+              <option value="WORKSPACE">WORKSPACE（指定空间）</option>
+            </select>
+          </label>
+          <label v-if="policyForm.matchScope === 'WORKSPACE'" class="wide">指定空间
+            <div class="candidate-list" style="max-height: 180px; overflow-y: auto;">
+              <label v-for="workspace in workspaces" :key="workspace.id" class="checkbox-line">
+                <input v-model="policyForm.workspaceIds" type="checkbox" :value="workspace.id" /> {{ workspace.workspaceName }}
+              </label>
+              <p v-if="workspaces.length === 0" class="muted">暂无可用空间</p>
+            </div>
+          </label>
         </div>
 
         <div class="section-title compact-title">

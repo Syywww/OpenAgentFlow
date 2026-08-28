@@ -1,7 +1,10 @@
 package com.openagentflow.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.openagentflow.domain.model.ModelGatewayDtos;
 import com.openagentflow.domain.model.ModelRouteDecision;
 import com.openagentflow.entity.AgentEntity;
@@ -280,7 +283,7 @@ public class ModelGatewayService {
         if (agent != null && StringUtils.hasText(agent.getModelId())) {
             return directDecision(modelProviderService.requireModel(agent.getModelId()), SCENE_AGENT_CHAT, "Agent 已绑定模型");
         }
-        return resolvePolicyRoute(SCENE_AGENT_CHAT);
+        return resolvePolicyRoute(SCENE_AGENT_CHAT, agent == null ? null : agent.getWorkspaceId());
     }
 
     /**
@@ -344,17 +347,25 @@ public class ModelGatewayService {
         }
     }
 
-    private ModelRouteDecision resolvePolicyRoute(String sceneType) {
-        ModelRoutePolicyEntity policy = modelRoutePolicyMapper.selectList(new LambdaQueryWrapper<ModelRoutePolicyEntity>()
-                        .eq(ModelRoutePolicyEntity::getSceneType, sceneType)
-                        .eq(ModelRoutePolicyEntity::getStatus, "enabled")
-                        .orderByDesc(ModelRoutePolicyEntity::getUpdatedAt)
-                        .orderByDesc(ModelRoutePolicyEntity::getCreatedAt))
-                .stream()
-                .findFirst()
-                .orElse(null);
+    /**
+     * 解析场景路由策略：按工作空间命中策略并选择候选模型。
+     *
+     * <p>策略按更新时间倒序遍历，取第一个命中的策略（空间策略更新晚于全局时自然优先）；
+     * 空间未命中时 GLOBAL 兜底；候选模型解析失败时回退默认聊天模型。</p>
+     *
+     * @param sceneType 场景类型
+     * @param workspaceId 当前工作空间ID，可为 null（平台级调用仅走 GLOBAL）
+     * @return 路由决策
+     */
+    private ModelRouteDecision resolvePolicyRoute(String sceneType, String workspaceId) {
+        List<ModelRoutePolicyEntity> policies = modelRoutePolicyMapper.selectList(new LambdaQueryWrapper<ModelRoutePolicyEntity>()
+                .eq(ModelRoutePolicyEntity::getSceneType, sceneType)
+                .eq(ModelRoutePolicyEntity::getStatus, "enabled")
+                .orderByDesc(ModelRoutePolicyEntity::getUpdatedAt)
+                .orderByDesc(ModelRoutePolicyEntity::getCreatedAt));
+        ModelRoutePolicyEntity policy = selectPolicyForWorkspace(policies, workspaceId);
         if (policy == null) {
-            return directDecision(defaultChatModel(), sceneType, "未配置路由策略，使用默认聊天模型");
+            return directDecision(defaultChatModel(), sceneType, "未命中路由策略，使用默认聊天模型");
         }
 
         List<ModelRouteCandidateEntity> candidates = modelRouteCandidateMapper.selectList(new LambdaQueryWrapper<ModelRouteCandidateEntity>()
@@ -371,15 +382,108 @@ public class ModelGatewayService {
         }
 
         List<String> modelIds = candidates.stream().map(ModelRouteCandidateEntity::getModelId).toList();
-        ModelRouteDecision decision = buildDecision(modelProviderService.requireModel(modelIds.get(0)),
-                sceneType,
-                policy.getId(),
-                policy.getPolicyName(),
-                modelIds,
-                0);
+        ModelRouteDecision decision;
+        try {
+            decision = buildDecision(modelProviderService.requireModel(modelIds.get(0)),
+                    sceneType,
+                    policy.getId(),
+                    policy.getPolicyName(),
+                    modelIds,
+                    0);
+        } catch (BusinessException exception) {
+            return directDecision(defaultChatModel(), sceneType, "路由候选模型不可用，使用默认聊天模型");
+        }
         decision.setFallbackEnabled(Boolean.TRUE.equals(policy.getFallbackEnabled()));
         decision.setReason("命中模型路由策略：" + policy.getPolicyName());
         return decision;
+    }
+
+    /** 匹配规则解析结果三态：GLOBAL / WORKSPACE / SKIP（非法规则，不可参与匹配）。 */
+    record MatchRuleParsed(String scope, List<String> workspaceIds) {
+        /** 非法 JSON 解析结果。 */
+        static MatchRuleParsed skip() {
+            return new MatchRuleParsed("SKIP", List.of());
+        }
+    }
+
+    /**
+     * 解析策略匹配规则 JSON。
+     *
+     * <p>鲁棒解析：非法 JSON → SKIP（策略不可匹配）；缺 scope / scope 非 WORKSPACE → GLOBAL；
+     * WORKSPACE 但 workspaceIds 为空 → GLOBAL（避免永不命中）。</p>
+     *
+     * @param matchRule 匹配规则 JSON，可为 null
+     * @return 解析结果
+     */
+    MatchRuleParsed parseMatchRule(String matchRule) {
+        if (!StringUtils.hasText(matchRule)) {
+            return new MatchRuleParsed("GLOBAL", List.of());
+        }
+        JsonNode node;
+        try {
+            node = objectMapper.readTree(matchRule);
+        } catch (Exception exception) {
+            return MatchRuleParsed.skip();
+        }
+        if (!node.isObject()) {
+            return MatchRuleParsed.skip();
+        }
+        if (StringUtils.hasText(node.path("scope").asText(""))
+                && "WORKSPACE".equalsIgnoreCase(node.path("scope").asText("").trim())) {
+            List<String> workspaceIds = new ArrayList<>();
+            JsonNode idsNode = node.path("workspaceIds");
+            if (idsNode.isArray()) {
+                idsNode.forEach(item -> {
+                    String id = item.asText("");
+                    if (StringUtils.hasText(id)) {
+                        workspaceIds.add(id.trim());
+                    }
+                });
+            }
+            if (workspaceIds.isEmpty()) {
+                return new MatchRuleParsed("GLOBAL", List.of());
+            }
+            return new MatchRuleParsed("WORKSPACE", workspaceIds);
+        }
+        return new MatchRuleParsed("GLOBAL", List.of());
+    }
+
+    /**
+     * 按工作空间从策略列表中选出第一个命中策略。
+     *
+     * <p>策略列表须已按更新时间倒序；SKIP（非法规则）跳过；workspaceId 为空时仅 GLOBAL 命中；
+     * workspaceId 非空时 GLOBAL 或 WORKSPACE 包含即命中。未命中返回 null。</p>
+     *
+     * @param policies 候选策略列表（已排序）
+     * @param workspaceId 当前工作空间ID，可为 null
+     * @return 命中的策略，未命中返回 null
+     */
+    ModelRoutePolicyEntity selectPolicyForWorkspace(List<ModelRoutePolicyEntity> policies, String workspaceId) {
+        if (policies == null || policies.isEmpty()) {
+            return null;
+        }
+        boolean hasWorkspace = StringUtils.hasText(workspaceId);
+        String normalizedWorkspaceId = hasWorkspace ? workspaceId.trim() : null;
+        for (ModelRoutePolicyEntity policy : policies) {
+            if (policy == null) {
+                continue;
+            }
+            MatchRuleParsed parsed = parseMatchRule(policy.getMatchRule());
+            if ("SKIP".equals(parsed.scope())) {
+                continue;
+            }
+            if (!hasWorkspace) {
+                if ("GLOBAL".equals(parsed.scope())) {
+                    return policy;
+                }
+                continue;
+            }
+            if ("GLOBAL".equals(parsed.scope())
+                    || (parsed.workspaceIds() != null && parsed.workspaceIds().contains(normalizedWorkspaceId))) {
+                return policy;
+            }
+        }
+        return null;
     }
 
     private ModelRouteDecision directDecision(ModelConfigEntity model, String sceneType, String reason) {
@@ -449,9 +553,46 @@ public class ModelGatewayService {
         entity.setPolicyCode(requiredText(request.getPolicyCode(), "策略编码不能为空"));
         entity.setPolicyName(requiredText(request.getPolicyName(), "策略名称不能为空"));
         entity.setSceneType(StringUtils.hasText(request.getSceneType()) ? request.getSceneType().trim().toUpperCase() : SCENE_AGENT_CHAT);
-        entity.setMatchRule(StringUtils.hasText(request.getMatchRule()) ? request.getMatchRule() : "{}");
+        entity.setMatchRule(buildMatchRule(request));
         entity.setFallbackEnabled(!Boolean.FALSE.equals(request.getFallbackEnabled()));
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus() : "enabled");
+    }
+
+    /**
+     * 由请求生成匹配规则 JSON。
+     *
+     * <p>请求显式携带 matchRule 时原样保留（兼容历史裸 JSON 提交）；
+     * 否则由结构化 matchScope/workspaceIds 生成；空对象兜底为 GLOBAL。</p>
+     *
+     * @param request 策略保存请求
+     * @return 匹配规则 JSON
+     */
+    private String buildMatchRule(ModelGatewayDtos.PolicyRequest request) {
+        if (request.getMatchRule() != null && StringUtils.hasText(request.getMatchRule())) {
+            return request.getMatchRule();
+        }
+        if ("WORKSPACE".equalsIgnoreCase(safeText(request.getMatchScope()))) {
+            List<String> workspaceIds = request.getWorkspaceIds() == null
+                    ? List.of()
+                    : request.getWorkspaceIds().stream()
+                            .filter(StringUtils::hasText)
+                            .map(String::trim)
+                            .distinct()
+                            .toList();
+            if (workspaceIds.isEmpty()) {
+                return "{\"scope\":\"GLOBAL\"}";
+            }
+            try {
+                ObjectNode rule = objectMapper.createObjectNode();
+                rule.put("scope", "WORKSPACE");
+                ArrayNode idsNode = rule.putArray("workspaceIds");
+                workspaceIds.forEach(idsNode::add);
+                return objectMapper.writeValueAsString(rule);
+            } catch (Exception exception) {
+                return "{\"scope\":\"GLOBAL\"}";
+            }
+        }
+        return "{\"scope\":\"GLOBAL\"}";
     }
 
     private void saveCandidates(String policyId, List<ModelGatewayDtos.CandidateRequest> requests) {
@@ -487,6 +628,9 @@ public class ModelGatewayService {
         summary.setPolicyName(entity.getPolicyName());
         summary.setSceneType(entity.getSceneType());
         summary.setMatchRule(entity.getMatchRule());
+        MatchRuleParsed parsed = parseMatchRule(entity.getMatchRule());
+        summary.setMatchScope("SKIP".equals(parsed.scope()) ? "GLOBAL" : parsed.scope());
+        summary.setWorkspaceIds("WORKSPACE".equals(parsed.scope()) ? parsed.workspaceIds() : List.of());
         summary.setFallbackEnabled(entity.getFallbackEnabled());
         summary.setStatus(entity.getStatus());
         summary.setCreatedAt(entity.getCreatedAt());
