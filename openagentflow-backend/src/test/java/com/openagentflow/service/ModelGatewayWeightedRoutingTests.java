@@ -56,12 +56,15 @@ class ModelGatewayWeightedRoutingTests {
     @Mock
     private JdbcTemplate jdbcTemplate;
 
+    @Mock
+    private UsageCostService usageCostService;
+
     private ModelGatewayService service;
 
     @BeforeEach
     void setUp() {
         service = new ModelGatewayService(policyMapper, candidateMapper, configMapper, providerMapper,
-                providerService, jdbcTemplate, new ObjectMapper());
+                providerService, jdbcTemplate, new ObjectMapper(), usageCostService);
     }
 
     // ---- pickWeightedIndex：权重分发边界 ----

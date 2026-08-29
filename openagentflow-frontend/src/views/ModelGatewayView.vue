@@ -54,6 +54,7 @@ const policyForm = reactive<ModelRoutePolicyRequest>({
   fallbackEnabled: true,
   breakerFailureThreshold: 5,
   breakerTimeoutSeconds: 60,
+  routingMode: 'weighted',
   status: 'enabled',
   candidates: [],
 });
@@ -97,6 +98,7 @@ function resetForm() {
   policyForm.fallbackEnabled = true;
   policyForm.breakerFailureThreshold = 5;
   policyForm.breakerTimeoutSeconds = 60;
+  policyForm.routingMode = 'weighted';
   policyForm.status = 'enabled';
   policyForm.candidates = allModels.value
     .filter((model) => model.modelType === 'chat' && model.status === 'enabled')
@@ -120,6 +122,7 @@ function editPolicy(policy: ModelRoutePolicySummary) {
   policyForm.fallbackEnabled = policy.fallbackEnabled;
   policyForm.breakerFailureThreshold = policy.breakerFailureThreshold ?? 5;
   policyForm.breakerTimeoutSeconds = policy.breakerTimeoutSeconds ?? 60;
+  policyForm.routingMode = policy.routingMode || 'weighted';
   policyForm.status = policy.status;
   policyForm.candidates = policy.candidates.map((candidate) => ({
     modelId: candidate.modelId,
@@ -388,6 +391,12 @@ onMounted(() => {
           </label>
           <label>熔断时长(秒)
             <input v-model.number="policyForm.breakerTimeoutSeconds" type="number" min="1" placeholder="60" />
+          </label>
+          <label>路由模式
+            <select v-model="policyForm.routingMode">
+              <option value="weighted">按权重分发</option>
+              <option value="cost_first">按成本优选</option>
+            </select>
           </label>
           <label>匹配范围
             <select v-model="policyForm.matchScope">

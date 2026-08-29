@@ -56,12 +56,15 @@ class ModelGatewayPolicyRoutingTests {
     @Mock
     private JdbcTemplate jdbcTemplate;
 
+    @Mock
+    private UsageCostService usageCostService;
+
     private ModelGatewayService service;
 
     @BeforeEach
     void setUp() {
         service = new ModelGatewayService(policyMapper, candidateMapper, configMapper, providerMapper,
-                providerService, jdbcTemplate, new ObjectMapper());
+                providerService, jdbcTemplate, new ObjectMapper(), usageCostService);
     }
 
     // ---- parseMatchRule：三态解析 ----

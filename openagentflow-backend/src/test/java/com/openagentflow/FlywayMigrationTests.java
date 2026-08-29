@@ -23,9 +23,9 @@ class FlywayMigrationTests {
             .withDatabaseName("openagentflow")
             .withPassword("123456");
 
-    /** 空数据库必须能够一次执行到当前最新版本（V058：模型网关熔断器参数）。 */
+    /** 空数据库必须能够一次执行到当前最新版本（V059：模型网关成本优化路由参数）。 */
     @Test
-    void freshDatabaseShouldMigrateToVersion58() throws Exception {
+    void freshDatabaseShouldMigrateToVersion59() throws Exception {
         Flyway flyway = Flyway.configure()
                 // 完整迁移包含建库语句，使用容器root账号执行DDL。
                 .dataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword())
@@ -36,7 +36,7 @@ class FlywayMigrationTests {
         flyway.migrate();
 
         // 使用 Flyway 语义版本比较，避免 V056/V057 的展示文本前导零造成误判。
-        assertEquals(0, MigrationVersion.fromVersion("58").compareTo(flyway.info().current().getVersion()));
+        assertEquals(0, MigrationVersion.fromVersion("59").compareTo(flyway.info().current().getVersion()));
         try (Connection connection = MYSQL.createConnection("")) {
             assertTrue(columnExists(connection, "knowledge_document", "current_pipeline_root_id"));
             assertTrue(columnExists(connection, "document_pipeline_node", "generation_no"));
@@ -47,6 +47,7 @@ class FlywayMigrationTests {
             assertTrue(columnExists(connection, "iam_resource_acl", "expires_at"));
             assertTrue(columnExists(connection, "model_route_policy", "breaker_failure_threshold"));
             assertTrue(columnExists(connection, "model_route_policy", "breaker_timeout_seconds"));
+            assertTrue(columnExists(connection, "model_route_policy", "routing_mode"));
         }
     }
 

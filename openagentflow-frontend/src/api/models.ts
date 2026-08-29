@@ -106,6 +106,7 @@ export interface ModelRoutePolicySummary {
   fallbackEnabled: boolean;
   breakerFailureThreshold?: number;
   breakerTimeoutSeconds?: number;
+  routingMode?: string;
   status: string;
   candidates: ModelRouteCandidateSummary[];
   createdAt?: string;
@@ -132,6 +133,7 @@ export interface ModelRoutePolicyRequest {
   fallbackEnabled: boolean;
   breakerFailureThreshold?: number;
   breakerTimeoutSeconds?: number;
+  routingMode?: string;
   status: string;
   candidates: ModelRouteCandidateRequest[];
 }

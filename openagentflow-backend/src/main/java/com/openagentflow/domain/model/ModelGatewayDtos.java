@@ -125,6 +125,9 @@ public class ModelGatewayDtos {
         /** 熔断持续时间（秒），空值用默认常量兜底。 */
         private Integer breakerTimeoutSeconds;
 
+        /** 路由模式：weighted 按权重分发 / cost_first 按估算成本优选。 */
+        private String routingMode;
+
         /** 策略状态。 */
         private String status;
 
@@ -215,6 +218,14 @@ public class ModelGatewayDtos {
 
         public void setBreakerTimeoutSeconds(Integer breakerTimeoutSeconds) {
             this.breakerTimeoutSeconds = breakerTimeoutSeconds;
+        }
+
+        public String getRoutingMode() {
+            return routingMode;
+        }
+
+        public void setRoutingMode(String routingMode) {
+            this.routingMode = routingMode;
         }
 
         public String getStatus() {
@@ -429,6 +440,9 @@ public class ModelGatewayDtos {
         /** 熔断持续时间（秒），空值用默认常量兜底。 */
         private Integer breakerTimeoutSeconds;
 
+        /** 路由模式：weighted 按权重分发 / cost_first 按估算成本优选。 */
+        private String routingMode;
+
         /** 策略状态。 */
         private String status;
 
@@ -505,6 +519,14 @@ public class ModelGatewayDtos {
 
         public void setBreakerTimeoutSeconds(Integer breakerTimeoutSeconds) {
             this.breakerTimeoutSeconds = breakerTimeoutSeconds;
+        }
+
+        public String getRoutingMode() {
+            return routingMode;
+        }
+
+        public void setRoutingMode(String routingMode) {
+            this.routingMode = routingMode;
         }
 
         public String getStatus() {

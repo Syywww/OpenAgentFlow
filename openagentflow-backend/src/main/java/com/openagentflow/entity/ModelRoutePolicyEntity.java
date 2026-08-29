@@ -44,6 +44,10 @@ public class ModelRoutePolicyEntity {
     @TableField("breaker_timeout_seconds")
     private Integer breakerTimeoutSeconds;
 
+    /** 路由模式：weighted 按权重分发 / cost_first 按估算成本优选。 */
+    @TableField("routing_mode")
+    private String routingMode;
+
     /** 状态。 */
     @TableField("status")
     private String status;
@@ -122,6 +126,14 @@ public class ModelRoutePolicyEntity {
 
     public void setBreakerTimeoutSeconds(Integer breakerTimeoutSeconds) {
         this.breakerTimeoutSeconds = breakerTimeoutSeconds;
+    }
+
+    public String getRoutingMode() {
+        return routingMode;
+    }
+
+    public void setRoutingMode(String routingMode) {
+        this.routingMode = routingMode;
     }
 
     public String getStatus() {

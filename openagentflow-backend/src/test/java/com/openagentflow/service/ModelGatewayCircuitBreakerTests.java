@@ -60,12 +60,15 @@ class ModelGatewayCircuitBreakerTests {
     @Mock
     private JdbcTemplate jdbcTemplate;
 
+    @Mock
+    private UsageCostService usageCostService;
+
     private ModelGatewayService service;
 
     @BeforeEach
     void setUp() {
         service = new ModelGatewayService(policyMapper, candidateMapper, configMapper, providerMapper,
-                providerService, jdbcTemplate, new ObjectMapper());
+                providerService, jdbcTemplate, new ObjectMapper(), usageCostService);
     }
 
     // ---- 纯状态机：阈值与打开 ----

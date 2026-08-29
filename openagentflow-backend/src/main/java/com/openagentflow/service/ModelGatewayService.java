@@ -32,6 +32,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -62,6 +64,12 @@ public class ModelGatewayService {
     /** 熔断器默认熔断时长（秒，策略未配置时兜底）。 */
     private static final int DEFAULT_BREAKER_TIMEOUT_SECONDS = 60;
 
+    /** cost_first 参考调用画像：输入 token（仅用于候选相对成本排序，不代表真实流量）。 */
+    private static final int COST_ROUTING_REF_PROMPT_TOKENS = 2000;
+
+    /** cost_first 参考调用画像：输出 token（仅用于候选相对成本排序，不代表真实流量）。 */
+    private static final int COST_ROUTING_REF_COMPLETION_TOKENS = 500;
+
     /** 路由策略 Mapper。 */
     private final ModelRoutePolicyMapper modelRoutePolicyMapper;
 
@@ -83,6 +91,9 @@ public class ModelGatewayService {
     /** JSON 序列化工具。 */
     private final ObjectMapper objectMapper;
 
+    /** 用量与成本服务，cost_first 路由复用其单次成本估算函数。 */
+    private final UsageCostService usageCostService;
+
     /** 会话粘性 TTL：同一 run 内模型选定后保持 24 小时。 */
     private static final long STICKY_TTL_MILLIS = Duration.ofHours(24).toMillis();
 
@@ -101,7 +112,8 @@ public class ModelGatewayService {
                                ModelProviderMapper modelProviderMapper,
                                ModelProviderService modelProviderService,
                                JdbcTemplate jdbcTemplate,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper,
+                               UsageCostService usageCostService) {
         this.modelRoutePolicyMapper = modelRoutePolicyMapper;
         this.modelRouteCandidateMapper = modelRouteCandidateMapper;
         this.modelConfigMapper = modelConfigMapper;
@@ -109,6 +121,7 @@ public class ModelGatewayService {
         this.modelProviderService = modelProviderService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.usageCostService = usageCostService;
     }
 
     /**
@@ -590,6 +603,8 @@ public class ModelGatewayService {
             return directDecision(defaultChatModel(), sceneType, "未命中路由策略，使用默认聊天模型");
         }
 
+        // healthy 过滤与 cost_first 成本排序共享一次模型查询缓存
+        Map<String, ModelConfigEntity> modelCache = new HashMap<>();
         List<ModelRouteCandidateEntity> candidates = modelRouteCandidateMapper.selectList(new LambdaQueryWrapper<ModelRouteCandidateEntity>()
                         .eq(ModelRouteCandidateEntity::getPolicyId, policy.getId())
                         .eq(ModelRouteCandidateEntity::getEnabled, true)
@@ -597,7 +612,7 @@ public class ModelGatewayService {
                         .orderByDesc(ModelRouteCandidateEntity::getWeight)
                         .orderByAsc(ModelRouteCandidateEntity::getCreatedAt))
                 .stream()
-                .filter(candidate -> healthyCandidate(candidate, policy))
+                .filter(candidate -> healthyCandidate(candidate, policy, modelCache))
                 .toList();
         if (candidates.isEmpty()) {
             return directDecision(defaultChatModel(), sceneType, "路由策略无可用候选，使用默认聊天模型");
@@ -612,6 +627,7 @@ public class ModelGatewayService {
             return directDecision(defaultChatModel(), sceneType, "候选全部熔断，使用默认聊天模型");
         }
 
+        boolean costFirst = "cost_first".equalsIgnoreCase(policy.getRoutingMode());
         List<String> modelIds = candidates.stream().map(ModelRouteCandidateEntity::getModelId).toList();
         // 最低优先级组（priority 相等）为放量池，保证既有"主/备"契约恒选主、灰度在同优先级组内按权重分发
         Integer poolPriority = candidates.get(0).getPriority();
@@ -619,7 +635,16 @@ public class ModelGatewayService {
                 .filter(candidate -> Objects.equals(candidate.getPriority(), poolPriority))
                 .toList();
         String stickyKey = StringUtils.hasText(runId) ? sceneType + ":" + runId : null;
-        WeightedSelection selection = selectWeightedIndex(pool, modelIds, stickyKey, ThreadLocalRandom.current().nextDouble());
+        WeightedSelection selection;
+        if (costFirst) {
+            // candidateModelIds 按成本升序重排：失败回退链同样偏好便宜模型
+            modelIds = modelIds.stream()
+                    .sorted(Comparator.comparing(modelId -> estimateCallCost(modelId, modelCache)))
+                    .toList();
+            selection = selectCostFirstIndex(pool, modelIds, stickyKey, modelId -> estimateCallCost(modelId, modelCache));
+        } else {
+            selection = selectWeightedIndex(pool, modelIds, stickyKey, ThreadLocalRandom.current().nextDouble());
+        }
 
         ModelRouteDecision decision;
         try {
@@ -633,8 +658,15 @@ public class ModelGatewayService {
             return directDecision(defaultChatModel(), sceneType, "路由候选模型不可用，使用默认聊天模型");
         }
         decision.setFallbackEnabled(Boolean.TRUE.equals(policy.getFallbackEnabled()));
-        decision.setReason("命中模型路由策略：" + policy.getPolicyName()
-                + (selection.stickyHit() ? "，会话粘性复用首次选定的模型" : "，按权重分发命中"));
+        String reasonSuffix;
+        if (selection.stickyHit()) {
+            reasonSuffix = "，会话粘性复用首次选定的模型";
+        } else if (costFirst) {
+            reasonSuffix = "，按成本优化命中";
+        } else {
+            reasonSuffix = "，按权重分发命中";
+        }
+        decision.setReason("命中模型路由策略：" + policy.getPolicyName() + reasonSuffix);
         return decision;
     }
 
@@ -689,6 +721,23 @@ public class ModelGatewayService {
                                           List<String> allModelIds,
                                           String stickyKey,
                                           double r) {
+        WeightedSelection sticky = stickySelection(pool, allModelIds, stickyKey);
+        if (sticky != null) {
+            return sticky;
+        }
+        String picked = pool.get(pickWeightedIndex(pool, r)).getModelId();
+        writeSticky(stickyKey, picked);
+        return new WeightedSelection(allModelIds.indexOf(picked), false);
+    }
+
+    /**
+     * 会话粘性短路径：命中且 pin 仍在池内 → 复用（不消耗随机值），否则返回 null。
+     *
+     * @return 复用的选择结果，未命中时为 null
+     */
+    private WeightedSelection stickySelection(List<ModelRouteCandidateEntity> pool,
+                                              List<String> allModelIds,
+                                              String stickyKey) {
         if (StringUtils.hasText(stickyKey)) {
             StickyEntry entry = stickyModelByRun.get(stickyKey);
             if (entry != null && entry.expiresAtMillis() > System.currentTimeMillis()
@@ -696,14 +745,98 @@ public class ModelGatewayService {
                 return new WeightedSelection(allModelIds.indexOf(entry.modelId()), true);
             }
         }
-        String picked = pool.get(pickWeightedIndex(pool, r)).getModelId();
+        return null;
+    }
+
+    /** 写入会话粘性记录（key 无文本时跳过），并抽检清理过期条目。 */
+    private void writeSticky(String stickyKey, String picked) {
         if (StringUtils.hasText(stickyKey)) {
             stickyModelByRun.put(stickyKey, new StickyEntry(picked, System.currentTimeMillis() + STICKY_TTL_MILLIS));
             if (stickyPutCounter.incrementAndGet() % 256 == 0) {
                 evictExpiredSticky();
             }
         }
+    }
+
+    /**
+     * cost_first：在放量池内选择估算成本最低的模型下标，并处理会话粘性。
+     *
+     * <p>与 selectWeightedIndex 同构：粘性命中且 pin 在池内 → 复用（不对比成本）；
+     * 否则确定性选最便宜并写入粘性。下标相对全候选列表 {@code allModelIds}（供回退链使用）。</p>
+     *
+     * @param pool 放量池（最低优先级组）
+     * @param allModelIds 全健康候选模型ID列表（已按成本升序）
+     * @param stickyKey 会话粘性 key（sceneType:runId），可为 null
+     * @param costByModelId 估算单次调用成本函数（按 modelId）
+     * @return 选择结果
+     */
+    WeightedSelection selectCostFirstIndex(List<ModelRouteCandidateEntity> pool,
+                                           List<String> allModelIds,
+                                           String stickyKey,
+                                           Function<String, BigDecimal> costByModelId) {
+        WeightedSelection sticky = stickySelection(pool, allModelIds, stickyKey);
+        if (sticky != null) {
+            return sticky;
+        }
+        String picked = pool.get(pickCheapestIndex(pool, costByModelId)).getModelId();
+        writeSticky(stickyKey, picked);
         return new WeightedSelection(allModelIds.indexOf(picked), false);
+    }
+
+    /**
+     * 返回成本最低候选的下标（纯方法，P9 先例）。
+     *
+     * <p>并列规则：weight 高者胜（null 按 1、≤0 按 0，与 pickWeightedIndex 口径一致）；
+     * 再并列 createdAt 早者胜（null 视为最晚）；全等回落到池内顺序。空池兜底 0。</p>
+     *
+     * @param pool 放量池（最低优先级组）
+     * @param costByModelId 估算成本函数（按 modelId），null 视为 0
+     * @return 最便宜候选下标
+     */
+    static int pickCheapestIndex(List<ModelRouteCandidateEntity> pool,
+                                 Function<String, BigDecimal> costByModelId) {
+        if (pool.isEmpty()) {
+            return 0;
+        }
+        int best = 0;
+        BigDecimal bestCost = safeCost(costByModelId.apply(pool.get(0).getModelId()));
+        for (int i = 1; i < pool.size(); i++) {
+            BigDecimal cost = safeCost(costByModelId.apply(pool.get(i).getModelId()));
+            int cmp = cost.compareTo(bestCost);
+            if (cmp < 0 || (cmp == 0 && costTieBreak(pool.get(i), pool.get(best)) < 0)) {
+                best = i;
+                bestCost = cost;
+            }
+        }
+        return best;
+    }
+
+    /** 成本并列时排序：weight 高者胜、再 createdAt 早者胜；返回负值表示 a 应排前。 */
+    static int costTieBreak(ModelRouteCandidateEntity a, ModelRouteCandidateEntity b) {
+        int weightCmp = Double.compare(weightValue(b), weightValue(a));
+        if (weightCmp != 0) {
+            return weightCmp;
+        }
+        LocalDateTime aTime = a.getCreatedAt();
+        LocalDateTime bTime = b.getCreatedAt();
+        if (aTime == null) {
+            return bTime == null ? 0 : 1;
+        }
+        if (bTime == null) {
+            return -1;
+        }
+        return aTime.compareTo(bTime);
+    }
+
+    /** 候选权重数值：null 按 1、≤0 按 0（与 pickWeightedIndex 口径一致）。 */
+    private static double weightValue(ModelRouteCandidateEntity candidate) {
+        BigDecimal weight = candidate.getWeight();
+        return weight == null ? 1 : Math.max(weight.doubleValue(), 0);
+    }
+
+    /** null 成本防御为 0（模型被删除的竞态兜底）。 */
+    private static BigDecimal safeCost(BigDecimal cost) {
+        return cost == null ? BigDecimal.ZERO : cost;
     }
 
     /** 会话粘性条目：已选定模型与过期时间。 */
@@ -835,8 +968,10 @@ public class ModelGatewayService {
         return decision;
     }
 
-    private boolean healthyCandidate(ModelRouteCandidateEntity candidate, ModelRoutePolicyEntity policy) {
-        ModelConfigEntity model = modelConfigMapper.selectById(candidate.getModelId());
+    private boolean healthyCandidate(ModelRouteCandidateEntity candidate,
+                                     ModelRoutePolicyEntity policy,
+                                     Map<String, ModelConfigEntity> modelCache) {
+        ModelConfigEntity model = modelCache.computeIfAbsent(candidate.getModelId(), modelConfigMapper::selectById);
         if (model == null || !"enabled".equalsIgnoreCase(safeText(model.getStatus()))) {
             return false;
         }
@@ -880,6 +1015,8 @@ public class ModelGatewayService {
         // null 直接落库（列可空），读取侧用 DEFAULT_BREAKER_* 常量兜底
         entity.setBreakerFailureThreshold(request.getBreakerFailureThreshold());
         entity.setBreakerTimeoutSeconds(request.getBreakerTimeoutSeconds());
+        // 路由模式归一化：非 cost_first 一律落 weighted（存量/前端旧请求零变化）
+        entity.setRoutingMode("cost_first".equalsIgnoreCase(safeText(request.getRoutingMode())) ? "cost_first" : "weighted");
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus() : "enabled");
     }
 
@@ -959,6 +1096,8 @@ public class ModelGatewayService {
         summary.setFallbackEnabled(entity.getFallbackEnabled());
         summary.setBreakerFailureThreshold(entity.getBreakerFailureThreshold());
         summary.setBreakerTimeoutSeconds(entity.getBreakerTimeoutSeconds());
+        // 存量行 DB 默认值为 weighted，读取侧仍兜底归一
+        summary.setRoutingMode("cost_first".equalsIgnoreCase(entity.getRoutingMode()) ? "cost_first" : "weighted");
         summary.setStatus(entity.getStatus());
         summary.setCreatedAt(entity.getCreatedAt());
         summary.setUpdatedAt(entity.getUpdatedAt());
@@ -1039,6 +1178,24 @@ public class ModelGatewayService {
 
     private BigDecimal averageCostPer1k(ModelConfigEntity model) {
         return safeDecimal(model.getInputPricePer1k()).add(safeDecimal(model.getOutputPricePer1k()));
+    }
+
+    /**
+     * 估算单次调用成本（cost_first 相对排序用）。
+     *
+     * <p>使用固定参考调用画像（COST_ROUTING_REF_PROMPT/COMPLETION_TOKENS）仅用于候选间相对排序，
+     * 不代表真实流量；与 max_cost_per_1k 硬过滤是先后两道独立轴。模型已删除（竞态）按 0 计。</p>
+     *
+     * @param modelId 模型ID
+     * @param modelCache 模型查询缓存（与 healthyCandidate 共享）
+     * @return 估算成本，模型缺失返回 0
+     */
+    private BigDecimal estimateCallCost(String modelId, Map<String, ModelConfigEntity> modelCache) {
+        ModelConfigEntity model = modelCache.get(modelId);
+        if (model == null) {
+            return BigDecimal.ZERO;
+        }
+        return usageCostService.calculateCost(model, COST_ROUTING_REF_PROMPT_TOKENS, COST_ROUTING_REF_COMPLETION_TOKENS);
     }
 
     private Long countLong(String sql) {
