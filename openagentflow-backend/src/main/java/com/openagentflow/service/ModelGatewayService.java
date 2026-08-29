@@ -56,6 +56,12 @@ public class ModelGatewayService {
     /** 模型不可用判定的失败率阈值。 */
     private static final BigDecimal UNHEALTHY_FAILURE_RATE = BigDecimal.valueOf(80);
 
+    /** 熔断器默认连续失败阈值（策略未配置时兜底）。 */
+    private static final int DEFAULT_BREAKER_FAILURE_THRESHOLD = 5;
+
+    /** 熔断器默认熔断时长（秒，策略未配置时兜底）。 */
+    private static final int DEFAULT_BREAKER_TIMEOUT_SECONDS = 60;
+
     /** 路由策略 Mapper。 */
     private final ModelRoutePolicyMapper modelRoutePolicyMapper;
 
@@ -85,6 +91,9 @@ public class ModelGatewayService {
 
     /** 写入计数，用于写时抽检清理过期条目。 */
     private final AtomicLong stickyPutCounter = new AtomicLong();
+
+    /** 按模型记录的熔断状态，key 为 modelId（单实例内存态，重启归零，与 sticky 同策略）。 */
+    private final Map<String, BreakerState> breakerByModel = new ConcurrentHashMap<>();
 
     public ModelGatewayService(ModelRoutePolicyMapper modelRoutePolicyMapper,
                                ModelRouteCandidateMapper modelRouteCandidateMapper,
@@ -318,20 +327,210 @@ public class ModelGatewayService {
                 || current.getCandidateModelIds() == null) {
             return null;
         }
-        int nextIndex = current.getCandidateIndex() == null ? 1 : current.getCandidateIndex() + 1;
-        if (nextIndex >= current.getCandidateModelIds().size()) {
-            return null;
+        // 跳过运行中途被其他请求熔断（OPEN）的候选；HALF_OPEN 放行（回退即探测）。
+        // disabled 候选保持原语义：遇到即放弃回退（return null），不继续往下找。
+        int breakerTimeout = breakerTimeoutSeconds(loadBreakerPolicy(current.getRoutePolicyId()));
+        long now = System.currentTimeMillis();
+        int startIndex = current.getCandidateIndex() == null ? 1 : current.getCandidateIndex() + 1;
+        for (int nextIndex = startIndex; nextIndex < current.getCandidateModelIds().size(); nextIndex++) {
+            String nextModelId = current.getCandidateModelIds().get(nextIndex);
+            if (breakerExcluded(nextModelId, breakerTimeout, now)) {
+                continue;
+            }
+            ModelConfigEntity model = modelProviderService.requireModel(nextModelId);
+            if (!"enabled".equalsIgnoreCase(safeText(model.getStatus()))) {
+                return null;
+            }
+            ModelRouteDecision decision = buildDecision(model, current.getSceneType(), current.getRoutePolicyId(), current.getRoutePolicyName(), current.getCandidateModelIds(), nextIndex);
+            decision.setFallbackEnabled(true);
+            decision.setFallbackUsed(true);
+            decision.setReason("上游模型调用失败，已切换到候选模型：" + safeText(errorMessage));
+            return decision;
         }
-        String nextModelId = current.getCandidateModelIds().get(nextIndex);
-        ModelConfigEntity model = modelProviderService.requireModel(nextModelId);
-        if (!"enabled".equalsIgnoreCase(safeText(model.getStatus()))) {
-            return null;
+        return null;
+    }
+
+    /**
+     * 上报一次模型调用失败，驱动熔断状态机。
+     *
+     * <p>按决策携带的路由策略读取阈值与熔断时长（失败低频，一次 selectById 可接受）；
+     * CLOSED 连续失败达到阈值后进入 OPEN。配额类异常（token/cost 超限）不应上报，
+     * 由调用方在 {@code recordGatewayFailure} 助手处过滤。</p>
+     *
+     * @param decision 失败时的路由决策（携带 model 与 routePolicyId）
+     */
+    public void recordLlmFailure(ModelRouteDecision decision) {
+        if (decision == null || decision.getModel() == null) {
+            return;
         }
-        ModelRouteDecision decision = buildDecision(model, current.getSceneType(), current.getRoutePolicyId(), current.getRoutePolicyName(), current.getCandidateModelIds(), nextIndex);
-        decision.setFallbackEnabled(true);
-        decision.setFallbackUsed(true);
-        decision.setReason("上游模型调用失败，已切换到候选模型：" + safeText(errorMessage));
-        return decision;
+        ModelRoutePolicyEntity policy = loadBreakerPolicy(decision.getRoutePolicyId());
+        int threshold = breakerFailureThreshold(policy);
+        int timeoutSeconds = breakerTimeoutSeconds(policy);
+        String modelId = decision.getModel().getId();
+        long now = System.currentTimeMillis();
+        breakerByModel.compute(modelId, (key, state) -> afterFailure(
+                state == null ? BreakerState.closed() : state, threshold, timeoutSeconds, now));
+    }
+
+    /**
+     * 上报一次模型调用成功，驱动熔断恢复。
+     *
+     * <p>仅更新已有状态条目（成功不创建新条目）；CLOSED 重置计数、HALF_OPEN 成功转 CLOSED、OPEN 忽略。</p>
+     *
+     * @param decision 成功时的路由决策（携带最终成功模型）
+     */
+    public void recordLlmSuccess(ModelRouteDecision decision) {
+        if (decision == null || decision.getModel() == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        breakerByModel.computeIfPresent(decision.getModel().getId(), (key, state) -> afterSuccess(state, now));
+    }
+
+    /** 熔断状态机状态。 */
+    enum BreakerStatus {
+        /** 闭合：正常放行。 */
+        CLOSED,
+        /** 打开：拒绝路由，等待超时后半开。 */
+        OPEN,
+        /** 半开：放行探测流量，成功恢复、失败重开。 */
+        HALF_OPEN
+    }
+
+    /** 熔断状态：当前状态、连续失败计数、OPEN 开始时间（仅 OPEN/HALF_OPEN 有效）。 */
+    record BreakerState(BreakerStatus status, int consecutiveFailures, long openedAtMillis) {
+        /** 初始闭合状态。 */
+        static BreakerState closed() {
+            return new BreakerState(BreakerStatus.CLOSED, 0, 0);
+        }
+    }
+
+    /**
+     * 失败转移（纯方法，时间由调用方注入保证可测）。
+     *
+     * <p>CLOSED 连续失败 +1，达到阈值 → OPEN（记录 openedAt）；HALF_OPEN 失败视为探测失败 → 回 OPEN（刷新 openedAt）；
+     * OPEN 失败吸收不动（不刷新 openedAt，否则直连零星失败会让熔断无限延长）；
+     * 若 OPEN 已超时但从未被路由读取，本次失败视为半开探测失败 → 重新计时 OPEN。</p>
+     *
+     * @param state 当前状态
+     * @param threshold 连续失败阈值
+     * @param timeoutSeconds 熔断时长（秒）
+     * @param now 当前时间戳
+     * @return 转移后的状态
+     */
+    static BreakerState afterFailure(BreakerState state, int threshold, int timeoutSeconds, long now) {
+        if (state.status() == BreakerStatus.OPEN) {
+            if (now - state.openedAtMillis() >= timeoutSeconds * 1000L) {
+                return new BreakerState(BreakerStatus.OPEN, state.consecutiveFailures() + 1, now);
+            }
+            return state;
+        }
+        if (state.status() == BreakerStatus.HALF_OPEN) {
+            return new BreakerState(BreakerStatus.OPEN, state.consecutiveFailures() + 1, now);
+        }
+        int failures = state.consecutiveFailures() + 1;
+        if (failures >= threshold) {
+            return new BreakerState(BreakerStatus.OPEN, failures, now);
+        }
+        return new BreakerState(BreakerStatus.CLOSED, failures, 0);
+    }
+
+    /**
+     * 成功转移（纯方法）。
+     *
+     * <p>CLOSED 重置计数；HALF_OPEN 成功 → CLOSED（熔断恢复）；OPEN 忽略（单一成功不足抵消失败模式）。</p>
+     *
+     * @param state 当前状态
+     * @param now 当前时间戳
+     * @return 转移后的状态
+     */
+    static BreakerState afterSuccess(BreakerState state, long now) {
+        if (state.status() == BreakerStatus.HALF_OPEN) {
+            return new BreakerState(BreakerStatus.CLOSED, 0, 0);
+        }
+        if (state.status() == BreakerStatus.CLOSED) {
+            return new BreakerState(BreakerStatus.CLOSED, 0, 0);
+        }
+        return state;
+    }
+
+    /**
+     * 判断当前状态是否应被路由排除（纯方法）。
+     *
+     * <p>仅 OPEN 且未超时 → true；CLOSED / HALF_OPEN / 已超时 OPEN → false（HALF_OPEN 必须有流量流入才能探测）。</p>
+     *
+     * @param state 当前状态
+     * @param timeoutSeconds 熔断时长（秒）
+     * @param now 当前时间戳
+     * @return true 表示该模型应从候选池排除
+     */
+    static boolean isBreakerExcluded(BreakerState state, int timeoutSeconds, long now) {
+        return state.status() == BreakerStatus.OPEN
+                && now - state.openedAtMillis() < timeoutSeconds * 1000L;
+    }
+
+    /**
+     * OPEN 超时惰性转 HALF_OPEN（纯方法）。
+     *
+     * @param state 当前状态
+     * @param timeoutSeconds 熔断时长（秒）
+     * @param now 当前时间戳
+     * @return 转移后的状态
+     */
+    static BreakerState advanceOnRead(BreakerState state, int timeoutSeconds, long now) {
+        if (state.status() == BreakerStatus.OPEN
+                && now - state.openedAtMillis() >= timeoutSeconds * 1000L) {
+            return new BreakerState(BreakerStatus.HALF_OPEN, state.consecutiveFailures(), state.openedAtMillis());
+        }
+        return state;
+    }
+
+    /**
+     * 生产入口：判断模型是否因熔断被路由排除，并在读到时惰性推进状态。
+     *
+     * @param modelId 模型ID
+     * @param timeoutSeconds 熔断时长（秒）
+     * @param now 当前时间戳
+     * @return true 表示应排除
+     */
+    private boolean breakerExcluded(String modelId, int timeoutSeconds, long now) {
+        BreakerState state = breakerByModel.get(modelId);
+        if (state == null || state.status() == BreakerStatus.CLOSED) {
+            return false;
+        }
+        if (isBreakerExcluded(state, timeoutSeconds, now)) {
+            return true;
+        }
+        // OPEN 已超时：惰性转半开并放行（半开必须有流量流入才能探测）
+        if (state.status() == BreakerStatus.OPEN) {
+            breakerByModel.computeIfPresent(modelId, (key, s) -> advanceOnRead(s, timeoutSeconds, now));
+        }
+        return false;
+    }
+
+    /**
+     * 读取熔断配置所在的策略，策略ID为空时返回 null（用默认常量兜底）。
+     */
+    private ModelRoutePolicyEntity loadBreakerPolicy(String routePolicyId) {
+        return routePolicyId == null ? null : modelRoutePolicyMapper.selectById(routePolicyId);
+    }
+
+    /**
+     * 读取策略的熔断失败阈值，未配置或非法时用默认常量兜底。
+     */
+    private int breakerFailureThreshold(ModelRoutePolicyEntity policy) {
+        return policy != null && policy.getBreakerFailureThreshold() != null
+                && policy.getBreakerFailureThreshold() > 0
+                ? policy.getBreakerFailureThreshold() : DEFAULT_BREAKER_FAILURE_THRESHOLD;
+    }
+
+    /**
+     * 读取策略的熔断时长（秒），未配置或非法时用默认常量兜底。
+     */
+    private int breakerTimeoutSeconds(ModelRoutePolicyEntity policy) {
+        return policy != null && policy.getBreakerTimeoutSeconds() != null
+                && policy.getBreakerTimeoutSeconds() > 0
+                ? policy.getBreakerTimeoutSeconds() : DEFAULT_BREAKER_TIMEOUT_SECONDS;
     }
 
     /**
@@ -402,6 +601,15 @@ public class ModelGatewayService {
                 .toList();
         if (candidates.isEmpty()) {
             return directDecision(defaultChatModel(), sceneType, "路由策略无可用候选，使用默认聊天模型");
+        }
+        // 熔断过滤：瞬时连续失败达阈值的模型在超时前被剔除，与上面的静态健康过滤互补
+        int breakerTimeout = breakerTimeoutSeconds(policy);
+        long breakerNow = System.currentTimeMillis();
+        candidates = candidates.stream()
+                .filter(candidate -> !breakerExcluded(candidate.getModelId(), breakerTimeout, breakerNow))
+                .toList();
+        if (candidates.isEmpty()) {
+            return directDecision(defaultChatModel(), sceneType, "候选全部熔断，使用默认聊天模型");
         }
 
         List<String> modelIds = candidates.stream().map(ModelRouteCandidateEntity::getModelId).toList();
@@ -669,6 +877,9 @@ public class ModelGatewayService {
         entity.setSceneType(StringUtils.hasText(request.getSceneType()) ? request.getSceneType().trim().toUpperCase() : SCENE_AGENT_CHAT);
         entity.setMatchRule(buildMatchRule(request));
         entity.setFallbackEnabled(!Boolean.FALSE.equals(request.getFallbackEnabled()));
+        // null 直接落库（列可空），读取侧用 DEFAULT_BREAKER_* 常量兜底
+        entity.setBreakerFailureThreshold(request.getBreakerFailureThreshold());
+        entity.setBreakerTimeoutSeconds(request.getBreakerTimeoutSeconds());
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus() : "enabled");
     }
 
@@ -746,6 +957,8 @@ public class ModelGatewayService {
         summary.setMatchScope("SKIP".equals(parsed.scope()) ? "GLOBAL" : parsed.scope());
         summary.setWorkspaceIds("WORKSPACE".equals(parsed.scope()) ? parsed.workspaceIds() : List.of());
         summary.setFallbackEnabled(entity.getFallbackEnabled());
+        summary.setBreakerFailureThreshold(entity.getBreakerFailureThreshold());
+        summary.setBreakerTimeoutSeconds(entity.getBreakerTimeoutSeconds());
         summary.setStatus(entity.getStatus());
         summary.setCreatedAt(entity.getCreatedAt());
         summary.setUpdatedAt(entity.getUpdatedAt());

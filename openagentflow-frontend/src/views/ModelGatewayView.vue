@@ -52,6 +52,8 @@ const policyForm = reactive<ModelRoutePolicyRequest>({
   matchScope: 'GLOBAL',
   workspaceIds: [],
   fallbackEnabled: true,
+  breakerFailureThreshold: 5,
+  breakerTimeoutSeconds: 60,
   status: 'enabled',
   candidates: [],
 });
@@ -93,6 +95,8 @@ function resetForm() {
   policyForm.matchScope = 'GLOBAL';
   policyForm.workspaceIds = [];
   policyForm.fallbackEnabled = true;
+  policyForm.breakerFailureThreshold = 5;
+  policyForm.breakerTimeoutSeconds = 60;
   policyForm.status = 'enabled';
   policyForm.candidates = allModels.value
     .filter((model) => model.modelType === 'chat' && model.status === 'enabled')
@@ -114,6 +118,8 @@ function editPolicy(policy: ModelRoutePolicySummary) {
   policyForm.matchScope = policy.matchScope || 'GLOBAL';
   policyForm.workspaceIds = policy.workspaceIds || [];
   policyForm.fallbackEnabled = policy.fallbackEnabled;
+  policyForm.breakerFailureThreshold = policy.breakerFailureThreshold ?? 5;
+  policyForm.breakerTimeoutSeconds = policy.breakerTimeoutSeconds ?? 60;
   policyForm.status = policy.status;
   policyForm.candidates = policy.candidates.map((candidate) => ({
     modelId: candidate.modelId,
@@ -377,6 +383,12 @@ onMounted(() => {
             </select>
           </label>
           <label class="checkbox-line"><input v-model="policyForm.fallbackEnabled" type="checkbox" /> 启用失败回退</label>
+          <label>熔断阈值(连续失败次数)
+            <input v-model.number="policyForm.breakerFailureThreshold" type="number" min="1" placeholder="5" />
+          </label>
+          <label>熔断时长(秒)
+            <input v-model.number="policyForm.breakerTimeoutSeconds" type="number" min="1" placeholder="60" />
+          </label>
           <label>匹配范围
             <select v-model="policyForm.matchScope">
               <option value="GLOBAL">GLOBAL（全部空间）</option>

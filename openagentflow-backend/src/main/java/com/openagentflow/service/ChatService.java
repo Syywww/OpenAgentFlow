@@ -914,8 +914,11 @@ public class ChatService {
                                                     Consumer<ChatRunContext> precheck) {
         try {
             precheck.accept(context);
-            return invoker.apply(context);
+            LlmCallResult result = invoker.apply(context);
+            modelGatewayService.recordLlmSuccess(context.getRouteDecision());
+            return result;
         } catch (Exception firstException) {
+            recordGatewayFailure(context, firstException);
             ModelRouteDecision fallback = modelGatewayService.nextFallbackDecision(context.getRouteDecision(), firstException.getMessage());
             if (fallback == null) {
                 throw firstException;
@@ -925,9 +928,28 @@ public class ChatService {
             context.setModel(fallback.getModel());
             context.setProvider(fallback.getProvider());
             context.setApiKey(fallback.getApiKey());
-            precheck.accept(context);
-            return invoker.apply(context);
+            try {
+                precheck.accept(context);
+                LlmCallResult result = invoker.apply(context);
+                modelGatewayService.recordLlmSuccess(context.getRouteDecision());
+                return result;
+            } catch (Exception secondException) {
+                // 回退模型也失败：同样上报熔断后重抛（内层 catch，不能复用外层）
+                recordGatewayFailure(context, secondException);
+                throw secondException;
+            }
         }
+    }
+
+    /**
+     * 上报一次失败到熔断器；配额超限类异常除外——用户配额问题不应熔断健康模型。
+     */
+    private void recordGatewayFailure(ChatRunContext context, Exception exception) {
+        String code = exception instanceof BusinessException business ? business.getCode() : null;
+        if ("MODEL_TOKEN_QUOTA_EXCEEDED".equals(code) || "MODEL_COST_QUOTA_EXCEEDED".equals(code)) {
+            return;
+        }
+        modelGatewayService.recordLlmFailure(context.getRouteDecision());
     }
 
     private AgentEntity resolveAgent(String agentId) {

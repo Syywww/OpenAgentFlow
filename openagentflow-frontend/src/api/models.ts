@@ -104,6 +104,8 @@ export interface ModelRoutePolicySummary {
   matchScope?: string;
   workspaceIds?: string[];
   fallbackEnabled: boolean;
+  breakerFailureThreshold?: number;
+  breakerTimeoutSeconds?: number;
   status: string;
   candidates: ModelRouteCandidateSummary[];
   createdAt?: string;
@@ -128,6 +130,8 @@ export interface ModelRoutePolicyRequest {
   matchScope?: string;
   workspaceIds?: string[];
   fallbackEnabled: boolean;
+  breakerFailureThreshold?: number;
+  breakerTimeoutSeconds?: number;
   status: string;
   candidates: ModelRouteCandidateRequest[];
 }

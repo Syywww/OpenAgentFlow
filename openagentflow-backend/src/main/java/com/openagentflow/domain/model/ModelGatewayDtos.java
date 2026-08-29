@@ -119,6 +119,12 @@ public class ModelGatewayDtos {
         /** 是否启用失败回退。 */
         private Boolean fallbackEnabled;
 
+        /** 熔断连续失败次数阈值，空值用默认常量兜底。 */
+        private Integer breakerFailureThreshold;
+
+        /** 熔断持续时间（秒），空值用默认常量兜底。 */
+        private Integer breakerTimeoutSeconds;
+
         /** 策略状态。 */
         private String status;
 
@@ -193,6 +199,22 @@ public class ModelGatewayDtos {
 
         public void setFallbackEnabled(Boolean fallbackEnabled) {
             this.fallbackEnabled = fallbackEnabled;
+        }
+
+        public Integer getBreakerFailureThreshold() {
+            return breakerFailureThreshold;
+        }
+
+        public void setBreakerFailureThreshold(Integer breakerFailureThreshold) {
+            this.breakerFailureThreshold = breakerFailureThreshold;
+        }
+
+        public Integer getBreakerTimeoutSeconds() {
+            return breakerTimeoutSeconds;
+        }
+
+        public void setBreakerTimeoutSeconds(Integer breakerTimeoutSeconds) {
+            this.breakerTimeoutSeconds = breakerTimeoutSeconds;
         }
 
         public String getStatus() {
@@ -401,6 +423,12 @@ public class ModelGatewayDtos {
         /** 是否启用失败回退。 */
         private Boolean fallbackEnabled;
 
+        /** 熔断连续失败次数阈值，空值用默认常量兜底。 */
+        private Integer breakerFailureThreshold;
+
+        /** 熔断持续时间（秒），空值用默认常量兜底。 */
+        private Integer breakerTimeoutSeconds;
+
         /** 策略状态。 */
         private String status;
 
@@ -461,6 +489,22 @@ public class ModelGatewayDtos {
 
         public void setFallbackEnabled(Boolean fallbackEnabled) {
             this.fallbackEnabled = fallbackEnabled;
+        }
+
+        public Integer getBreakerFailureThreshold() {
+            return breakerFailureThreshold;
+        }
+
+        public void setBreakerFailureThreshold(Integer breakerFailureThreshold) {
+            this.breakerFailureThreshold = breakerFailureThreshold;
+        }
+
+        public Integer getBreakerTimeoutSeconds() {
+            return breakerTimeoutSeconds;
+        }
+
+        public void setBreakerTimeoutSeconds(Integer breakerTimeoutSeconds) {
+            this.breakerTimeoutSeconds = breakerTimeoutSeconds;
         }
 
         public String getStatus() {

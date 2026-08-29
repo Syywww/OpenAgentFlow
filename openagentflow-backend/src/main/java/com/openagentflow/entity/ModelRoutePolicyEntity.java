@@ -36,6 +36,14 @@ public class ModelRoutePolicyEntity {
     @TableField("fallback_enabled")
     private Boolean fallbackEnabled;
 
+    /** 熔断连续失败次数阈值，空值用默认常量兜底。 */
+    @TableField("breaker_failure_threshold")
+    private Integer breakerFailureThreshold;
+
+    /** 熔断持续时间（秒），空值用默认常量兜底。 */
+    @TableField("breaker_timeout_seconds")
+    private Integer breakerTimeoutSeconds;
+
     /** 状态。 */
     @TableField("status")
     private String status;
@@ -98,6 +106,22 @@ public class ModelRoutePolicyEntity {
 
     public void setFallbackEnabled(Boolean fallbackEnabled) {
         this.fallbackEnabled = fallbackEnabled;
+    }
+
+    public Integer getBreakerFailureThreshold() {
+        return breakerFailureThreshold;
+    }
+
+    public void setBreakerFailureThreshold(Integer breakerFailureThreshold) {
+        this.breakerFailureThreshold = breakerFailureThreshold;
+    }
+
+    public Integer getBreakerTimeoutSeconds() {
+        return breakerTimeoutSeconds;
+    }
+
+    public void setBreakerTimeoutSeconds(Integer breakerTimeoutSeconds) {
+        this.breakerTimeoutSeconds = breakerTimeoutSeconds;
     }
 
     public String getStatus() {
