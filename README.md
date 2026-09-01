@@ -2,6 +2,15 @@
 
 OpenAgentFlow-Java 是一个基于 **Java 21 + Spring Boot 3 + Vue 3** 的开源 AI Agent 工作流平台。项目面向企业知识库问答、工具调用、MCP 接入、工作流编排、运行 Trace 和模型评测场景，目标是提供一套可运行、可追踪、可评测、可扩展的 AI Agent 应用开发底座。
 
+## 本分支（Syywww）新增贡献
+
+本仓库为 [wuruiwurui/OpenAgentFlow](https://github.com/wuruiwurui/OpenAgentFlow) 的二次开发分支，在模型网关与模型接入方向做了以下增强：
+
+- **路由**：权重加权随机、run 级会话粘性、cost-first 成本优先选型
+- **熔断**：失败率/慢调用滑动窗口统计、半开探测自动复位
+- **接入**：Anthropic Claude 原生客户端、讯飞 Spark（WebSocket + Function Calling）
+- **配套**：路由/熔断/成本/策略的 Testcontainers 集成测试与 Flyway 迁移
+
 ## 为什么核心链路自研
 
 OpenAgentFlow-Java 的目标不是做一个简单的 AI 调用 Demo，而是完整呈现企业级 Agent 平台的核心链路。项目中的 Agent 编排、RAG 知识库、Tool Calling、MCP 接入、工作流执行、Trace 追踪、模型评测和成本治理均采用自研实现，方便开发者直接理解底层流程、学习关键设计并进行二次开发。
